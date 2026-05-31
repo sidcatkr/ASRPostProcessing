@@ -15,14 +15,14 @@ class SearchTest(unittest.TestCase):
             response = Mock()
             response.raise_for_status.return_value = None
             response.json.return_value = {
-                "Heading": "Claude Code",
-                "AbstractText": "Claude Code is an AI coding tool.",
-                "AbstractURL": "https://example.test/claude-code",
+                "Heading": "ExampleTerm",
+                "AbstractText": "ExampleTerm is a cached search result.",
+                "AbstractURL": "https://example.test/example-term",
                 "RelatedTopics": [],
             }
             with patch("requests.get", return_value=response) as get:
-                first = provider.search("Claude Code")
-                second = provider.search("Claude Code")
+                first = provider.search("ExampleTerm")
+                second = provider.search("ExampleTerm")
             self.assertEqual(len(first), 1)
             self.assertEqual(first[0].source, "duckduckgo")
             self.assertEqual(second[0].snippet, first[0].snippet)

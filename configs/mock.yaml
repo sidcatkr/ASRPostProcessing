@@ -19,10 +19,7 @@ rnnoise_command: ""
 bs_roformer_command: ""
 enable_keyword_bias: true
 keyword_bias_weight: 0.5
-keywords:
-  - Claude Code
-  - Boolean
-  - for문
+keywords: []
 enable_llm_postprocess: true
 postprocess_strength: 0.5
 enable_rag: false

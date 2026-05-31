@@ -14,10 +14,10 @@ from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui
 
 class ParserPipelineUiTest(unittest.TestCase):
     def test_parse_correction_json(self):
-        payload = '{"corrected_text":"Boolean","edits":[{"before":"불련","after":"Boolean","reason":"term","confidence":0.8}],"risk":"low","used_context_ids":["ctx1"]}'
-        result = parse_correction_response(payload, "불련")
-        self.assertEqual(result.corrected_text, "Boolean")
-        self.assertEqual(result.edits[0].before, "불련")
+        payload = '{"corrected_text":"교정된 문장","edits":[{"before":"원문","after":"교정","reason":"term","confidence":0.8}],"risk":"low","used_context_ids":["ctx1"]}'
+        result = parse_correction_response(payload, "원문 문장")
+        self.assertEqual(result.corrected_text, "교정된 문장")
+        self.assertEqual(result.edits[0].before, "원문")
         self.assertEqual(result.used_context_ids, ["ctx1"])
 
     def test_parse_failure_keeps_original(self):
@@ -35,8 +35,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                 output_dir=str(Path(tmp) / "outputs"),
                 runs_dir=str(Path(tmp) / "runs"),
             )
-            output = PipelineRunner(config).run(str(audio), reference_text="Claude Code로 for문 작성 보조", run_id="test-run")
-            self.assertIn("Claude Code", output.correction.corrected_text)
+            output = PipelineRunner(config).run(str(audio), reference_text="테스트 전사 문장입니다.", run_id="test-run")
+            self.assertEqual(output.correction.corrected_text, "테스트 전사 문장입니다.")
             self.assertTrue((Path(output.output_dir) / "result.json").exists())
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
@@ -75,7 +75,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             with patch("asrpostprocessing.pipeline.ensure_model_servers", side_effect=fake_ensure), patch(
                 "asrpostprocessing.pipeline.stop_model_servers", side_effect=fake_stop
             ):
-                output = PipelineRunner(config).run(str(audio), reference_text="Claude Code로 for문 작성 보조")
+                output = PipelineRunner(config).run(str(audio), reference_text="테스트 전사 문장입니다.")
             self.assertEqual(calls, [("ensure", "asr"), ("stop", "asr"), ("ensure", "post"), ("stop", "post")])
             self.assertEqual([item["status"] for item in output.server_statuses], ["ready", "stopped", "ready", "stopped"])
 
@@ -86,11 +86,11 @@ class ParserPipelineUiTest(unittest.TestCase):
             raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
                 str(audio),
                 None,
-                "Claude Code로 for문 작성 보조",
+                "테스트 전사 문장입니다.",
                 None,
                 True,
                 0.5,
-                "Claude Code, for문",
+                "",
                 False,
                 "none",
                 0.0,
@@ -127,8 +127,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "mock",
                 "mock",
             )
-            self.assertIn("클러드 코드", raw)
-            self.assertIn("Claude Code", corrected)
+            self.assertEqual(raw, "테스트 전사 문장입니다.")
+            self.assertEqual(corrected, "테스트 전사 문장입니다.")
             self.assertIn("Run ID:", status)
             self.assertIn("cer_normalized_no_space", metrics)
             self.assertIsInstance(edits, list)
@@ -223,15 +223,15 @@ class ParserPipelineUiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "hour-long.mp3"
             audio.write_bytes(b"mock mp3")
-            audio.with_suffix(".txt").write_text("클러드 코드로 포물 작성 보조", encoding="utf-8")
+            audio.with_suffix(".txt").write_text("긴 오디오 테스트 문장입니다.", encoding="utf-8")
             raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
                 None,
                 {"name": str(audio)},
-                "Claude Code로 for문 작성 보조",
+                "긴 오디오 테스트 문장입니다.",
                 None,
                 True,
                 0.5,
-                "Claude Code, for문",
+                "",
                 False,
                 "none",
                 0.0,
@@ -268,8 +268,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "mock",
                 "mock",
             )
-        self.assertIn("클러드 코드", raw)
-        self.assertIn("Claude Code", corrected)
+        self.assertEqual(raw, "긴 오디오 테스트 문장입니다.")
+        self.assertEqual(corrected, "긴 오디오 테스트 문장입니다.")
         self.assertEqual(preprocessed_audio, str(audio))
         self.assertFalse(preprocess["applied"])
         self.assertIn("Run ID:", status)

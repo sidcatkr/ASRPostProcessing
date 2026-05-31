@@ -42,7 +42,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 with gr.Row():
                     enable_keyword_bias = gr.Checkbox(label="Keyword Bias", value=initial_config.enable_keyword_bias)
                     keyword_bias_weight = gr.Slider(0, 1, value=initial_config.keyword_bias_weight, step=0.25, label="Keyword Bias weight")
-                    keywords = gr.Textbox(label="Keywords", value=", ".join(initial_config.keywords), placeholder="Claude Code, Boolean, for문")
+                    keywords = gr.Textbox(label="Keywords", value=", ".join(initial_config.keywords), placeholder="term A, product name, acronym")
             with gr.Accordion("Pre Process", open=True):
                 with gr.Row():
                     enable_noise_reduction = gr.Checkbox(label="Noise reduction", value=initial_config.enable_noise_reduction)

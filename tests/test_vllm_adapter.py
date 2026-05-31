@@ -14,8 +14,8 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"클라우드 코드",'
-                            '"edits":[{"before":"클러드","after":"클라우드","confidence":0.9}],'
+                            '{"corrected_text":"교정된 문장",'
+                            '"edits":[{"before":"원문","after":"교정","confidence":0.9}],'
                             '"risk":"low","used_context_ids":[]}'
                         )
                     }
@@ -24,13 +24,13 @@ class VLLMAdapterTest(unittest.TestCase):
         }
         config = ExperimentConfig(post_backend="vllm_openai", post_base_url="http://127.0.0.1:18001/v1")
         with patch("requests.post", return_value=response) as post:
-            result = VLLMOpenAIPostProcessAdapter().correct("클러드 코드", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("원문 문장", config, [], [])
 
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["max_tokens"], 512)
         self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
         self.assertIn("Do not include reasoning", payload["messages"][1]["content"])
-        self.assertEqual(result.corrected_text, "클라우드 코드")
+        self.assertEqual(result.corrected_text, "교정된 문장")
 
 
 if __name__ == "__main__":

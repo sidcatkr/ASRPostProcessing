@@ -106,8 +106,8 @@ asrpp run \
   --config configs/cuda.yaml \
   --audio sample.wav \
   --reference sample_reference.txt \
-  --keyword "Claude Code" \
-  --keyword "Boolean" \
+  --keyword "project-specific term" \
+  --keyword "product name" \
   --enable-keyword-bias
 ```
 

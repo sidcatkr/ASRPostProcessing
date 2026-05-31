@@ -69,7 +69,7 @@ class ExperimentConfig:
     chunk_max_chars: int = 700
     chunk_overlap: int = 80
     run_name: str = ""
-    mock_transcript: str = "클러드 코드로 포물 작성 보조"
+    mock_transcript: str = "테스트 전사 문장입니다."
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -25,14 +25,7 @@ class MockASRAdapter:
 
 
 class MockPostProcessAdapter:
-    REPLACEMENTS: List[Tuple[str, str, str]] = [
-        ("클러드 코드", "Claude Code", "mock glossary correction"),
-        ("클로드 코드", "Claude Code", "mock glossary correction"),
-        ("포물", "for문", "mock Korean ASR homophone correction"),
-        ("불련", "Boolean", "mock Korean ASR homophone correction"),
-        ("알에이지", "RAG", "mock acronym correction"),
-        ("큐웬", "Qwen", "mock model name correction"),
-    ]
+    REPLACEMENTS: List[Tuple[str, str, str]] = []
 
     def correct(
         self,
