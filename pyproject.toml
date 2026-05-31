@@ -16,6 +16,7 @@ dependencies = [
   "requests>=2.31",
   "PyYAML>=6.0",
   "tensorboard>=2.16",
+  "imageio-ffmpeg>=0.5",
 ]
 
 [project.optional-dependencies]

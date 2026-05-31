@@ -112,7 +112,7 @@ def _denoise_audio(audio_path: str, config: ExperimentConfig, model_name: str) -
         result = _denoise_pcm16_wav(input_path, output_path, model_name, strength)
         if result is not None:
             return result
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = ffmpeg_executable()
     if not ffmpeg:
         return PreprocessResult(
             audio_path=audio_path,
@@ -295,7 +295,7 @@ def _volume_input_path(audio_path: str, config: ExperimentConfig, tag: str) -> P
 
 
 def _convert_audio_to_pcm16_wav(input_path: Path, config: ExperimentConfig, tag: str) -> Path | None:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = ffmpeg_executable()
     if not ffmpeg:
         return None
     output_dir = Path(config.output_dir) / "preprocessed"
@@ -319,6 +319,18 @@ def _convert_audio_to_pcm16_wav(input_path: Path, config: ExperimentConfig, tag:
     except Exception:
         return None
     return output_path if output_path.exists() else None
+
+
+def ffmpeg_executable() -> str | None:
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
 def _safe_preprocess_name(value: str) -> str:

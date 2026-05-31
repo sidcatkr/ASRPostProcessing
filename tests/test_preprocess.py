@@ -1,4 +1,3 @@
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -6,7 +5,7 @@ import wave
 from pathlib import Path
 
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.preprocess import preprocess_audio
+from asrpostprocessing.preprocess import ffmpeg_executable, preprocess_audio
 
 
 class PreprocessTest(unittest.TestCase):
@@ -76,7 +75,7 @@ class PreprocessTest(unittest.TestCase):
             self.assertEqual(result.steps[0]["step"], "volume_normalization")
             self.assertGreater(result.steps[0]["metadata"]["target_rms"], 0)
 
-    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required for compressed audio conversion")
+    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for compressed audio conversion")
     def test_volume_normalization_converts_non_wav_without_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "input.wav"
@@ -84,7 +83,7 @@ class PreprocessTest(unittest.TestCase):
             _write_pcm16_wav(source, [1000, -1000, 1000, -1000])
             subprocess.run(
                 [
-                    shutil.which("ffmpeg") or "ffmpeg",
+                    ffmpeg_executable() or "ffmpeg",
                     "-y",
                     "-hide_banner",
                     "-loglevel",

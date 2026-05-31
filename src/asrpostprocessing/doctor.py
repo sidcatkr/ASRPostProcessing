@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List
 
 from .config import ExperimentConfig
+from .preprocess import ffmpeg_executable
 
 
 @dataclass
@@ -118,13 +119,13 @@ def _check_model_residency(config: ExperimentConfig) -> DoctorCheck:
 
 
 def _check_ffmpeg_preprocess_support() -> DoctorCheck:
-    executable = shutil.which("ffmpeg")
+    executable = ffmpeg_executable()
     if executable:
         return DoctorCheck("preprocess:ffmpeg", "ok", executable)
     return DoctorCheck(
         "preprocess:ffmpeg",
         "warn",
-        "not found on PATH; 16-bit PCM WAV preprocessing works, compressed audio conversion/denoise needs ffmpeg",
+        "not found on PATH and imageio-ffmpeg is not installed; 16-bit PCM WAV preprocessing still works",
     )
 
 

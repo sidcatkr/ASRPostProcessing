@@ -15,14 +15,14 @@ Status: conditionally ready for GPU-server experiments, not fully proven on the 
 - Search is optional, supports DuckDuckGo Instant Answer by default or a custom endpoint, and caches results for reproducible experiments.
 - CER/WER, raw-vs-corrected deltas, latency, and a lightweight preservation proxy are written to outputs, `metrics.tsv`, and TensorBoard event logs.
 - Sweep runs notes.md research conditions A, B1, B2, B3, C, D, E, F, and G, and writes `sweep_summary.csv` plus `sweep_analysis.json` with sweet-spot, over-bias, over-RAG, and over-postprocess detection.
-- `asrpp doctor` checks Python, dependencies, NVIDIA GPU presence, optional model packages, `ffmpeg` availability for compressed-audio preprocessing, output dirs, and optional vLLM endpoints.
+- `asrpp doctor` checks Python, dependencies, NVIDIA GPU presence, optional model packages, `ffmpeg`/`imageio-ffmpeg` availability for compressed-audio preprocessing, output dirs, and optional vLLM endpoints.
 
 ## Not Proven On This Machine
 
 - Real Qwen3-ASR/Qwen3.5 inference could not be executed because this machine has no NVIDIA GPU and local Python is 3.9, not the configured Python 3.12 target.
 - Gradio UI could not be launched locally because `gradio` is not installed here.
 - TensorBoard event writing is implemented through `torch.utils.tensorboard` when available and a direct `tensorboard` event-writer fallback otherwise.
-- Noise reduction and volume normalization work internally for 16-bit PCM WAV. Compressed-audio preprocessing uses `ffmpeg` from `PATH` when conversion is needed.
+- Noise reduction and volume normalization work internally for 16-bit PCM WAV. Compressed-audio preprocessing uses `ffmpeg` from `PATH` or the bundled `imageio-ffmpeg` binary when conversion is needed.
 - Search quality depends on the provider. DuckDuckGo Instant Answer is usable without an API key, but domain-specific technical search may need a stronger custom endpoint.
 
 ## Required GPU-Server Gate Before Real Experiments
