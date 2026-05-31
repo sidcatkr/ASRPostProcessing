@@ -173,7 +173,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             edits_output = gr.JSON(label="Edits")
         with gr.Row():
             preprocess_output = gr.JSON(label="Preprocess")
-            preprocessed_audio_output = gr.Audio(label="Preprocessed audio preview", type="filepath")
+            preprocessed_audio_output = gr.Audio(label="Preprocessed audio preview", type="filepath", format="wav")
             server_output = gr.JSON(label="Model servers")
         with gr.Row():
             gpu_output = gr.JSON(label="Server GPU / VRAM status", value=query_gpu_status())
@@ -445,6 +445,8 @@ def _preprocess_config_from_ui(
 
 
 def _preview_audio_path(preprocess: dict) -> Optional[str]:
+    if isinstance(preprocess, dict) and preprocess.get("steps") and not preprocess.get("applied"):
+        return None
     path = preprocess.get("audio_path") if isinstance(preprocess, dict) else None
     if not path:
         return None

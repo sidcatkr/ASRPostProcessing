@@ -8,6 +8,7 @@ from array import array
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from .config import ExperimentConfig, clamp01
 
@@ -103,62 +104,18 @@ def _noise_reduce(audio_path: str, config: ExperimentConfig, model: str) -> Prep
 
 def _denoise_audio(audio_path: str, config: ExperimentConfig, model_name: str) -> PreprocessResult:
     input_path = Path(audio_path)
-    output_dir = Path(config.output_dir) / "preprocessed"
-    output_dir.mkdir(parents=True, exist_ok=True)
     safe_model = _safe_preprocess_name(model_name)
-    output_path = output_dir / f"{input_path.stem}.{safe_model}.denoised.wav"
+    output_path = _preprocessed_output_path(config, input_path, safe_model, "denoised")
     strength = clamp01(config.noise_reduction_strength)
-    if input_path.suffix.lower() == ".wav":
-        result = _denoise_pcm16_wav(input_path, output_path, model_name, strength)
-        if result is not None:
-            return result
     ffmpeg = ffmpeg_executable()
     if not ffmpeg:
         return PreprocessResult(
             audio_path=audio_path,
             applied=False,
-            warnings=["Noise reduction for this input requires ffmpeg on PATH or 16-bit PCM WAV input."],
+            warnings=["Noise reduction requires ffmpeg or imageio-ffmpeg to create browser-playable preview audio."],
             metadata={"model": model_name, "fallback": "original_audio"},
         )
     return _denoise_with_ffmpeg(ffmpeg, input_path, output_path, model_name, strength)
-
-
-def _denoise_pcm16_wav(input_path: Path, output_path: Path, model_name: str, strength: float) -> PreprocessResult | None:
-    try:
-        with wave.open(str(input_path), "rb") as reader:
-            params = reader.getparams()
-            frames = reader.readframes(reader.getnframes())
-    except (EOFError, wave.Error):
-        return None
-    if params.sampwidth != 2:
-        return None
-    rms = _pcm16_rms(frames)
-    if rms == 0:
-        return PreprocessResult(
-            audio_path=str(input_path),
-            applied=False,
-            warnings=["Input WAV is silent; noise reduction skipped."],
-            metadata={"model": model_name, "processor": "pcm_noise_gate", "rms": rms},
-        )
-    threshold = max(24, int(rms * (0.35 + strength)))
-    attenuation = max(0.05, 1.0 - (0.8 * strength))
-    denoised, attenuated_samples = _pcm16_noise_gate(frames, threshold, attenuation)
-    with wave.open(str(output_path), "wb") as writer:
-        writer.setparams(params)
-        writer.writeframes(denoised)
-    return PreprocessResult(
-        audio_path=str(output_path),
-        applied=True,
-        metadata={
-            "model": model_name,
-            "processor": "pcm_noise_gate",
-            "strength": strength,
-            "input_rms": rms,
-            "threshold": threshold,
-            "attenuation": attenuation,
-            "attenuated_samples": attenuated_samples,
-        },
-    )
 
 
 def _denoise_with_ffmpeg(
@@ -168,20 +125,32 @@ def _denoise_with_ffmpeg(
     model_name: str,
     strength: float,
 ) -> PreprocessResult:
-    noise_floor = -60.0 + (35.0 * strength)
+    noise_reduction_db = 4.0 + (12.0 * strength)
+    noise_floor = -60.0 + (18.0 * strength)
+    gain_smooth = int(8 + (24 * strength))
+    audio_filter = (
+        f"afftdn=nr={noise_reduction_db:.1f}:nf={noise_floor:.1f}:gs={gain_smooth},"
+        "aresample=async=1:first_pts=0"
+    )
     command = [
         ffmpeg,
         "-y",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-fflags",
+        "+genpts",
         "-i",
         str(input_path),
+        "-map",
+        "0:a:0",
         "-vn",
         "-af",
-        f"afftdn=nf={noise_floor:.1f}",
+        audio_filter,
         "-acodec",
         "pcm_s16le",
+        "-f",
+        "wav",
         str(output_path),
     ]
     try:
@@ -200,16 +169,17 @@ def _denoise_with_ffmpeg(
             warnings=[f"Noise reduction did not create {output_path}."],
             metadata={"model": model_name, "processor": "ffmpeg_afftdn", "fallback": "original_audio"},
         )
-    return PreprocessResult(
-        audio_path=str(output_path),
-        applied=True,
-        metadata={
-            "model": model_name,
-            "processor": "ffmpeg_afftdn",
-            "strength": strength,
-            "noise_floor_db": noise_floor,
-        },
-    )
+    metadata = {
+        "model": model_name,
+        "processor": "ffmpeg_afftdn",
+        "strength": strength,
+        "noise_reduction_db": noise_reduction_db,
+        "noise_floor_db": noise_floor,
+        "gain_smooth": gain_smooth,
+        "output_format": "wav_pcm_s16le",
+    }
+    metadata.update(_wav_metadata(output_path))
+    return PreprocessResult(audio_path=str(output_path), applied=True, metadata=metadata)
 
 
 def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResult:
@@ -228,9 +198,7 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
             warnings=["Volume normalization currently supports PCM WAV input only."],
             metadata={"model": "volume_normalization"},
         )
-    output_dir = Path(config.output_dir) / "preprocessed"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{input_path.stem}.normalized.wav"
+    output_path = _preprocessed_output_path(config, input_path, "normalized")
     strength = clamp01(config.volume_normalization_strength)
     try:
         with wave.open(str(input_path), "rb") as reader:
@@ -298,20 +266,26 @@ def _convert_audio_to_pcm16_wav(input_path: Path, config: ExperimentConfig, tag:
     ffmpeg = ffmpeg_executable()
     if not ffmpeg:
         return None
-    output_dir = Path(config.output_dir) / "preprocessed"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{input_path.stem}.{tag}.wav"
+    output_path = _preprocessed_output_path(config, input_path, tag)
     command = [
         ffmpeg,
         "-y",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-fflags",
+        "+genpts",
         "-i",
         str(input_path),
+        "-map",
+        "0:a:0",
         "-vn",
+        "-af",
+        "aresample=async=1:first_pts=0",
         "-acodec",
         "pcm_s16le",
+        "-f",
+        "wav",
         str(output_path),
     ]
     try:
@@ -333,9 +307,34 @@ def ffmpeg_executable() -> str | None:
         return None
 
 
+def _wav_metadata(path: Path) -> Dict[str, Any]:
+    try:
+        with wave.open(str(path), "rb") as reader:
+            frames = reader.getnframes()
+            rate = reader.getframerate()
+            return {
+                "channels": reader.getnchannels(),
+                "sample_width": reader.getsampwidth(),
+                "sample_rate": rate,
+                "frames": frames,
+                "duration_seconds": frames / float(rate) if rate else 0.0,
+            }
+    except Exception:
+        return {}
+
+
 def _safe_preprocess_name(value: str) -> str:
     normalized = (value or "preprocess").lower().replace("-", "_")
     return "".join(char if char.isalnum() or char == "_" else "_" for char in normalized)
+
+
+def _preprocessed_output_path(config: ExperimentConfig, input_path: Path, *parts: str) -> Path:
+    output_dir = Path(config.output_dir) / "preprocessed"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_preprocess_name(input_path.stem)
+    suffix = ".".join(_safe_preprocess_name(part) for part in parts if part)
+    token = uuid4().hex[:10]
+    return output_dir / f"{stem}.{suffix}.{token}.wav"
 
 
 def _pcm16_rms(frames: bytes) -> int:
@@ -356,19 +355,6 @@ def _pcm16_mul(frames: bytes, factor: float) -> tuple[bytes, int]:
             clipped += 1
         samples[index] = clipped_value
     return samples.tobytes(), clipped
-
-
-def _pcm16_noise_gate(frames: bytes, threshold: int, attenuation: float) -> tuple[bytes, int]:
-    samples = _pcm16_samples(frames)
-    attenuated = 0
-    for index, sample in enumerate(samples):
-        if abs(sample) > threshold:
-            continue
-        value = int(round(sample * attenuation))
-        if value != sample:
-            attenuated += 1
-        samples[index] = value
-    return samples.tobytes(), attenuated
 
 
 def _pcm16_samples(frames: bytes) -> array:

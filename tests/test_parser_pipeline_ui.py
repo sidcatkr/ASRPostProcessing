@@ -216,7 +216,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             try:
                 os.chdir(tmp)
                 audio = Path(tmp) / "sample.wav"
-                _write_pcm16_wav(audio, [40, -40, 1400, -1400])
+                _write_pcm16_wav(audio, [40, -40, 1400, -1400] * 4000)
                 preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
                     str(audio),
                     None,
@@ -230,9 +230,23 @@ class ParserPipelineUiTest(unittest.TestCase):
                 self.assertIsNotNone(preview_path)
                 self.assertTrue(Path(preview_path).exists())
                 self.assertTrue(preprocess["applied"])
+                self.assertEqual(preprocess["steps"][0]["metadata"]["processor"], "ffmpeg_afftdn")
+                self.assertGreater(preprocess["steps"][0]["metadata"]["duration_seconds"], 0.9)
                 self.assertIn("Preprocessed audio ready", status)
                 self.assertNotIn("No preprocessing", status)
                 self.assertNotIn("command", status.lower())
+                second_preview_path, second_preprocess, _second_status = preview_preprocessed_audio_from_ui(
+                    str(audio),
+                    None,
+                    True,
+                    "RNNoise",
+                    0.5,
+                    False,
+                    0.0,
+                    -20.0,
+                )
+                self.assertTrue(second_preprocess["applied"])
+                self.assertNotEqual(preview_path, second_preview_path)
             finally:
                 os.chdir(current)
 
