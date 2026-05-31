@@ -33,7 +33,8 @@ Use manual serving only when you want to pre-warm models before opening the UI, 
 CUDA_VISIBLE_DEVICES=0 qwen-asr-serve Qwen/Qwen3-ASR-1.7B \
   --host 0.0.0.0 \
   --port 18000 \
-  --gpu-memory-utilization 0.7
+  --gpu-memory-utilization 0.7 \
+  --max-model-len 32768
 ```
 
 ```bash
@@ -44,7 +45,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --max-model-len 8192
 ```
 
-The post-processing default uses 8K context because transcript chunks are short and the tested csgpu nodes expose 16 GB RTX 5000 GPUs. Increase `--max-model-len` through `post_server_command` only when the target GPU has enough VRAM.
+The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. The post-processing default uses 8K context because transcript chunks are short. Increase `--max-model-len` through custom server commands only when the target GPU has enough VRAM.
 
 For manual parallel warmup, use:
 

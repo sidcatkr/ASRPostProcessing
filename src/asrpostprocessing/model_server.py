@@ -283,6 +283,8 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
             str(spec.port),
             "--gpu-memory-utilization",
             "0.7",
+            "--max-model-len",
+            "32768",
         ]
     return [
         "vllm",

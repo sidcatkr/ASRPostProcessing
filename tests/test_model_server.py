@@ -29,6 +29,8 @@ class ModelServerTest(unittest.TestCase):
             post_command = _default_command(specs[1])
             self.assertEqual(asr_command[0], "qwen-asr-serve")
             self.assertIn("--gpu-memory-utilization", asr_command)
+            self.assertIn("--max-model-len", asr_command)
+            self.assertIn("32768", asr_command)
             self.assertIn("vllm", post_command)
             self.assertIn("--dtype", post_command)
             self.assertIn("8192", post_command)
