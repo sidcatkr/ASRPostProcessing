@@ -30,18 +30,40 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 reference_file = gr.File(label="Reference file (.txt)", file_types=[".txt"])
 
         with gr.Accordion("Pipeline controls", open=True):
-            with gr.Row():
-                enable_preprocess = gr.Checkbox(label="Preprocess", value=initial_config.enable_preprocess)
-                preprocess_model = gr.Dropdown(
-                    ["none", "volume_normalization", "RNNoise", "BS-RoFormer"],
-                    value=initial_config.preprocess_model,
-                    label="Preprocess model",
-                )
-                preprocess_strength = gr.Slider(0, 1, value=initial_config.preprocess_strength, step=0.05, label="Preprocess strength")
-            with gr.Row():
-                enable_keyword_bias = gr.Checkbox(label="Keyword Bias", value=initial_config.enable_keyword_bias)
-                keyword_bias_weight = gr.Slider(0, 1, value=initial_config.keyword_bias_weight, step=0.25, label="Keyword Bias weight")
-                keywords = gr.Textbox(label="Keywords", value=", ".join(initial_config.keywords), placeholder="Claude Code, Boolean, for문")
+            with gr.Accordion("ASR Keyword Bias", open=True):
+                with gr.Row():
+                    enable_keyword_bias = gr.Checkbox(label="Keyword Bias", value=initial_config.enable_keyword_bias)
+                    keyword_bias_weight = gr.Slider(0, 1, value=initial_config.keyword_bias_weight, step=0.25, label="Keyword Bias weight")
+                    keywords = gr.Textbox(label="Keywords", value=", ".join(initial_config.keywords), placeholder="Claude Code, Boolean, for문")
+            with gr.Accordion("Pre Process", open=True):
+                with gr.Row():
+                    enable_noise_reduction = gr.Checkbox(label="Noise reduction", value=initial_config.enable_noise_reduction)
+                    noise_reduction_model = gr.Dropdown(
+                        ["none", "RNNoise", "BS-RoFormer"],
+                        value=initial_config.noise_reduction_model,
+                        label="Noise reduction model",
+                    )
+                    noise_reduction_strength = gr.Slider(
+                        0,
+                        1,
+                        value=initial_config.noise_reduction_strength,
+                        step=0.05,
+                        label="Noise reduction strength",
+                    )
+                with gr.Row():
+                    enable_volume_normalization = gr.Checkbox(label="Volume normalization", value=initial_config.enable_volume_normalization)
+                    volume_normalization_strength = gr.Slider(
+                        0,
+                        1,
+                        value=initial_config.volume_normalization_strength,
+                        step=0.05,
+                        label="Volume normalization strength",
+                    )
+                    volume_target_dbfs = gr.Slider(-40, -6, value=initial_config.volume_target_dbfs, step=1, label="Volume target dBFS")
+                with gr.Row():
+                    rnnoise_command = gr.Textbox(value=initial_config.rnnoise_command, label="RNNoise command")
+                    bs_roformer_command = gr.Textbox(value=initial_config.bs_roformer_command, label="BS-RoFormer command")
+                    ffmpeg_command = gr.Textbox(value=initial_config.ffmpeg_command, label="FFmpeg command for non-WAV")
             with gr.Row():
                 enable_llm = gr.Checkbox(label="LLM post-process", value=initial_config.enable_llm_postprocess)
                 postprocess_strength = gr.Slider(0, 1, value=initial_config.postprocess_strength, step=0.05, label="Post-process strength")
@@ -88,7 +110,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_server_command = gr.Textbox(
                     value=initial_config.asr_server_command,
                     label="Custom ASR server command",
-                    placeholder="Leave empty to use vllm serve {model} --host {host} --port {port}",
+                    placeholder="Leave empty to use qwen-asr-serve {model} --host {host} --port {port}",
                 )
                 post_server_command = gr.Textbox(
                     value=initial_config.post_server_command,
@@ -98,7 +120,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             with gr.Row():
                 asr_backend = gr.Dropdown(
                     [
-                        ("vLLM chat/audio API", "vllm_chat"),
+                        ("Qwen ASR OpenAI-compatible server", "vllm_chat"),
                         ("qwen-asr package via vLLM", "qwen_asr_vllm"),
                         ("qwen-asr package via Transformers", "qwen_asr_transformers"),
                         ("Mock ASR for UI testing", "mock"),
@@ -124,6 +146,9 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         with gr.Row():
             metrics_output = gr.JSON(label="Metrics")
             edits_output = gr.JSON(label="Edits")
+        with gr.Row():
+            preprocess_output = gr.JSON(label="Preprocess")
+            server_output = gr.JSON(label="Model servers")
 
         run_button.click(
             fn=run_from_ui_stream,
@@ -131,12 +156,18 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 audio,
                 reference_text,
                 reference_file,
-                enable_preprocess,
-                preprocess_model,
-                preprocess_strength,
                 enable_keyword_bias,
                 keyword_bias_weight,
                 keywords,
+                enable_noise_reduction,
+                noise_reduction_model,
+                noise_reduction_strength,
+                enable_volume_normalization,
+                volume_normalization_strength,
+                volume_target_dbfs,
+                rnnoise_command,
+                bs_roformer_command,
+                ffmpeg_command,
                 enable_llm,
                 postprocess_strength,
                 enable_rag,
@@ -164,7 +195,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_backend,
                 post_backend,
             ],
-            outputs=[raw_output, corrected_output, diff_output, metrics_output, edits_output, progress_output],
+            outputs=[raw_output, corrected_output, diff_output, metrics_output, edits_output, preprocess_output, server_output, progress_output],
         )
 
     demo.queue()
@@ -172,7 +203,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
 
 
 def run_from_ui_stream(*args):
-    yield "", "", "", {}, [], "Preparing run and checking model servers..."
+    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers..."
     yield run_from_ui(*args)
 
 
@@ -180,12 +211,18 @@ def run_from_ui(
     audio_path: Optional[str],
     reference_text: str,
     reference_file: Any,
-    enable_preprocess: bool,
-    preprocess_model: str,
-    preprocess_strength: float,
     enable_keyword_bias: bool,
     keyword_bias_weight: float,
     keywords: str,
+    enable_noise_reduction: bool,
+    noise_reduction_model: str,
+    noise_reduction_strength: float,
+    enable_volume_normalization: bool,
+    volume_normalization_strength: float,
+    volume_target_dbfs: float,
+    rnnoise_command: str,
+    bs_roformer_command: str,
+    ffmpeg_command: str,
     enable_llm: bool,
     postprocess_strength: float,
     enable_rag: bool,
@@ -212,17 +249,17 @@ def run_from_ui(
     post_server_command: str,
     asr_backend: str,
     post_backend: str,
-) -> Tuple[str, str, str, dict, list, str]:
+) -> Tuple[str, str, str, dict, list, dict, list, str]:
     if not audio_path:
-        return "", "", "", {}, [], "No audio input provided."
+        return "", "", "", {}, [], {}, [], "No audio input provided."
     reference = _read_reference_from_ui(reference_text, reference_file)
     config = ExperimentConfig(
         asr_model=asr_model or "Qwen/Qwen3-ASR-1.7B",
         post_model=post_model or "Qwen/Qwen3.5-9B",
         asr_backend=asr_backend,
         post_backend=post_backend,
-        asr_base_url=asr_base_url or "http://127.0.0.1:8000/v1",
-        post_base_url=post_base_url or "http://127.0.0.1:8001/v1",
+        asr_base_url=asr_base_url or "http://127.0.0.1:18000/v1",
+        post_base_url=post_base_url or "http://127.0.0.1:18001/v1",
         auto_start_model_servers=bool(auto_start_model_servers),
         server_start_timeout_s=float(server_start_timeout_s),
         server_log_dir=server_log_dir or "outputs/model_servers",
@@ -232,9 +269,18 @@ def run_from_ui(
         post_server_host=post_server_host or "0.0.0.0",
         asr_server_command=asr_server_command or "",
         post_server_command=post_server_command or "",
-        enable_preprocess=bool(enable_preprocess),
-        preprocess_model=preprocess_model,
-        preprocess_strength=float(preprocess_strength),
+        enable_preprocess=False,
+        preprocess_model="none",
+        preprocess_strength=0.0,
+        enable_noise_reduction=bool(enable_noise_reduction),
+        noise_reduction_model=noise_reduction_model or "none",
+        noise_reduction_strength=float(noise_reduction_strength),
+        enable_volume_normalization=bool(enable_volume_normalization),
+        volume_normalization_strength=float(volume_normalization_strength),
+        volume_target_dbfs=float(volume_target_dbfs),
+        rnnoise_command=rnnoise_command or "",
+        bs_roformer_command=bs_roformer_command or "",
+        ffmpeg_command=ffmpeg_command or "",
         enable_keyword_bias=bool(enable_keyword_bias),
         keyword_bias_weight=float(keyword_bias_weight),
         keywords=_split_keywords(keywords),
@@ -262,7 +308,7 @@ def run_from_ui(
             )
         elif auto_start_model_servers:
             hint = "\n\nAutomatic model server startup is enabled. Check the server log path in the error above."
-        return "", "", "", {}, [], f"Run failed: {exc}{hint}"
+        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}"
     server_lines = _format_server_statuses(output.server_statuses)
     return (
         output.raw.text,
@@ -270,6 +316,8 @@ def run_from_ui(
         output.diff_html or make_diff_html(output.raw.text, output.correction.corrected_text),
         output.metrics.to_dict(),
         [edit.to_dict() for edit in output.correction.edits],
+        output.preprocess,
+        output.server_statuses,
         (
             f"Run ID: {output.run_id}\n"
             f"{server_lines}"

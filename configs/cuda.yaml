@@ -16,6 +16,13 @@ post_server_command: ""
 enable_preprocess: false
 preprocess_model: none
 preprocess_strength: 0.0
+enable_noise_reduction: false
+noise_reduction_model: none
+noise_reduction_strength: 0.0
+enable_volume_normalization: false
+volume_normalization_strength: 0.0
+volume_target_dbfs: -20.0
+ffmpeg_command: ""
 rnnoise_command: ""
 bs_roformer_command: ""
 enable_keyword_bias: true

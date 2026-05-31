@@ -99,6 +99,12 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enable-search", action="store_true")
     parser.add_argument("--search-provider", choices=["duckduckgo", "endpoint", "none"])
     parser.add_argument("--search-endpoint")
+    parser.add_argument("--enable-noise-reduction", action="store_true")
+    parser.add_argument("--noise-reduction-model", choices=["none", "RNNoise", "BS-RoFormer", "rnnoise", "bs_roformer"])
+    parser.add_argument("--noise-reduction-strength", type=float)
+    parser.add_argument("--enable-volume-normalization", action="store_true")
+    parser.add_argument("--volume-normalization-strength", type=float)
+    parser.add_argument("--volume-target-dbfs", type=float)
     parser.add_argument("--auto-start-model-servers", action="store_true")
     parser.add_argument("--no-auto-start-model-servers", action="store_true")
 
@@ -115,6 +121,10 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "rag_strength": args.rag_strength,
         "search_provider": args.search_provider,
         "search_endpoint": args.search_endpoint,
+        "noise_reduction_model": args.noise_reduction_model,
+        "noise_reduction_strength": args.noise_reduction_strength,
+        "volume_normalization_strength": args.volume_normalization_strength,
+        "volume_target_dbfs": args.volume_target_dbfs,
     }
     if args.auto_start_model_servers:
         overrides["auto_start_model_servers"] = True
@@ -130,4 +140,8 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         overrides["rag_files"] = args.rag_files
     if args.enable_search:
         overrides["enable_search"] = True
+    if args.enable_noise_reduction:
+        overrides["enable_noise_reduction"] = True
+    if args.enable_volume_normalization:
+        overrides["enable_volume_normalization"] = True
     return overrides

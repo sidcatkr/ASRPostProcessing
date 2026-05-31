@@ -35,15 +35,19 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
     if _needs_nvidia(config):
         checks.append(_check_nvidia())
     if config.auto_start_model_servers and _needs_nvidia(config):
-        checks.append(_check_vllm_executable())
+        if (config.asr_backend or "").lower() in {"vllm", "vllm_chat", "openai_audio"}:
+            checks.append(_check_executable("qwen-asr-serve", "auto-start ASR server requires qwen-asr-serve"))
+        if bool(config.enable_llm_postprocess) and (config.post_backend or "").lower() in {"vllm", "vllm_openai", "openai"}:
+            checks.append(_check_executable("vllm", "auto-start post-processing server requires vllm serve"))
     if config.asr_backend.startswith("qwen_asr"):
         checks.append(_check_package("qwen_asr", required=True))
     if config.enable_rag and config.rag_embedding_backend == "faiss":
         checks.append(_check_package("faiss", required=True))
         checks.append(_check_package("sentence_transformers", required=True))
-    if config.enable_preprocess and config.preprocess_model.lower() == "rnnoise":
+    noise_model = (config.noise_reduction_model or config.preprocess_model or "").lower()
+    if (config.enable_noise_reduction or config.enable_preprocess) and noise_model == "rnnoise":
         checks.append(_check_external_preprocess("rnnoise", config.rnnoise_command, "ASRPP_RNNOISE_COMMAND"))
-    if config.enable_preprocess and config.preprocess_model.lower() in {"bs-roformer", "bs_roformer", "bsroformer"}:
+    if (config.enable_noise_reduction or config.enable_preprocess) and noise_model in {"bs-roformer", "bs_roformer", "bsroformer"}:
         checks.append(_check_external_preprocess("bs_roformer", config.bs_roformer_command, "ASRPP_BS_ROFORMER_COMMAND"))
     if check_endpoints:
         checks.append(_check_openai_endpoint("asr_endpoint", config.asr_base_url))
@@ -84,11 +88,11 @@ def _check_nvidia() -> DoctorCheck:
     return DoctorCheck("nvidia-smi", "ok", detail)
 
 
-def _check_vllm_executable() -> DoctorCheck:
-    executable = shutil.which("vllm")
+def _check_executable(name: str, missing_detail: str) -> DoctorCheck:
+    executable = shutil.which(name)
     if not executable:
-        return DoctorCheck("vllm", "fail", "not found on PATH; auto-start model servers requires vllm serve")
-    return DoctorCheck("vllm", "ok", executable)
+        return DoctorCheck(name, "fail", f"not found on PATH; {missing_detail}")
+    return DoctorCheck(name, "ok", executable)
 
 
 def _check_output_dirs(config: ExperimentConfig) -> DoctorCheck:

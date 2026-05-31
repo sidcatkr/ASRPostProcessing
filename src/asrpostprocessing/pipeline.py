@@ -29,6 +29,7 @@ class PipelineOutput:
     output_dir: str
     artifacts: Dict[str, str]
     server_statuses: List[Dict[str, Any]]
+    preprocess: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,6 +40,7 @@ class PipelineOutput:
             "output_dir": self.output_dir,
             "artifacts": self.artifacts,
             "server_statuses": self.server_statuses,
+            "preprocess": self.preprocess,
         }
 
 
@@ -75,6 +77,7 @@ class PipelineRunner:
         logger = RunLogger(self.config, run_id)
         artifacts = {
             "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses))),
+            "preprocess": str(logger.write_json("preprocess.json", preprocess_result.to_dict())),
             "metrics": str(logger.write_json("metrics.json", metrics.to_dict())),
             "edits": str(logger.write_edits(correction.edits)),
             "config": str(logger.write_config()),
@@ -89,6 +92,7 @@ class PipelineRunner:
             output_dir=str(logger.output_dir),
             artifacts=artifacts,
             server_statuses=server_statuses,
+            preprocess=preprocess_result.to_dict(),
         )
 
     def _postprocess(self, raw: TranscriptResult) -> CorrectionResult:
@@ -143,12 +147,8 @@ class PipelineRunner:
             "correction": correction.to_dict(),
             "metrics": metrics.to_dict(),
             "server_statuses": server_statuses,
-            "preprocess": {
-                "audio_path": preprocess_result.audio_path,
-                "applied": preprocess_result.applied,
-                "warnings": preprocess_result.warnings,
-                "metadata": preprocess_result.metadata,
-            },
+            "preprocess": preprocess_result.to_dict(),
+            "config": self.config.to_dict(),
         }
 
 

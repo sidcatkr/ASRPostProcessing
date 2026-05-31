@@ -12,19 +12,19 @@ pip install -e ".[rag]"
 pip install -U "qwen-asr[vllm]"
 ```
 
-`qwen-asr[vllm]` installs the compatible vLLM/CUDA runtime used by the default model-server startup path. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
+`qwen-asr[vllm]` installs `qwen-asr-serve`, which is the required server wrapper for Qwen3-ASR. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
 
 ## Serve Models
 
-`configs/cuda.yaml` enables `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start both vLLM servers if `/v1/models` is not already ready. It uses ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
+`configs/cuda.yaml` enables `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start the ASR server and post-processing LLM server if `/v1/models` is not already ready. It uses ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
 
-Use manual serving only when you want to pre-warm models before opening the UI, or when you need custom vLLM flags.
+Use manual serving only when you want to pre-warm models before opening the UI, or when you need custom serving flags.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-ASR-1.7B \
+CUDA_VISIBLE_DEVICES=0 qwen-asr-serve Qwen/Qwen3-ASR-1.7B \
   --host 0.0.0.0 \
   --port 18000 \
-  --dtype float16
+  --gpu-memory-utilization 0.7
 ```
 
 ```bash
@@ -32,10 +32,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --host 0.0.0.0 \
   --port 18001 \
   --dtype float16 \
-  --tensor-parallel-size 1 \
-  --max-model-len 8192 \
-  --reasoning-parser qwen3 \
-  --language-model-only
+  --max-model-len 8192
 ```
 
 The post-processing default uses 8K context because transcript chunks are short and the tested csgpu nodes expose 16 GB RTX 5000 GPUs. Increase `--max-model-len` through `post_server_command` only when the target GPU has enough VRAM.
@@ -67,9 +64,9 @@ asrpp run \
 ## Notes
 
 - Keyword Bias is implemented as ASR chat prompt/context because Qwen3-ASR does not expose a documented hotword decoding parameter.
-- `auto_start_model_servers` only manages external vLLM/OpenAI-compatible backends. The `qwen_asr_*` backends load through the Python package instead.
+- `auto_start_model_servers` starts Qwen3-ASR through `qwen-asr-serve` and the post-processing model through `vllm serve`. The `qwen_asr_*` backends load through the Python package instead.
 - Override `asr_server_command` or `post_server_command` when the server needs cluster-specific launch flags. Command templates may use `{model}`, `{host}`, `{port}`, `{base_url}`, `{gpu}`, and `{log_path}`.
-- Configure `rnnoise_command` or `bs_roformer_command` when using those preprocessors. Command templates can use `{input}`, `{output}`, and `{strength}`.
+- Noise reduction and volume normalization are separate experimental variables. Configure `rnnoise_command` or `bs_roformer_command` when using those preprocessors. Command templates can use `{input}`, `{output}`, and `{strength}`.
 - Search defaults to DuckDuckGo Instant Answer. Set `search_provider: endpoint` and configure `search_endpoint` if you need a stronger or internal search service.
 - For timestamp-aware chunking, serve Qwen3-ASR with Qwen3-ForcedAligner and return timestamp metadata through the ASR backend.
 - Search is optional and cached under `outputs/search_cache` for reproducible comparisons.

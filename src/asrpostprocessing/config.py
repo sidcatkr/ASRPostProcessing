@@ -13,8 +13,8 @@ class ExperimentConfig:
     post_model: str = "Qwen/Qwen3.5-9B"
     asr_backend: str = "vllm_chat"
     post_backend: str = "vllm_openai"
-    asr_base_url: str = "http://127.0.0.1:8000/v1"
-    post_base_url: str = "http://127.0.0.1:8001/v1"
+    asr_base_url: str = "http://127.0.0.1:18000/v1"
+    post_base_url: str = "http://127.0.0.1:18001/v1"
     request_timeout_s: float = 120.0
     language: str = "ko"
     auto_start_model_servers: bool = False
@@ -30,6 +30,13 @@ class ExperimentConfig:
     enable_preprocess: bool = False
     preprocess_model: str = "none"
     preprocess_strength: float = 0.0
+    enable_noise_reduction: bool = False
+    noise_reduction_model: str = "none"
+    noise_reduction_strength: float = 0.0
+    enable_volume_normalization: bool = False
+    volume_normalization_strength: float = 0.0
+    volume_target_dbfs: float = -20.0
+    ffmpeg_command: str = ""
     rnnoise_command: str = ""
     bs_roformer_command: str = ""
 
@@ -71,6 +78,8 @@ class ExperimentConfig:
         filtered = {key: value for key, value in mapping.items() if key in known}
         config = cls(**filtered)
         config.preprocess_strength = clamp01(config.preprocess_strength)
+        config.noise_reduction_strength = clamp01(config.noise_reduction_strength)
+        config.volume_normalization_strength = clamp01(config.volume_normalization_strength)
         config.keyword_bias_weight = clamp01(config.keyword_bias_weight)
         config.postprocess_strength = clamp01(config.postprocess_strength)
         config.rag_strength = clamp01(config.rag_strength)

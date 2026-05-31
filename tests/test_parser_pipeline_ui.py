@@ -35,22 +35,29 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("Claude Code", output.correction.corrected_text)
             self.assertTrue((Path(output.output_dir) / "result.json").exists())
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
+            self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
             self.assertTrue((Path(tmp) / "runs" / "test-run" / "metrics.tsv").exists())
 
     def test_ui_event_smoke(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
             audio.write_bytes(b"mock")
-            raw, corrected, diff, metrics, edits, status = run_from_ui(
+            raw, corrected, diff, metrics, edits, preprocess, servers, status = run_from_ui(
                 str(audio),
                 "Claude Code로 for문 작성 보조",
                 None,
-                False,
-                "none",
-                0.0,
                 True,
                 0.5,
                 "Claude Code, for문",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                "",
+                "",
+                "",
                 True,
                 0.5,
                 False,
@@ -64,8 +71,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "",
                 "Qwen/Qwen3-ASR-1.7B",
                 "Qwen/Qwen3.5-9B",
-                "http://127.0.0.1:8000/v1",
-                "http://127.0.0.1:8001/v1",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
                 False,
                 60,
                 str(Path(tmp) / "server_logs"),
@@ -83,18 +90,26 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("Run ID:", status)
             self.assertIn("cer_normalized_no_space", metrics)
             self.assertIsInstance(edits, list)
+            self.assertFalse(preprocess["applied"])
+            self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
 
     def test_ui_vllm_failure_has_actionable_hint(self):
-        raw, corrected, diff, metrics, edits, status = run_from_ui(
+        raw, corrected, diff, metrics, edits, preprocess, servers, status = run_from_ui(
             "missing.wav",
             "",
             None,
+            False,
+            0.0,
+            "",
             False,
             "none",
             0.0,
             False,
             0.0,
+            -20.0,
+            "",
+            "",
             "",
             True,
             0.5,
@@ -124,6 +139,8 @@ class ParserPipelineUiTest(unittest.TestCase):
             "vllm_openai",
         )
         self.assertEqual(raw, "")
+        self.assertEqual(preprocess, {})
+        self.assertEqual(servers, [])
         self.assertIn("Run failed:", status)
         self.assertIn("For UI-only testing", status)
 

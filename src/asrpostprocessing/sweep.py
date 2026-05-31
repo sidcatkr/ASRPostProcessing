@@ -13,10 +13,13 @@ from .pipeline import PipelineRunner, read_reference
 DEFAULT_KEYWORD_WEIGHTS = [0.0, 0.25, 0.5, 0.75, 1.0]
 DEFAULT_RAG_STRENGTHS = [0.0, 0.25, 0.5, 0.75, 1.0]
 DEFAULT_POST_STRENGTHS = [0.25, 0.5, 0.75]
+DEFAULT_PREPROCESS_STRENGTHS = [0.25, 0.5, 0.75]
 
 CONDITIONS = [
     "A_raw_asr",
-    "B_preprocess_raw_asr",
+    "B1_noise_reduction_raw_asr",
+    "B2_volume_normalization_raw_asr",
+    "B3_noise_volume_raw_asr",
     "C_llm_only",
     "D_rag_llm",
     "E_keyword_bias_llm",
@@ -31,6 +34,8 @@ def run_sweep(
     keyword_weights: Optional[Iterable[float]] = None,
     rag_strengths: Optional[Iterable[float]] = None,
     post_strengths: Optional[Iterable[float]] = None,
+    noise_strengths: Optional[Iterable[float]] = None,
+    volume_strengths: Optional[Iterable[float]] = None,
 ) -> Path:
     rows = _read_manifest(manifest_path)
     summary_dir = Path(base_config.output_dir)
@@ -39,12 +44,16 @@ def run_sweep(
     keyword_weights = list(keyword_weights or DEFAULT_KEYWORD_WEIGHTS)
     rag_strengths = list(rag_strengths or DEFAULT_RAG_STRENGTHS)
     post_strengths = list(post_strengths or DEFAULT_POST_STRENGTHS)
+    noise_strengths = list(noise_strengths or DEFAULT_PREPROCESS_STRENGTHS)
+    volume_strengths = list(volume_strengths or DEFAULT_PREPROCESS_STRENGTHS)
     with summary_path.open("w", newline="", encoding="utf-8") as handle:
         fieldnames = [
             "run_id",
             "condition",
             "audio",
             "keyword_bias_weight",
+            "noise_reduction_strength",
+            "volume_normalization_strength",
             "rag_strength",
             "postprocess_strength",
             "cer_normalized_no_space",
@@ -52,6 +61,7 @@ def run_sweep(
             "delta_cer",
             "delta_wer",
             "semantic_similarity",
+            "risk",
             "latency_ms",
             "output_dir",
         ]
@@ -59,8 +69,22 @@ def run_sweep(
         writer.writeheader()
         summary_rows: List[Dict[str, object]] = []
         for row in rows:
-            for condition, keyword_weight, rag_strength, post_strength in _condition_grid(keyword_weights, rag_strengths, post_strengths):
-                config = _config_for_condition(base_config, condition, keyword_weight, rag_strength, post_strength)
+            for condition, keyword_weight, rag_strength, post_strength, noise_strength, volume_strength in _condition_grid(
+                keyword_weights,
+                rag_strengths,
+                post_strengths,
+                noise_strengths,
+                volume_strengths,
+            ):
+                config = _config_for_condition(
+                    base_config,
+                    condition,
+                    keyword_weight,
+                    rag_strength,
+                    post_strength,
+                    noise_strength,
+                    volume_strength,
+                )
                 reference = row.get("reference_text") or read_reference(row.get("reference"))
                 output = PipelineRunner(config).run(
                     audio_path=row["audio"],
@@ -73,6 +97,8 @@ def run_sweep(
                     "condition": condition,
                     "audio": row["audio"],
                     "keyword_bias_weight": keyword_weight,
+                    "noise_reduction_strength": noise_strength,
+                    "volume_normalization_strength": volume_strength,
                     "rag_strength": rag_strength,
                     "postprocess_strength": post_strength,
                     "cer_normalized_no_space": metrics.get("cer_normalized_no_space"),
@@ -80,6 +106,7 @@ def run_sweep(
                     "delta_cer": metrics.get("delta_cer"),
                     "delta_wer": metrics.get("delta_wer"),
                     "semantic_similarity": metrics.get("semantic_similarity"),
+                    "risk": output.correction.risk,
                     "latency_ms": metrics.get("latency_ms"),
                     "output_dir": output.output_dir,
                 }
@@ -104,19 +131,26 @@ def _condition_grid(
     keyword_weights: Iterable[float],
     rag_strengths: Iterable[float],
     post_strengths: Iterable[float],
-) -> Iterable[Tuple[str, float, float, float]]:
-    yield ("A_raw_asr", 0.0, 0.0, 0.0)
-    yield ("B_preprocess_raw_asr", 0.0, 0.0, 0.0)
+    noise_strengths: Iterable[float],
+    volume_strengths: Iterable[float],
+) -> Iterable[Tuple[str, float, float, float, float, float]]:
+    yield ("A_raw_asr", 0.0, 0.0, 0.0, 0.0, 0.0)
+    for noise_strength in noise_strengths:
+        yield ("B1_noise_reduction_raw_asr", 0.0, 0.0, 0.0, float(noise_strength), 0.0)
+    for volume_strength in volume_strengths:
+        yield ("B2_volume_normalization_raw_asr", 0.0, 0.0, 0.0, 0.0, float(volume_strength))
+    for noise_strength, volume_strength in itertools.product(noise_strengths, volume_strengths):
+        yield ("B3_noise_volume_raw_asr", 0.0, 0.0, 0.0, float(noise_strength), float(volume_strength))
     for post_strength in post_strengths:
-        yield ("C_llm_only", 0.0, 0.0, float(post_strength))
+        yield ("C_llm_only", 0.0, 0.0, float(post_strength), 0.0, 0.0)
     for rag_strength, post_strength in itertools.product(rag_strengths, post_strengths):
-        yield ("D_rag_llm", 0.0, float(rag_strength), float(post_strength))
+        yield ("D_rag_llm", 0.0, float(rag_strength), float(post_strength), 0.0, 0.0)
     for keyword_weight, post_strength in itertools.product(keyword_weights, post_strengths):
-        yield ("E_keyword_bias_llm", float(keyword_weight), 0.0, float(post_strength))
+        yield ("E_keyword_bias_llm", float(keyword_weight), 0.0, float(post_strength), 0.0, 0.0)
     for keyword_weight, rag_strength, post_strength in itertools.product(keyword_weights, rag_strengths, post_strengths):
-        yield ("F_keyword_bias_rag_llm", float(keyword_weight), float(rag_strength), float(post_strength))
+        yield ("F_keyword_bias_rag_llm", float(keyword_weight), float(rag_strength), float(post_strength), 0.0, 0.0)
     for rag_strength, post_strength in itertools.product(rag_strengths, post_strengths):
-        yield ("G_search_rag_llm", 0.0, float(rag_strength), float(post_strength))
+        yield ("G_search_rag_llm", 0.0, float(rag_strength), float(post_strength), 0.0, 0.0)
 
 
 def _config_for_condition(
@@ -125,12 +159,17 @@ def _config_for_condition(
     keyword_weight: float,
     rag_strength: float,
     post_strength: float,
+    noise_strength: float,
+    volume_strength: float,
 ) -> ExperimentConfig:
     config = copy.deepcopy(base_config)
-    config.enable_preprocess = condition == "B_preprocess_raw_asr" or (
-        base_config.enable_preprocess and condition != "A_raw_asr"
-    )
-    config.enable_llm_postprocess = condition not in {"A_raw_asr", "B_preprocess_raw_asr"}
+    config.enable_preprocess = False
+    config.enable_noise_reduction = condition in {"B1_noise_reduction_raw_asr", "B3_noise_volume_raw_asr"}
+    config.enable_volume_normalization = condition in {"B2_volume_normalization_raw_asr", "B3_noise_volume_raw_asr"}
+    config.noise_reduction_model = base_config.noise_reduction_model if base_config.noise_reduction_model != "none" else "rnnoise"
+    config.noise_reduction_strength = noise_strength
+    config.volume_normalization_strength = volume_strength
+    config.enable_llm_postprocess = condition not in {"A_raw_asr", "B1_noise_reduction_raw_asr", "B2_volume_normalization_raw_asr", "B3_noise_volume_raw_asr"}
     config.enable_keyword_bias = condition in {"E_keyword_bias_llm", "F_keyword_bias_rag_llm"} and keyword_weight > 0
     config.enable_rag = condition in {"D_rag_llm", "F_keyword_bias_rag_llm", "G_search_rag_llm"} and rag_strength > 0
     config.enable_search = condition == "G_search_rag_llm"
@@ -162,19 +201,26 @@ def analyze_sweep(rows: List[Dict[str, object]]) -> Dict[str, object]:
         if _is_zero_weight_row(row)
     }
     over_bias_cases = []
+    over_rag_cases = []
+    over_postprocess_cases = []
     for row in comparable:
         audio = str(row["audio"])
         raw_cer = raw_by_audio.get(audio)
         cer_value = _metric(row, "cer_normalized_no_space")
         if raw_cer is not None and cer_value is not None and cer_value > raw_cer:
             over_bias_cases.append({**row, "over_bias_reason": "worse_than_raw_asr"})
-            continue
         zero_cer = zero_weight_by_condition.get(_zero_key(row))
         if zero_cer is not None and cer_value is not None and cer_value > zero_cer:
             over_bias_cases.append({**row, "over_bias_reason": "worse_than_zero_weight"})
+        if _metric_or(row, "rag_strength", 0.0) > 0.0 and zero_cer is not None and cer_value is not None and cer_value > zero_cer:
+            over_rag_cases.append({**row, "over_rag_reason": "worse_than_rag_zero"})
+        if _metric_or(row, "postprocess_strength", 0.0) > 0.25 and zero_cer is not None and cer_value is not None and cer_value > zero_cer:
+            over_postprocess_cases.append({**row, "over_postprocess_reason": "worse_than_zero_weight"})
     return {
         "best_by_cer": best,
         "over_bias_cases": over_bias_cases,
+        "over_rag_cases": over_rag_cases,
+        "over_postprocess_cases": over_postprocess_cases,
         "num_rows": len(rows),
         "num_comparable_rows": len(comparable),
     }

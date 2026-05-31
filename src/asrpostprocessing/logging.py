@@ -37,7 +37,15 @@ class RunLogger:
 
     def write_tensorboard_metrics(self, metrics: MetricsResult) -> Path:
         fallback = self.runs_dir / "metrics.tsv"
-        data = metrics.to_dict()
+        data = {
+            **metrics.to_dict(),
+            "keyword_bias_weight": self.config.keyword_bias_weight,
+            "noise_reduction_strength": self.config.noise_reduction_strength,
+            "volume_normalization_strength": self.config.volume_normalization_strength,
+            "rag_strength": self.config.rag_strength,
+            "postprocess_strength": self.config.postprocess_strength,
+            "search_strength": self.config.search_strength,
+        }
         fallback.write_text(
             "\n".join(f"{key}\t{value}" for key, value in sorted(data.items()) if value is not None) + "\n",
             encoding="utf-8",

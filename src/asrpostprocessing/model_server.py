@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -172,7 +173,7 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"Cannot auto-start {spec.name} model server because executable was not found: {exc.filename}. "
-            "Install vLLM on the GPU server or set a custom server command in the UI/config."
+            "Install the required GPU serving package or set a custom server command in the UI/config."
         ) from exc
     _PROCESSES[key] = process
     _emit(status_callback, f"Started {spec.name} model server pid={process.pid}; waiting for {spec.base_url}")
@@ -217,20 +218,30 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
 
 
 def _default_command(spec: ModelServerSpec) -> List[str]:
-    command = ["vllm", "serve", spec.model, "--host", spec.host, "--port", str(spec.port), "--dtype", "float16"]
-    if spec.name == "post":
-        command.extend(
-            [
-                "--tensor-parallel-size",
-                "1",
-                "--max-model-len",
-                "8192",
-                "--reasoning-parser",
-                "qwen3",
-                "--language-model-only",
-            ]
-        )
-    return command
+    if spec.name == "asr":
+        return [
+            "qwen-asr-serve",
+            spec.model,
+            "--host",
+            spec.host,
+            "--port",
+            str(spec.port),
+            "--gpu-memory-utilization",
+            "0.7",
+        ]
+    return [
+        "vllm",
+        "serve",
+        spec.model,
+        "--host",
+        spec.host,
+        "--port",
+        str(spec.port),
+        "--dtype",
+        "float16",
+        "--max-model-len",
+        "8192",
+    ]
 
 
 def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional[subprocess.Popen]) -> None:
@@ -278,7 +289,8 @@ def _tail_log(path: str, max_bytes: int = 4096) -> str:
     if not log_path.exists():
         return "(no log file written)"
     data = log_path.read_bytes()
-    return data[-max_bytes:].decode("utf-8", errors="replace").strip()
+    text = data[-max_bytes:].decode("utf-8", errors="replace").strip()
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 
 
 def _emit(callback: Optional[StatusCallback], message: str) -> None:
