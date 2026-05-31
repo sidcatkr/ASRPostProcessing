@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
@@ -16,6 +17,18 @@ def _install_vllm_compat() -> None:
         if not name.startswith("__"):
             setattr(module, name, getattr(inputs, name))
     sys.modules["vllm.inputs.data"] = module
+
+    try:
+        multimodal_inputs = importlib.import_module("vllm.multimodal.inputs")
+        multimodal_parse = importlib.import_module("vllm.multimodal.parse")
+    except Exception:
+        return
+    for name in ("ModalityData", "MultiModalDataDict"):
+        if not hasattr(multimodal_inputs, name):
+            if hasattr(multimodal_parse, name):
+                setattr(multimodal_inputs, name, getattr(multimodal_parse, name))
+            elif hasattr(inputs, name):
+                setattr(multimodal_inputs, name, getattr(inputs, name))
 
 
 _install_vllm_compat()
