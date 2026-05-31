@@ -76,6 +76,39 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIsInstance(edits, list)
             self.assertIn("diff", diff.lower())
 
+    def test_ui_vllm_failure_has_actionable_hint(self):
+        raw, corrected, diff, metrics, edits, status = run_from_ui(
+            "missing.wav",
+            "",
+            None,
+            False,
+            "none",
+            0.0,
+            False,
+            0.0,
+            "",
+            True,
+            0.5,
+            False,
+            0.0,
+            5,
+            "",
+            None,
+            False,
+            0.0,
+            "duckduckgo",
+            "",
+            "Qwen/Qwen3-ASR-1.7B",
+            "Qwen/Qwen3.5-9B",
+            "http://127.0.0.1:1/v1",
+            "http://127.0.0.1:1/v1",
+            "vllm_chat",
+            "vllm_openai",
+        )
+        self.assertEqual(raw, "")
+        self.assertIn("Run failed:", status)
+        self.assertIn("For UI-only testing", status)
+
 
 if __name__ == "__main__":
     unittest.main()

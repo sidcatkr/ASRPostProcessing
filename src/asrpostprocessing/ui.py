@@ -62,18 +62,31 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 search_endpoint = gr.Textbox(value=initial_config.search_endpoint, label="Search endpoint")
             with gr.Row():
                 asr_model = gr.Textbox(value=initial_config.asr_model, label="ASR model")
-                post_model = gr.Textbox(value=initial_config.post_model, label="Post model")
+                post_model = gr.Textbox(value=initial_config.post_model, label="Post-processing LLM model")
             with gr.Row():
                 asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="ASR base URL")
-                post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post base URL")
+                post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post-processing LLM API URL")
             with gr.Row():
                 asr_backend = gr.Dropdown(
-                    ["vllm_chat", "qwen_asr_vllm", "qwen_asr_transformers", "mock"],
+                    [
+                        ("vLLM chat/audio API", "vllm_chat"),
+                        ("qwen-asr package via vLLM", "qwen_asr_vllm"),
+                        ("qwen-asr package via Transformers", "qwen_asr_transformers"),
+                        ("Mock ASR for UI testing", "mock"),
+                    ],
                     value=initial_config.asr_backend,
                     label="ASR backend",
                 )
-                post_backend = gr.Dropdown(["vllm_openai", "mock"], value=initial_config.post_backend, label="Post backend")
+                post_backend = gr.Dropdown(
+                    [
+                        ("vLLM OpenAI-compatible API", "vllm_openai"),
+                        ("Mock post-processor for UI testing", "mock"),
+                    ],
+                    value=initial_config.post_backend,
+                    label="Post-processing backend",
+                )
                 run_button = gr.Button("Run", variant="primary")
+            progress_output = gr.Textbox(label="Run status", lines=4)
 
         with gr.Row():
             raw_output = gr.Textbox(label="Raw transcript", lines=12)
@@ -82,7 +95,6 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         with gr.Row():
             metrics_output = gr.JSON(label="Metrics")
             edits_output = gr.JSON(label="Edits")
-        progress_output = gr.Textbox(label="Run status", lines=4)
 
         run_button.click(
             fn=run_from_ui,
@@ -179,7 +191,14 @@ def run_from_ui(
     try:
         output = PipelineRunner(config).run(audio_path=audio_path, reference_text=reference)
     except Exception as exc:
-        return "", "", "", {}, [], f"Run failed: {exc}"
+        hint = ""
+        if asr_backend != "mock" or post_backend != "mock":
+            hint = (
+                "\n\nCurrent backends require running model servers. "
+                "For UI-only testing, set ASR backend to 'Mock ASR for UI testing' "
+                "and Post-processing backend to 'Mock post-processor for UI testing'."
+            )
+        return "", "", "", {}, [], f"Run failed: {exc}{hint}"
     return (
         output.raw.text,
         output.correction.corrected_text,

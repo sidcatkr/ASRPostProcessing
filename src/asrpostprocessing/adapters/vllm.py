@@ -26,7 +26,7 @@ class VLLMChatASRAdapter:
             ],
             "temperature": 0.0,
         }
-        data = _post_chat(config.asr_base_url, payload, config.request_timeout_s)
+        data = _post_chat(config.asr_base_url, payload, config.request_timeout_s, "ASR")
         text = _extract_message_text(data)
         parsed = _parse_asr_text(text)
         return TranscriptResult(
@@ -55,7 +55,7 @@ class VLLMOpenAIPostProcessAdapter:
             ],
             "temperature": _temperature_for_strength(config.postprocess_strength),
         }
-        data = _post_chat(config.post_base_url, payload, config.request_timeout_s)
+        data = _post_chat(config.post_base_url, payload, config.request_timeout_s, "post-processing LLM")
         response_text = _extract_message_text(data)
         result = parse_correction_response(response_text, chunk_text)
         result.metadata.setdefault("backend", "vllm_openai")
@@ -125,15 +125,21 @@ def _postprocess_strength_policy(strength: float) -> str:
     return f"{label} ({strength:.2f}): {rule}"
 
 
-def _post_chat(base_url: str, payload: dict, timeout_s: float) -> dict:
+def _post_chat(base_url: str, payload: dict, timeout_s: float, service_name: str) -> dict:
     try:
         import requests  # type: ignore
     except Exception as exc:
         raise RuntimeError("The requests package is required for vLLM/OpenAI-compatible backends.") from exc
     url = base_url.rstrip("/") + "/chat/completions"
-    response = requests.post(url, json=payload, timeout=timeout_s)
-    response.raise_for_status()
-    return response.json()
+    try:
+        response = requests.post(url, json=payload, timeout=timeout_s)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise RuntimeError(
+            f"{service_name} vLLM OpenAI-compatible endpoint request failed at {url}. "
+            f"Start the model server or switch the backend to mock for UI testing. Original error: {exc}"
+        ) from exc
 
 
 def _extract_message_text(data: dict) -> str:
