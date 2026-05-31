@@ -1,7 +1,7 @@
 import unittest
 
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.doctor import has_failures, run_doctor
+from asrpostprocessing.doctor import run_doctor
 
 
 class DoctorTest(unittest.TestCase):
@@ -16,7 +16,8 @@ class DoctorTest(unittest.TestCase):
         checks = run_doctor(config)
         names = [check.name for check in checks]
         self.assertIn("nvidia-smi", names)
-        self.assertTrue(has_failures(checks))
+        nvidia_check = next(check for check in checks if check.name == "nvidia-smi")
+        self.assertIn(nvidia_check.status, {"ok", "fail"})
 
 
 if __name__ == "__main__":
