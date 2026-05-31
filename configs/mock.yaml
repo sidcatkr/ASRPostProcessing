@@ -1,0 +1,28 @@
+asr_model: Qwen/Qwen3-ASR-1.7B
+post_model: Qwen/Qwen3.5-9B
+asr_backend: mock
+post_backend: mock
+enable_preprocess: false
+preprocess_model: none
+preprocess_strength: 0.0
+rnnoise_command: ""
+bs_roformer_command: ""
+enable_keyword_bias: true
+keyword_bias_weight: 0.5
+keywords:
+  - Claude Code
+  - Boolean
+  - for문
+enable_llm_postprocess: true
+postprocess_strength: 0.5
+enable_rag: false
+rag_strength: 0.0
+rag_top_k: 5
+enable_search: false
+search_strength: 0.0
+search_provider: duckduckgo
+search_cache_dir: outputs/search_cache
+search_endpoint: ""
+output_dir: outputs
+runs_dir: runs
+tensorboard_port: 6006

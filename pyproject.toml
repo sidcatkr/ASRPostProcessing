@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asrpostprocessing"
+version = "0.1.0"
+description = "Korean ASR post-processing lab with Qwen ASR, LLM correction, RAG, and CER/WER evaluation."
+readme = "notes.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "ASR Post Processing Lab" }]
+dependencies = [
+  "gradio>=4.44",
+  "openai>=1.50",
+  "requests>=2.31",
+  "PyYAML>=6.0",
+  "tensorboard>=2.16",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "qwen-asr[vllm]>=0.1",
+  "vllm[audio]>=0.10",
+  "flash-attn>=2.6",
+]
+rag = [
+  "faiss-cpu>=1.8",
+  "sentence-transformers>=3.0",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+asrpp = "asrpostprocessing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "gpu: tests that require CUDA and local model weights",
+]
