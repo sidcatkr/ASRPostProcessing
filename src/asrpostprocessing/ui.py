@@ -7,6 +7,7 @@ from typing import Any, List, Optional, Tuple
 from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
+from .preprocess import preprocess_audio
 from .text import make_diff_html
 
 
@@ -65,6 +66,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     rnnoise_command = gr.Textbox(value=initial_config.rnnoise_command, label="RNNoise command")
                     bs_roformer_command = gr.Textbox(value=initial_config.bs_roformer_command, label="BS-RoFormer command")
                     ffmpeg_command = gr.Textbox(value=initial_config.ffmpeg_command, label="FFmpeg command for non-WAV")
+                preview_preprocess_button = gr.Button("Preview preprocessed audio")
             with gr.Row():
                 enable_llm = gr.Checkbox(label="LLM post-process", value=initial_config.enable_llm_postprocess)
                 postprocess_strength = gr.Slider(0, 1, value=initial_config.postprocess_strength, step=0.05, label="Post-process strength")
@@ -169,6 +171,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             edits_output = gr.JSON(label="Edits")
         with gr.Row():
             preprocess_output = gr.JSON(label="Preprocess")
+            preprocessed_audio_output = gr.Audio(label="Preprocessed audio preview", type="filepath")
             server_output = gr.JSON(label="Model servers")
         with gr.Row():
             gpu_output = gr.JSON(label="Server GPU / VRAM status", value=query_gpu_status())
@@ -230,8 +233,25 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 preprocess_output,
                 server_output,
                 progress_output,
+                preprocessed_audio_output,
                 gpu_output,
             ],
+        )
+        preview_preprocess_button.click(
+            fn=preview_preprocessed_audio_from_ui,
+            inputs=[
+                audio,
+                enable_noise_reduction,
+                noise_reduction_model,
+                noise_reduction_strength,
+                enable_volume_normalization,
+                volume_normalization_strength,
+                volume_target_dbfs,
+                rnnoise_command,
+                bs_roformer_command,
+                ffmpeg_command,
+            ],
+            outputs=[preprocessed_audio_output, preprocess_output, progress_output],
         )
         refresh_gpu_button.click(fn=query_gpu_status, outputs=gpu_output)
 
@@ -240,8 +260,44 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
 
 
 def run_from_ui_stream(*args):
-    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", query_gpu_status()
+    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", None, query_gpu_status()
     yield run_from_ui(*args)
+
+
+def preview_preprocessed_audio_from_ui(
+    audio_path: Optional[str],
+    enable_noise_reduction: bool,
+    noise_reduction_model: str,
+    noise_reduction_strength: float,
+    enable_volume_normalization: bool,
+    volume_normalization_strength: float,
+    volume_target_dbfs: float,
+    rnnoise_command: str,
+    bs_roformer_command: str,
+    ffmpeg_command: str,
+) -> Tuple[Optional[str], dict, str]:
+    if not audio_path:
+        return None, {}, "No audio input provided."
+    config = _preprocess_config_from_ui(
+        enable_noise_reduction,
+        noise_reduction_model,
+        noise_reduction_strength,
+        enable_volume_normalization,
+        volume_normalization_strength,
+        volume_target_dbfs,
+        rnnoise_command,
+        bs_roformer_command,
+        ffmpeg_command,
+    )
+    try:
+        result = preprocess_audio(audio_path, config)
+    except Exception as exc:
+        return None, {}, f"Preprocess preview failed: {exc}"
+    preview_path = _preview_audio_path(result.to_dict())
+    status = "Preprocessed audio ready." if result.applied else "No preprocessing was applied; previewing the input audio."
+    if result.warnings:
+        status += "\n" + "\n".join(result.warnings)
+    return preview_path, result.to_dict(), status
 
 
 def run_from_ui(
@@ -288,9 +344,9 @@ def run_from_ui(
     post_backend: str,
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
-) -> Tuple[str, str, str, dict, list, dict, list, str, dict]:
+) -> Tuple[str, str, str, dict, list, dict, list, str, Optional[str], dict]:
     if not audio_path:
-        return "", "", "", {}, [], {}, [], "No audio input provided.", query_gpu_status()
+        return "", "", "", {}, [], {}, [], "No audio input provided.", None, query_gpu_status()
     reference = _read_reference_from_ui(reference_text, reference_file)
     config = ExperimentConfig(
         asr_model=asr_model or "Qwen/Qwen3-ASR-1.7B",
@@ -349,7 +405,7 @@ def run_from_ui(
             )
         elif auto_start_model_servers:
             hint = "\n\nAutomatic model server startup is enabled. Check the server log path in the error above."
-        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", query_gpu_status()
+        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", None, query_gpu_status()
     server_lines = _format_server_statuses(output.server_statuses)
     return (
         output.raw.text,
@@ -367,8 +423,43 @@ def run_from_ui(
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"
             f"Artifacts: {json.dumps(output.artifacts, ensure_ascii=False)}"
         ),
+        _preview_audio_path(output.preprocess),
         query_gpu_status(),
     )
+
+
+def _preprocess_config_from_ui(
+    enable_noise_reduction: bool,
+    noise_reduction_model: str,
+    noise_reduction_strength: float,
+    enable_volume_normalization: bool,
+    volume_normalization_strength: float,
+    volume_target_dbfs: float,
+    rnnoise_command: str,
+    bs_roformer_command: str,
+    ffmpeg_command: str,
+) -> ExperimentConfig:
+    return ExperimentConfig(
+        enable_preprocess=False,
+        preprocess_model="none",
+        preprocess_strength=0.0,
+        enable_noise_reduction=bool(enable_noise_reduction),
+        noise_reduction_model=noise_reduction_model or "none",
+        noise_reduction_strength=float(noise_reduction_strength),
+        enable_volume_normalization=bool(enable_volume_normalization),
+        volume_normalization_strength=float(volume_normalization_strength),
+        volume_target_dbfs=float(volume_target_dbfs),
+        rnnoise_command=rnnoise_command or "",
+        bs_roformer_command=bs_roformer_command or "",
+        ffmpeg_command=ffmpeg_command or "",
+    )
+
+
+def _preview_audio_path(preprocess: dict) -> Optional[str]:
+    path = preprocess.get("audio_path") if isinstance(preprocess, dict) else None
+    if not path:
+        return None
+    return str(path) if Path(str(path)).exists() else None
 
 
 def _split_keywords(value: str) -> List[str]:

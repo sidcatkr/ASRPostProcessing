@@ -1,5 +1,7 @@
+import os
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,7 +9,7 @@ from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner
-from asrpostprocessing.ui import run_from_ui
+from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui
 
 
 class ParserPipelineUiTest(unittest.TestCase):
@@ -81,7 +83,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
             audio.write_bytes(b"mock")
-            raw, corrected, diff, metrics, edits, preprocess, servers, status, gpu_status = run_from_ui(
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
                 str(audio),
                 "Claude Code로 for문 작성 보조",
                 None,
@@ -130,12 +132,13 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("cer_normalized_no_space", metrics)
             self.assertIsInstance(edits, list)
             self.assertFalse(preprocess["applied"])
+            self.assertEqual(preprocessed_audio, str(audio))
             self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
             self.assertIn("available", gpu_status)
 
     def test_ui_vllm_failure_has_actionable_hint(self):
-        raw, corrected, diff, metrics, edits, preprocess, servers, status, gpu_status = run_from_ui(
+        raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
             "missing.wav",
             "",
             None,
@@ -180,10 +183,46 @@ class ParserPipelineUiTest(unittest.TestCase):
         )
         self.assertEqual(raw, "")
         self.assertEqual(preprocess, {})
+        self.assertIsNone(preprocessed_audio)
         self.assertEqual(servers, [])
         self.assertIn("Run failed:", status)
         self.assertIn("For UI-only testing", status)
         self.assertIn("available", gpu_status)
+
+    def test_preprocessed_audio_preview_returns_output_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path.cwd()
+            try:
+                os.chdir(tmp)
+                audio = Path(tmp) / "sample.wav"
+                _write_pcm16_wav(audio, [1000, -1000, 1000, -1000])
+                preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
+                    str(audio),
+                    False,
+                    "none",
+                    0.0,
+                    True,
+                    1.0,
+                    -20.0,
+                    "",
+                    "",
+                    "",
+                )
+                self.assertIsNotNone(preview_path)
+                self.assertNotEqual(preview_path, str(audio))
+                self.assertTrue(Path(preview_path).exists())
+                self.assertTrue(preprocess["applied"])
+                self.assertIn("Preprocessed audio ready", status)
+            finally:
+                os.chdir(current)
+
+
+def _write_pcm16_wav(path: Path, samples):
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in samples))
 
 
 if __name__ == "__main__":
