@@ -20,7 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
-  "qwen-asr[vllm]>=0.1",
+  "qwen-asr[vllm]>=0.0.6",
   "vllm[audio]>=0.10",
 ]
 rag = [
