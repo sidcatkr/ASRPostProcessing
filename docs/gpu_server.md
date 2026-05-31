@@ -16,21 +16,21 @@ pip install -U "qwen-asr[vllm]"
 
 ## Serve Models
 
-`configs/cuda.yaml` enables `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start both vLLM servers if `/v1/models` is not already ready. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
+`configs/cuda.yaml` enables `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start both vLLM servers if `/v1/models` is not already ready. It uses ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
 
 Use manual serving only when you want to pre-warm models before opening the UI, or when you need custom vLLM flags.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-ASR-1.7B \
   --host 0.0.0.0 \
-  --port 8000 \
+  --port 18000 \
   --dtype float16
 ```
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --host 0.0.0.0 \
-  --port 8001 \
+  --port 18001 \
   --dtype float16 \
   --tensor-parallel-size 1 \
   --max-model-len 8192 \

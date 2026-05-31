@@ -161,8 +161,11 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
         return _PendingServer(spec, process, "ready", "managed process became ready")
 
     if _tcp_port_open(spec.base_url):
-        _emit(status_callback, f"{spec.name} port is open; waiting for OpenAI-compatible readiness at {spec.base_url}")
-        return _PendingServer(spec, None, "ready", "existing process became ready")
+        raise RuntimeError(
+            f"{spec.name} model server port {spec.port} is already open, but {spec.base_url}/models is not an "
+            "OpenAI-compatible model endpoint. Change the base URL port in the UI/config or stop the process "
+            "that is using the port."
+        )
 
     try:
         process = _start_process(spec)

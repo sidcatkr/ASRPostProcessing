@@ -2,8 +2,8 @@ asr_model: Qwen/Qwen3-ASR-1.7B
 post_model: Qwen/Qwen3.5-9B
 asr_backend: vllm_chat
 post_backend: vllm_openai
-asr_base_url: http://127.0.0.1:8000/v1
-post_base_url: http://127.0.0.1:8001/v1
+asr_base_url: http://127.0.0.1:18000/v1
+post_base_url: http://127.0.0.1:18001/v1
 auto_start_model_servers: true
 server_start_timeout_s: 900
 server_log_dir: outputs/model_servers

@@ -41,6 +41,15 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual([item.status for item in statuses], ["ready", "ready"])
         start_process.assert_not_called()
 
+    def test_open_non_model_port_fails_fast(self):
+        config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
+        with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
+            "asrpostprocessing.model_server._tcp_port_open", return_value=True
+        ), patch("asrpostprocessing.model_server._start_process") as start_process:
+            with self.assertRaisesRegex(RuntimeError, "already open"):
+                ensure_model_servers(config)
+        start_process.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
