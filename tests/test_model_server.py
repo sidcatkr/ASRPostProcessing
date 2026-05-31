@@ -42,6 +42,8 @@ class ModelServerTest(unittest.TestCase):
             self.assertIn("--quantization", post_command)
             self.assertIn("bitsandbytes", post_command)
             self.assertIn("--enforce-eager", post_command)
+            self.assertIn("--attention-backend", post_command)
+            self.assertIn("TRITON_ATTN", post_command)
             self.assertIn("--max-num-seqs", post_command)
 
     def test_ready_endpoints_are_not_started(self):

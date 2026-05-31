@@ -34,6 +34,7 @@ elif [[ "${1:-}" == "post" ]]; then
     --quantization bitsandbytes \
     --load-format bitsandbytes \
     --enforce-eager \
+    --attention-backend TRITON_ATTN \
     --gpu-memory-utilization 0.6 \
     --max-num-seqs 1 \
     --max-num-batched-tokens "$POST_MAX_MODEL_LEN"

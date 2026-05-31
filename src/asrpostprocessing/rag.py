@@ -12,6 +12,7 @@ from .schemas import RAGContext
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-.]+|[가-힣]+")
+SUPPORTED_RAG_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".pdf"}
 
 
 @dataclass
@@ -85,7 +86,7 @@ def load_rag_documents(paths: Iterable[str], inline_text: str = "", extra_texts:
         path_obj = Path(path)
         if not path_obj.exists() or not path_obj.is_file():
             continue
-        text = path_obj.read_text(encoding="utf-8", errors="replace")
+        text = read_rag_file(path_obj)
         documents.extend(_split_document(text, source=str(path_obj)))
     if inline_text:
         documents.extend(_split_document(inline_text, source="inline"))
@@ -93,6 +94,35 @@ def load_rag_documents(paths: Iterable[str], inline_text: str = "", extra_texts:
         if text:
             documents.extend(_split_document(text, source=f"extra:{index}"))
     return documents
+
+
+def read_rag_file(path: str | Path) -> str:
+    path_obj = Path(path)
+    suffix = path_obj.suffix.lower()
+    if suffix not in SUPPORTED_RAG_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_RAG_EXTENSIONS))
+        raise ValueError(
+            f"Unsupported RAG file format '{suffix or '(none)'}' for {path_obj}. Supported formats: {supported}"
+        )
+    if suffix == ".pdf":
+        return _read_pdf(path_obj)
+    return path_obj.read_text(encoding="utf-8", errors="replace")
+
+
+def _read_pdf(path: Path) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("PDF RAG files require pypdf. Install the project with `pip install -e '.[rag]'`.") from exc
+
+    reader = PdfReader(str(path))
+    pages: List[str] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        text = text.strip()
+        if text:
+            pages.append(f"[page {page_number}]\n{text}")
+    return "\n\n".join(pages)
 
 
 def _split_document(text: str, source: str, max_chars: int = 900) -> List[RAGDocument]:

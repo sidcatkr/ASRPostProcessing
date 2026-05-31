@@ -11,7 +11,7 @@ Status: conditionally ready for GPU-server experiments, not fully proven on the 
 - GPU model residency is configurable: `parallel` keeps ASR and post-processing servers loaded for speed, while `sequential` starts ASR, unloads it, then starts the post-processing model for lower VRAM usage.
 - Keyword Bias is implemented as ASR chat prompt/context, with weight levels mapped to increasing hint strength.
 - LLM post-processing is chunked and returns structured correction JSON with edit logs.
-- RAG supports inline/uploaded files, lexical fallback, and optional FAISS + sentence-transformers retrieval.
+- RAG supports inline text and uploaded `.txt`, `.md`/`.markdown`, `.csv`, `.json`, and `.pdf` files, with lexical fallback and optional FAISS + sentence-transformers retrieval.
 - Search is optional, supports DuckDuckGo Instant Answer by default or a custom endpoint, and caches results for reproducible experiments.
 - CER/WER, raw-vs-corrected deltas, latency, and a lightweight preservation proxy are written to outputs, `metrics.tsv`, and TensorBoard event logs.
 - Sweep runs notes.md research conditions A, B1, B2, B3, C, D, E, F, and G, and writes `sweep_summary.csv` plus `sweep_analysis.json` with sweet-spot, over-bias, over-RAG, and over-postprocess detection.

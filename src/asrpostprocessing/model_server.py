@@ -312,6 +312,8 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--load-format",
         "bitsandbytes",
         "--enforce-eager",
+        "--attention-backend",
+        "TRITON_ATTN",
         "--gpu-memory-utilization",
         "0.6",
         "--max-num-seqs",

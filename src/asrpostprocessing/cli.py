@@ -140,7 +140,12 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enable-keyword-bias", action="store_true")
     parser.add_argument("--keyword-bias-weight", type=float)
     parser.add_argument("--enable-rag", action="store_true")
-    parser.add_argument("--rag-file", action="append", dest="rag_files")
+    parser.add_argument(
+        "--rag-file",
+        action="append",
+        dest="rag_files",
+        help="RAG source file: .txt, .md, .csv, .json, or .pdf",
+    )
     parser.add_argument("--rag-strength", type=float)
     parser.add_argument("--enable-search", action="store_true")
     parser.add_argument("--search-provider", choices=["duckduckgo", "endpoint", "none"])

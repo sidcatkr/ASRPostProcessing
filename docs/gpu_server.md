@@ -56,12 +56,13 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --quantization bitsandbytes \
   --load-format bitsandbytes \
   --enforce-eager \
+  --attention-backend TRITON_ATTN \
   --gpu-memory-utilization 0.6 \
   --max-num-seqs 1 \
   --max-num-batched-tokens 2048
 ```
 
-The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. It also forces `TRITON_ATTN` plus eager mode because FlashInfer prefill failed on the tested RTX 5000 with CUDA invalid-argument errors during audio requests. The post-processing default uses 2K context because transcript chunks are short and the tested RTX 5000 needs 4-bit quantization plus eager mode to serve Qwen3.5 reliably. Increase `--max-model-len` or remove quantization through custom server commands only when the target GPU has enough VRAM.
+The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. It also forces `TRITON_ATTN` plus eager mode because FlashInfer prefill failed on the tested RTX 5000 with CUDA invalid-argument errors during audio requests. The post-processing default uses 2K context because transcript chunks are short and the tested RTX 5000 needs 4-bit quantization plus eager mode to serve Qwen3.5 reliably. It also uses `TRITON_ATTN` because FlashInfer prefill produced CUDA invalid-argument failures for Qwen3.5 requests on the tested server. Increase `--max-model-len` or remove quantization through custom server commands only when the target GPU has enough VRAM.
 
 For manual parallel warmup, use:
 
@@ -89,6 +90,8 @@ conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda.yaml --hos
 
 With the default CUDA config, the first Run click may take several minutes because it loads both `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3.5-9B`. Subsequent runs reuse the already-ready endpoints.
 The Gradio UI also exposes a `Server GPU / VRAM status` panel with a refresh button, so you can confirm whether ports `18000` and `18001` have loaded models into VRAM.
+
+RAG accepts inline text plus uploaded `.txt`, `.md`/`.markdown`, `.csv`, `.json`, and `.pdf` files. PDF extraction uses `pypdf` from the `rag` extra, then retrieval uses FAISS + sentence-transformers when available and the built-in lexical retriever otherwise.
 
 When VRAM is tight, launch the UI with the sequential config instead:
 

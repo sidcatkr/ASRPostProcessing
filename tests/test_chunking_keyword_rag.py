@@ -1,9 +1,13 @@
+import tempfile
 import unittest
+from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 from asrpostprocessing.chunking import chunk_text
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.keyword_bias import build_keyword_bias_instruction, quantize_keyword_weight
-from asrpostprocessing.rag import build_rag_index
+from asrpostprocessing.rag import SUPPORTED_RAG_EXTENSIONS, build_rag_index, load_rag_documents
 
 
 class ChunkingKeywordRagTest(unittest.TestCase):
@@ -27,6 +31,41 @@ class ChunkingKeywordRagTest(unittest.TestCase):
         contexts = index.retrieve("클러드 코드 Claude Code", top_k=2, strength=0.5)
         self.assertTrue(contexts)
         self.assertIn("Claude Code", contexts[0].text)
+
+    def test_rag_loads_text_file_formats(self):
+        self.assertIn(".txt", SUPPORTED_RAG_EXTENSIONS)
+        self.assertIn(".md", SUPPORTED_RAG_EXTENSIONS)
+        self.assertIn(".pdf", SUPPORTED_RAG_EXTENSIONS)
+
+    def test_rag_reads_uploaded_text_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.md"
+            path.write_text("Claude Code는 AI coding agent입니다.", encoding="utf-8")
+            documents = load_rag_documents([str(path)])
+        self.assertEqual(len(documents), 1)
+        self.assertIn("Claude Code", documents[0].text)
+        self.assertEqual(documents[0].source, str(path))
+
+    def test_rag_reads_pdf_with_pypdf(self):
+        class FakePage:
+            def extract_text(self):
+                return "PDF Claude Code context"
+
+        class FakePdfReader:
+            def __init__(self, path):
+                self.path = path
+                self.pages = [FakePage()]
+
+        module = ModuleType("pypdf")
+        module.PdfReader = FakePdfReader
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guide.pdf"
+            path.write_bytes(b"%PDF-1.4\n")
+            with patch.dict("sys.modules", {"pypdf": module}):
+                documents = load_rag_documents([str(path)])
+        self.assertEqual(len(documents), 1)
+        self.assertIn("[page 1]", documents[0].text)
+        self.assertIn("PDF Claude Code context", documents[0].text)
 
 
 if __name__ == "__main__":

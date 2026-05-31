@@ -73,7 +73,11 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 rag_strength = gr.Slider(0, 1, value=initial_config.rag_strength, step=0.05, label="RAG strength")
                 rag_top_k = gr.Slider(1, 10, value=initial_config.rag_top_k, step=1, label="RAG top-k")
             rag_text = gr.Textbox(label="RAG text", value=initial_config.rag_inline_text, lines=6)
-            rag_files = gr.File(label="RAG files", file_count="multiple", file_types=[".txt", ".md", ".csv", ".json"])
+            rag_files = gr.File(
+                label="RAG files (.txt, .md, .csv, .json, .pdf)",
+                file_count="multiple",
+                file_types=[".txt", ".md", ".markdown", ".csv", ".json", ".pdf"],
+            )
             with gr.Row():
                 enable_search = gr.Checkbox(label="Search", value=initial_config.enable_search)
                 search_strength = gr.Slider(0, 1, value=initial_config.search_strength, step=0.05, label="Search strength")
