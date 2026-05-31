@@ -7,14 +7,12 @@ This project is intended to run model inference on a CUDA/NVIDIA server.
 ```bash
 conda create -n asrpp python=3.12 -y
 conda activate asrpp
+pip install -U pip setuptools wheel
 pip install -e ".[rag]"
-pip install -U qwen-asr[vllm]
-pip install -U vllm[audio] --pre \
-  --extra-index-url https://wheels.vllm.ai/nightly/cu129 \
-  --extra-index-url https://download.pytorch.org/whl/cu129 \
-  --index-strategy unsafe-best-match
-pip install -U flash-attn --no-build-isolation
+pip install -U "qwen-asr[vllm]"
 ```
+
+`qwen-asr[vllm]` installs the compatible vLLM/CUDA runtime used by the default model-server startup path. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
 
 ## Serve Models
 
@@ -47,7 +45,7 @@ asrpp doctor --config configs/cuda.yaml --check-endpoints
 ```
 
 ```bash
-asrpp ui --config configs/cuda.yaml --host 0.0.0.0 --port 7860
+conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda.yaml --host 0.0.0.0 --port 7860
 ```
 
 With the default CUDA config, the first Run click may take several minutes because it loads both `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3.5-9B`. Subsequent runs reuse the already-ready endpoints.
