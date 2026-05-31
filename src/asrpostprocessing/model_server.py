@@ -214,14 +214,14 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
 
 
 def _default_command(spec: ModelServerSpec) -> List[str]:
-    command = ["vllm", "serve", spec.model, "--host", spec.host, "--port", str(spec.port)]
+    command = ["vllm", "serve", spec.model, "--host", spec.host, "--port", str(spec.port), "--dtype", "float16"]
     if spec.name == "post":
         command.extend(
             [
                 "--tensor-parallel-size",
                 "1",
                 "--max-model-len",
-                "262144",
+                "8192",
                 "--reasoning-parser",
                 "qwen3",
                 "--language-model-only",

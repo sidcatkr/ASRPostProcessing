@@ -25,7 +25,12 @@ class ModelServerTest(unittest.TestCase):
             self.assertEqual(specs[0].port, 8000)
             self.assertEqual(specs[1].port, 8001)
             self.assertIn("Qwen/Qwen3-ASR-1.7B", _default_command(specs[0]))
-            self.assertIn("--language-model-only", _default_command(specs[1]))
+            asr_command = _default_command(specs[0])
+            post_command = _default_command(specs[1])
+            self.assertIn("--dtype", asr_command)
+            self.assertIn("float16", asr_command)
+            self.assertIn("--language-model-only", post_command)
+            self.assertIn("8192", post_command)
 
     def test_ready_endpoints_are_not_started(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="vllm_openai")

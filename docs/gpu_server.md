@@ -23,18 +23,22 @@ Use manual serving only when you want to pre-warm models before opening the UI, 
 ```bash
 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-ASR-1.7B \
   --host 0.0.0.0 \
-  --port 8000
+  --port 8000 \
+  --dtype float16
 ```
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --host 0.0.0.0 \
   --port 8001 \
+  --dtype float16 \
   --tensor-parallel-size 1 \
-  --max-model-len 262144 \
+  --max-model-len 8192 \
   --reasoning-parser qwen3 \
   --language-model-only
 ```
+
+The post-processing default uses 8K context because transcript chunks are short and the tested csgpu nodes expose 16 GB RTX 5000 GPUs. Increase `--max-model-len` through `post_server_command` only when the target GPU has enough VRAM.
 
 ## Run
 
