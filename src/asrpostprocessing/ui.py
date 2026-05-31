@@ -3,9 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import time
 from html import escape
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from queue import Empty, Queue
+from threading import Thread
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from .config import ExperimentConfig
@@ -13,6 +16,10 @@ from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
 from .preprocess import preprocess_audio
 from .text import make_diff_html
+
+RUN_STATUS_POLL_INTERVAL_S = 1.0
+RUN_STATUS_RECENT_EVENT_LIMIT = 8
+RunOutput = Tuple[str, str, str, dict, list, dict, list, str, Optional[str], str, dict]
 
 
 def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: int = 7860, share: bool = False):
@@ -268,8 +275,117 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
 
 
 def run_from_ui_stream(*args):
-    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", None, "", query_gpu_status()
-    yield run_from_ui(*args)
+    started = time.time()
+    progress_state: Dict[str, Any] = {"started": started, "current": "Preparing run.", "events": []}
+    result_queue: Queue[Tuple[str, Any]] = Queue(maxsize=1)
+
+    def record_progress(message: str) -> None:
+        event = {"elapsed_s": time.time() - started, "message": message}
+        progress_state["current"] = message
+        progress_state["events"] = [*progress_state["events"], event][-RUN_STATUS_RECENT_EVENT_LIMIT:]
+
+    def worker() -> None:
+        try:
+            result_queue.put(("result", run_from_ui(*args, status_callback=record_progress)))
+        except Exception as exc:
+            result_queue.put(("error", exc))
+
+    record_progress("Preparing run and checking model servers.")
+    thread = Thread(target=worker, daemon=True)
+    thread.start()
+    gpu_status = query_gpu_status()
+    yield _empty_run_output(_format_live_run_status(progress_state, gpu_status), gpu_status)
+
+    while thread.is_alive():
+        try:
+            kind, payload = result_queue.get(timeout=RUN_STATUS_POLL_INTERVAL_S)
+        except Empty:
+            gpu_status = query_gpu_status()
+            yield _empty_run_output(_format_live_run_status(progress_state, gpu_status), gpu_status)
+            continue
+        if kind == "result":
+            yield payload
+            return
+        yield _unexpected_run_error(payload)
+        return
+
+    try:
+        kind, payload = result_queue.get_nowait()
+    except Empty:
+        yield _unexpected_run_error(RuntimeError("Run worker ended without returning a result."))
+        return
+    if kind == "result":
+        yield payload
+    else:
+        yield _unexpected_run_error(payload)
+
+
+def _empty_run_output(status: str, gpu_status: dict) -> RunOutput:
+    return "", "", "", {}, [], {}, [], status, None, "", gpu_status
+
+
+def _unexpected_run_error(exc: BaseException) -> RunOutput:
+    return "", "", "", {}, [], {}, [], f"Run failed unexpectedly: {exc}", None, "", query_gpu_status()
+
+
+def _format_live_run_status(progress_state: Dict[str, Any], gpu_status: dict) -> str:
+    elapsed = _format_seconds(time.time() - float(progress_state.get("started", time.time())))
+    current = str(progress_state.get("current") or "Running.")
+    lines = [
+        f"Run in progress. Elapsed: {elapsed}",
+        f"Current stage: {current}",
+        _gpu_snapshot_line(gpu_status),
+        _gpu_process_line(gpu_status),
+        "",
+        "Recent events:",
+    ]
+    events = progress_state.get("events") or []
+    for event in events[-RUN_STATUS_RECENT_EVENT_LIMIT:]:
+        event_elapsed = _format_seconds(float(event.get("elapsed_s", 0.0)))
+        lines.append(f"- +{event_elapsed} {event.get('message', '')}")
+    lines.extend(
+        [
+            "",
+            "Note: vLLM reserves VRAM when the server starts. 0% GPU util between samples can still be normal while a request is queued, preprocessing, transferring data, or between decode bursts.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _gpu_snapshot_line(gpu_status: dict) -> str:
+    if not gpu_status.get("available"):
+        return f"GPU snapshot: unavailable ({gpu_status.get('error', 'nvidia-smi failed')})"
+    summaries = []
+    for gpu in gpu_status.get("gpus", []):
+        index = gpu.get("index")
+        used = gpu.get("memory_used_mb")
+        total = gpu.get("memory_total_mb")
+        util = gpu.get("gpu_utilization_percent")
+        temp = gpu.get("temperature_c")
+        power = _format_power(gpu.get("power_draw_w"), gpu.get("power_limit_w"))
+        pstate = gpu.get("performance_state") or "P?"
+        summaries.append(f"GPU{index}: util {util}%, VRAM {used}/{total} MiB, power {power}, temp {temp}C, {pstate}")
+    return "GPU snapshot: " + ("; ".join(summaries) if summaries else "no GPUs reported")
+
+
+def _format_power(draw: Any, limit: Any) -> str:
+    if isinstance(draw, (int, float)) and isinstance(limit, (int, float)):
+        return f"{draw:.0f}/{limit:.0f}W"
+    if isinstance(draw, (int, float)):
+        return f"{draw:.0f}W"
+    return "unknown"
+
+
+def _gpu_process_line(gpu_status: dict) -> str:
+    processes = gpu_status.get("processes") or []
+    if not processes:
+        return "GPU compute processes: none reported"
+    summaries = []
+    for process in processes[:6]:
+        name = Path(str(process.get("process_name", ""))).name or "process"
+        summaries.append(f"pid {process.get('pid')} {name} {process.get('used_memory_mb')} MiB")
+    suffix = f"; +{len(processes) - 6} more" if len(processes) > 6 else ""
+    return "GPU compute processes: " + "; ".join(summaries) + suffix
 
 
 def preview_preprocessed_audio_from_ui(
@@ -352,7 +468,9 @@ def run_from_ui(
     post_backend: str,
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
-) -> Tuple[str, str, str, dict, list, dict, list, str, Optional[str], str, dict]:
+    *,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> RunOutput:
     audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
         return "", "", "", {}, [], {}, [], "No audio input provided.", None, "", query_gpu_status()
@@ -400,7 +518,7 @@ def run_from_ui(
         search_endpoint=search_endpoint or "",
     )
     try:
-        output = PipelineRunner(config).run(audio_path=audio_path, reference_text=reference)
+        output = PipelineRunner(config, status_callback=status_callback).run(audio_path=audio_path, reference_text=reference)
     except Exception as exc:
         hint = ""
         if (asr_backend != "mock" or post_backend != "mock") and not auto_start_model_servers:

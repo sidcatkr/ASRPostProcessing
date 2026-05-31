@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -9,7 +10,7 @@ from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner
-from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui
+from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui, run_from_ui_stream
 
 
 class ParserPipelineUiTest(unittest.TestCase):
@@ -47,6 +48,28 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("cer_normalized_no_space", metrics_text)
             self.assertIn("wer_eojeol", metrics_text)
             self.assertTrue(any(path.name.startswith("events.out.tfevents") for path in run_dir.iterdir()))
+
+    def test_pipeline_emits_progress_callbacks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            events = []
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+            PipelineRunner(config, status_callback=events.append).run(
+                str(audio),
+                reference_text="테스트 전사 문장입니다.",
+                run_id="progress-test",
+            )
+        event_text = "\n".join(events)
+        self.assertIn("Checking model server readiness", event_text)
+        self.assertIn("Sending audio to ASR backend mock", event_text)
+        self.assertIn("Post-processing chunk 1/1", event_text)
+        self.assertIn("Run progress-test complete", event_text)
 
     def test_sequential_model_residency_prepares_and_releases_each_stage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,6 +158,53 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
             self.assertIn("available", gpu_status)
+
+    def test_ui_stream_reports_progress_before_final_result(self):
+        final_output = (
+            "raw",
+            "corrected",
+            "<div class='diff'></div>",
+            {"latency_ms": 50.0},
+            [],
+            {},
+            [],
+            "Run ID: stream-test",
+            None,
+            "",
+            {"available": True},
+        )
+
+        def fake_run_from_ui(*_args, status_callback=None):
+            if status_callback:
+                status_callback("Sending audio to ASR backend mock.")
+            time.sleep(0.05)
+            return final_output
+
+        gpu_status = {
+            "available": True,
+            "gpus": [
+                {
+                    "index": 0,
+                    "memory_used_mb": 11023,
+                    "memory_total_mb": 16384,
+                    "gpu_utilization_percent": 0,
+                    "temperature_c": 22,
+                }
+            ],
+            "processes": [{"pid": 40289, "process_name": "VLLM::EngineCore", "used_memory_mb": 10944}],
+        }
+        with patch("asrpostprocessing.ui.run_from_ui", side_effect=fake_run_from_ui), patch(
+            "asrpostprocessing.ui.query_gpu_status", return_value=gpu_status
+        ), patch("asrpostprocessing.ui.RUN_STATUS_POLL_INTERVAL_S", 0.01):
+            outputs = list(run_from_ui_stream("mock-arg"))
+
+        self.assertGreaterEqual(len(outputs), 2)
+        progress_text = "\n".join(output[7] for output in outputs[:-1])
+        self.assertIn("Run in progress", progress_text)
+        self.assertIn("Sending audio to ASR backend mock", progress_text)
+        self.assertIn("GPU0: util 0%", progress_text)
+        self.assertIn("VLLM::EngineCore", progress_text)
+        self.assertEqual(outputs[-1], final_output)
 
     def test_ui_vllm_failure_has_actionable_hint(self):
         raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(

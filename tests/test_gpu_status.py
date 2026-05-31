@@ -17,7 +17,7 @@ class GPUStatusTest(unittest.TestCase):
         def fake_run(command, capture_output, text, timeout):
             query = command[1]
             if query.startswith("--query-gpu"):
-                return subprocess.CompletedProcess(command, 0, "0, Quadro RTX 5000, 16384, 2048, 14336, 12, 55\n", "")
+                return subprocess.CompletedProcess(command, 0, "0, Quadro RTX 5000, 16384, 2048, 14336, 12, 55, 97.5, 230.0, P2\n", "")
             return subprocess.CompletedProcess(command, 0, "1234, python, 2048\n", "")
 
         with patch("asrpostprocessing.gpu_status.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
@@ -27,6 +27,8 @@ class GPUStatusTest(unittest.TestCase):
         self.assertTrue(status["available"])
         self.assertEqual(status["gpus"][0]["memory_used_mb"], 2048)
         self.assertEqual(status["gpus"][0]["memory_used_percent"], 12.5)
+        self.assertEqual(status["gpus"][0]["power_draw_w"], 97.5)
+        self.assertEqual(status["gpus"][0]["performance_state"], "P2")
         self.assertEqual(status["processes"][0]["pid"], 1234)
         self.assertEqual(status["processes"][0]["used_memory_mb"], 2048)
 

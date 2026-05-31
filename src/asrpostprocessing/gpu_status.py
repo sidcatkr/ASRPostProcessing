@@ -29,7 +29,7 @@ def query_gpu_status() -> Dict[str, Any]:
     gpu_result = _run_nvidia_smi(
         executable,
         [
-            "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu",
+            "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit,pstate",
             "--format=csv,noheader,nounits",
         ],
     )
@@ -61,7 +61,7 @@ def _run_nvidia_smi(executable: str, args: List[str]) -> subprocess.CompletedPro
 
 def _parse_gpu_line(line: str) -> Dict[str, Any]:
     parts = [part.strip() for part in line.split(",")]
-    while len(parts) < 7:
+    while len(parts) < 10:
         parts.append("")
     total = _to_int(parts[2])
     used = _to_int(parts[3])
@@ -75,6 +75,9 @@ def _parse_gpu_line(line: str) -> Dict[str, Any]:
         "memory_used_percent": round((used / total) * 100.0, 2) if total else None,
         "gpu_utilization_percent": _to_int(parts[5]),
         "temperature_c": _to_int(parts[6]),
+        "power_draw_w": _to_float(parts[7]),
+        "power_limit_w": _to_float(parts[8]),
+        "performance_state": parts[9] or None,
     }
 
 
@@ -92,6 +95,13 @@ def _parse_process_line(line: str) -> Dict[str, Any]:
 def _to_int(value: str) -> int | None:
     try:
         return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: str) -> float | None:
+    try:
+        return float(str(value).strip())
     except (TypeError, ValueError):
         return None
 
