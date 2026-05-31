@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import audioop
 import os
 import shlex
 import subprocess
 import wave
+from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
@@ -37,7 +37,7 @@ def preprocess_audio(audio_path: str, config: ExperimentConfig) -> PreprocessRes
         applied=False,
         warnings=[f"Unknown preprocess model: {config.preprocess_model}"],
         metadata={"model": config.preprocess_model, "fallback": "original_audio"},
-        )
+    )
 
 
 def _run_external_preprocessor(audio_path: str, config: ExperimentConfig, model_name: str, command_template: str) -> PreprocessResult:
@@ -112,7 +112,7 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
                 warnings=["Volume normalization supports 16-bit PCM WAV in this MVP."],
                 metadata={"sample_width": params.sampwidth},
             )
-        rms = audioop.rms(frames, params.sampwidth)
+        rms = _pcm16_rms(frames)
         if rms == 0:
             return PreprocessResult(
                 audio_path=audio_path,
@@ -122,7 +122,7 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
             )
         target_rms = int(32767 * (0.06 + 0.12 * strength))
         factor = 1.0 + ((target_rms / float(rms)) - 1.0) * strength
-        normalized = audioop.mul(frames, params.sampwidth, factor)
+        normalized = _pcm16_mul(frames, factor)
         with wave.open(str(output_path), "wb") as writer:
             writer.setparams(params)
             writer.writeframes(normalized)
@@ -138,3 +138,29 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
             warnings=[f"Volume normalization failed: {exc}"],
             metadata={"model": "volume_normalization", "fallback": "original_audio"},
         )
+
+
+def _pcm16_rms(frames: bytes) -> int:
+    samples = _pcm16_samples(frames)
+    if not samples:
+        return 0
+    total = sum(sample * sample for sample in samples)
+    return int((total / len(samples)) ** 0.5)
+
+
+def _pcm16_mul(frames: bytes, factor: float) -> bytes:
+    samples = _pcm16_samples(frames)
+    for index, sample in enumerate(samples):
+        value = int(round(sample * factor))
+        samples[index] = max(-32768, min(32767, value))
+    return samples.tobytes()
+
+
+def _pcm16_samples(frames: bytes) -> array:
+    samples = array("h")
+    samples.frombytes(frames)
+    if samples.itemsize != 2:
+        raise RuntimeError("array('h') is not 16-bit on this platform.")
+    if os.sys.byteorder != "little":
+        samples.byteswap()
+    return samples
