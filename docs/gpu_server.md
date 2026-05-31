@@ -41,7 +41,9 @@ CUDA_VISIBLE_DEVICES=0 python -m asrpostprocessing.qwen_asr_serve_compat Qwen/Qw
   --host 0.0.0.0 \
   --port 18000 \
   --gpu-memory-utilization 0.7 \
-  --max-model-len 32768
+  --max-model-len 32768 \
+  --attention-backend TRITON_ATTN \
+  --enforce-eager
 ```
 
 ```bash
@@ -59,7 +61,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --max-num-batched-tokens 2048
 ```
 
-The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. The post-processing default uses 2K context because transcript chunks are short and the tested RTX 5000 needs 4-bit quantization plus eager mode to serve Qwen3.5 reliably. Increase `--max-model-len` or remove quantization through custom server commands only when the target GPU has enough VRAM.
+The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. It also forces `TRITON_ATTN` plus eager mode because FlashInfer prefill failed on the tested RTX 5000 with CUDA invalid-argument errors during audio requests. The post-processing default uses 2K context because transcript chunks are short and the tested RTX 5000 needs 4-bit quantization plus eager mode to serve Qwen3.5 reliably. Increase `--max-model-len` or remove quantization through custom server commands only when the target GPU has enough VRAM.
 
 For manual parallel warmup, use:
 

@@ -290,6 +290,9 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
             "0.7",
             "--max-model-len",
             "32768",
+            "--attention-backend",
+            "TRITON_ATTN",
+            "--enforce-eager",
         ]
     return [
         "vllm",

@@ -21,7 +21,9 @@ if [[ "${1:-}" == "asr" ]]; then
     --host 0.0.0.0 \
     --port "$ASR_PORT" \
     --gpu-memory-utilization 0.7 \
-    --max-model-len "$ASR_MAX_MODEL_LEN"
+    --max-model-len "$ASR_MAX_MODEL_LEN" \
+    --attention-backend TRITON_ATTN \
+    --enforce-eager
 elif [[ "${1:-}" == "post" ]]; then
   CUDA_VISIBLE_DEVICES="$POST_GPU" vllm serve "$POST_MODEL" \
     --host 0.0.0.0 \
