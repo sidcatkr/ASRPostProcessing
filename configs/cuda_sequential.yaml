@@ -5,12 +5,12 @@ post_backend: vllm_openai
 asr_base_url: http://127.0.0.1:18000/v1
 post_base_url: http://127.0.0.1:18001/v1
 auto_start_model_servers: true
-model_residency: parallel
+model_residency: sequential
 server_start_timeout_s: 900
-server_shutdown_timeout_s: 30
+server_shutdown_timeout_s: 45
 server_log_dir: outputs/model_servers
 asr_server_gpu: "0"
-post_server_gpu: "1"
+post_server_gpu: "0"
 asr_server_host: 0.0.0.0
 post_server_host: 0.0.0.0
 asr_server_command: ""

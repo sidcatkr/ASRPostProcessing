@@ -89,10 +89,19 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="ASR base URL")
                 post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post-processing LLM API URL")
             with gr.Accordion("Model server startup", open=True):
-                auto_start_model_servers = gr.Checkbox(
-                    label="Start required model servers when Run is pressed",
-                    value=initial_config.auto_start_model_servers,
-                )
+                with gr.Row():
+                    auto_start_model_servers = gr.Checkbox(
+                        label="Start required model servers when Run is pressed",
+                        value=initial_config.auto_start_model_servers,
+                    )
+                    model_residency = gr.Dropdown(
+                        [
+                            ("All required models stay loaded (fast, high VRAM)", "parallel"),
+                            ("One model at a time (slow, low VRAM)", "sequential"),
+                        ],
+                        value=initial_config.model_residency,
+                        label="Model residency",
+                    )
                 with gr.Row():
                     asr_server_gpu = gr.Textbox(value=initial_config.asr_server_gpu, label="ASR server GPU")
                     post_server_gpu = gr.Textbox(value=initial_config.post_server_gpu, label="Post-processing server GPU")
@@ -102,6 +111,13 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         value=initial_config.server_start_timeout_s,
                         step=30,
                         label="Server start timeout seconds",
+                    )
+                    server_shutdown_timeout_s = gr.Slider(
+                        5,
+                        180,
+                        value=initial_config.server_shutdown_timeout_s,
+                        step=5,
+                        label="Server shutdown timeout seconds",
                     )
                 with gr.Row():
                     server_log_dir = gr.Textbox(value=initial_config.server_log_dir, label="Server log directory")
@@ -194,6 +210,8 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 post_server_command,
                 asr_backend,
                 post_backend,
+                model_residency,
+                server_shutdown_timeout_s,
             ],
             outputs=[raw_output, corrected_output, diff_output, metrics_output, edits_output, preprocess_output, server_output, progress_output],
         )
@@ -249,6 +267,8 @@ def run_from_ui(
     post_server_command: str,
     asr_backend: str,
     post_backend: str,
+    model_residency: str = "parallel",
+    server_shutdown_timeout_s: float = 30.0,
 ) -> Tuple[str, str, str, dict, list, dict, list, str]:
     if not audio_path:
         return "", "", "", {}, [], {}, [], "No audio input provided."
@@ -261,7 +281,9 @@ def run_from_ui(
         asr_base_url=asr_base_url or "http://127.0.0.1:18000/v1",
         post_base_url=post_base_url or "http://127.0.0.1:18001/v1",
         auto_start_model_servers=bool(auto_start_model_servers),
+        model_residency=model_residency or "parallel",
         server_start_timeout_s=float(server_start_timeout_s),
+        server_shutdown_timeout_s=float(server_shutdown_timeout_s),
         server_log_dir=server_log_dir or "outputs/model_servers",
         asr_server_gpu=asr_server_gpu or "0",
         post_server_gpu=post_server_gpu or "1",
@@ -320,6 +342,7 @@ def run_from_ui(
         output.server_statuses,
         (
             f"Run ID: {output.run_id}\n"
+            f"Model residency: {config.model_residency}\n"
             f"{server_lines}"
             f"Output: {output.output_dir}\n"
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"

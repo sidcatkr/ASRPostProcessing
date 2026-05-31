@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional
 
 from .adapters import build_asr_adapter, build_postprocess_adapter
 from .chunking import chunk_segments, chunk_text
-from .config import ExperimentConfig
+from .config import ExperimentConfig, normalize_model_residency
 from .keyword_bias import build_keyword_bias_instruction
 from .logging import RunLogger, make_run_id
 from .metrics import evaluate_transcripts
-from .model_server import ensure_model_servers
+from .model_server import ensure_model_servers, stop_model_servers
 from .preprocess import preprocess_audio
 from .rag import build_rag_index
 from .schemas import CorrectionResult, Edit, MetricsResult, RAGContext, SearchResult, TranscriptResult
@@ -47,6 +47,7 @@ class PipelineOutput:
 class PipelineRunner:
     def __init__(self, config: ExperimentConfig):
         self.config = config
+        self.config.model_residency = normalize_model_residency(self.config.model_residency)
 
     def run(
         self,
@@ -60,16 +61,22 @@ class PipelineRunner:
         if rag_inline_text:
             self.config.rag_inline_text = rag_inline_text
 
-        server_statuses = [status.to_dict() for status in ensure_model_servers(self.config)]
+        server_statuses = self._initial_server_statuses()
         preprocess_result = preprocess_audio(audio_path, self.config)
         keyword_instruction = ""
         if self.config.enable_keyword_bias:
             keyword_instruction = build_keyword_bias_instruction(self.config.keywords, self.config.keyword_bias_weight)
 
-        asr = build_asr_adapter(self.config)
-        raw = asr.transcribe(preprocess_result.audio_path, self.config, keyword_instruction=keyword_instruction)
+        if self._sequential_model_residency():
+            server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, names=["asr"]))
+        try:
+            asr = build_asr_adapter(self.config)
+            raw = asr.transcribe(preprocess_result.audio_path, self.config, keyword_instruction=keyword_instruction)
+        finally:
+            if self._sequential_model_residency():
+                server_statuses.extend(self._release_stage_model("asr"))
 
-        correction = self._postprocess(raw)
+        correction = self._postprocess(raw, server_statuses)
         latency_ms = (time.time() - started) * 1000.0
         metrics = evaluate_transcripts(reference_text, raw.text, correction.corrected_text, latency_ms=latency_ms)
         diff_html = make_diff_html(raw.text, correction.corrected_text)
@@ -95,30 +102,36 @@ class PipelineRunner:
             preprocess=preprocess_result.to_dict(),
         )
 
-    def _postprocess(self, raw: TranscriptResult) -> CorrectionResult:
+    def _postprocess(self, raw: TranscriptResult, server_statuses: List[Dict[str, Any]]) -> CorrectionResult:
         if not self.config.enable_llm_postprocess:
             return CorrectionResult(corrected_text=raw.text, risk="unchanged", metadata={"reason": "postprocess_disabled"})
 
         chunks = chunk_segments(raw.segments) if raw.segments else chunk_text(raw.text, self.config.chunk_max_chars, self.config.chunk_overlap)
         rag_index = build_rag_index(self.config) if self.config.enable_rag else None
         search_provider = CachedSearchProvider(self.config)
-        postprocessor = build_postprocess_adapter(self.config)
+        if self._sequential_model_residency():
+            server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, names=["post"]))
+        try:
+            postprocessor = build_postprocess_adapter(self.config)
 
-        corrected_chunks: List[str] = []
-        all_edits: List[Edit] = []
-        all_context_ids: List[str] = []
-        chunk_metadata: List[Dict[str, Any]] = []
-        for chunk in chunks:
-            contexts: List[RAGContext] = []
-            if rag_index is not None:
-                contexts = rag_index.retrieve(chunk.text, top_k=self.config.rag_top_k, strength=self.config.rag_strength)
-            query = self._search_query(chunk.text)
-            search_results: List[SearchResult] = search_provider.search(query) if self.config.enable_search else []
-            result = postprocessor.correct(chunk.text, self.config, contexts, search_results)
-            corrected_chunks.append(result.corrected_text)
-            all_edits.extend(result.edits)
-            all_context_ids.extend(result.used_context_ids)
-            chunk_metadata.append({"chunk": chunk.__dict__, "risk": result.risk, "metadata": result.metadata})
+            corrected_chunks: List[str] = []
+            all_edits: List[Edit] = []
+            all_context_ids: List[str] = []
+            chunk_metadata: List[Dict[str, Any]] = []
+            for chunk in chunks:
+                contexts: List[RAGContext] = []
+                if rag_index is not None:
+                    contexts = rag_index.retrieve(chunk.text, top_k=self.config.rag_top_k, strength=self.config.rag_strength)
+                query = self._search_query(chunk.text)
+                search_results: List[SearchResult] = search_provider.search(query) if self.config.enable_search else []
+                result = postprocessor.correct(chunk.text, self.config, contexts, search_results)
+                corrected_chunks.append(result.corrected_text)
+                all_edits.extend(result.edits)
+                all_context_ids.extend(result.used_context_ids)
+                chunk_metadata.append({"chunk": chunk.__dict__, "risk": result.risk, "metadata": result.metadata})
+        finally:
+            if self._sequential_model_residency():
+                server_statuses.extend(self._release_stage_model("post"))
 
         corrected_text = merge_overlapping_texts(corrected_chunks, max_overlap=self.config.chunk_overlap + 40)
         risk = _combine_risk([item["risk"] for item in chunk_metadata])
@@ -129,6 +142,32 @@ class PipelineRunner:
             used_context_ids=sorted(set(all_context_ids)),
             metadata={"chunks": chunk_metadata},
         )
+
+    def _initial_server_statuses(self) -> List[Dict[str, Any]]:
+        if self._sequential_model_residency():
+            return []
+        return [status.to_dict() for status in ensure_model_servers(self.config)]
+
+    def _sequential_model_residency(self) -> bool:
+        return self.config.model_residency == "sequential"
+
+    def _release_stage_model(self, name: str) -> List[Dict[str, Any]]:
+        statuses: List[Dict[str, Any]] = []
+        if self.config.auto_start_model_servers:
+            statuses.extend(status.to_dict() for status in stop_model_servers(self.config, names=[name]))
+        if name == "asr":
+            self._clear_direct_asr_cache()
+        return statuses
+
+    def _clear_direct_asr_cache(self) -> None:
+        if not (self.config.asr_backend or "").startswith("qwen_asr"):
+            return
+        try:
+            from .adapters.qwen_asr import clear_model_cache
+
+            clear_model_cache()
+        except Exception:
+            pass
 
     def _search_query(self, chunk_text: str) -> str:
         keywords = " ".join(self.config.keywords[:8])

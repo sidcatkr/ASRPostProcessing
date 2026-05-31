@@ -14,9 +14,18 @@ pip install -U "qwen-asr[vllm]"
 
 `qwen-asr[vllm]` installs `qwen-asr-serve`, which is the required server wrapper for Qwen3-ASR. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
 
+## Model Residency Modes
+
+Two GPU residency modes are supported because the lab server may not have enough free VRAM to keep both Qwen models loaded.
+
+- `configs/cuda.yaml`: `model_residency: parallel`. The ASR server and post-processing LLM server are both loaded and kept ready. This is faster after warmup and is the preferred mode when both GPUs have enough free VRAM.
+- `configs/cuda_sequential.yaml`: `model_residency: sequential`. The pipeline starts the ASR model for transcription, terminates that managed server to free VRAM, then starts the post-processing LLM for correction. This is slower but keeps only one managed stage model loaded at a time.
+
+Sequential unloading only applies to model servers auto-started by this app. If you manually started servers in another shell, stop them yourself before using the low-VRAM config.
+
 ## Serve Models
 
-`configs/cuda.yaml` enables `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start the ASR server and post-processing LLM server if `/v1/models` is not already ready. It uses ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
+`configs/cuda.yaml` and `configs/cuda_sequential.yaml` enable `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start the required model server if `/v1/models` is not already ready. They use ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
 
 Use manual serving only when you want to pre-warm models before opening the UI, or when you need custom serving flags.
 
@@ -37,6 +46,12 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
 
 The post-processing default uses 8K context because transcript chunks are short and the tested csgpu nodes expose 16 GB RTX 5000 GPUs. Increase `--max-model-len` through `post_server_command` only when the target GPU has enough VRAM.
 
+For manual parallel warmup, use:
+
+```bash
+scripts/serve_gpu.sh parallel
+```
+
 ## Run
 
 Before experiments, run the readiness check.
@@ -50,6 +65,12 @@ conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda.yaml --hos
 ```
 
 With the default CUDA config, the first Run click may take several minutes because it loads both `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3.5-9B`. Subsequent runs reuse the already-ready endpoints.
+
+When VRAM is tight, launch the UI with the sequential config instead:
+
+```bash
+conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda_sequential.yaml --host 0.0.0.0 --port 7860
+```
 
 ```bash
 asrpp run \
@@ -65,6 +86,7 @@ asrpp run \
 
 - Keyword Bias is implemented as ASR chat prompt/context because Qwen3-ASR does not expose a documented hotword decoding parameter.
 - `auto_start_model_servers` starts Qwen3-ASR through `qwen-asr-serve` and the post-processing model through `vllm serve`. The `qwen_asr_*` backends load through the Python package instead.
+- `model_residency: parallel` keeps all required managed servers loaded. `model_residency: sequential` loads and unloads the ASR and post-processing stages one at a time.
 - Override `asr_server_command` or `post_server_command` when the server needs cluster-specific launch flags. Command templates may use `{model}`, `{host}`, `{port}`, `{base_url}`, `{gpu}`, and `{log_path}`.
 - Noise reduction and volume normalization are separate experimental variables. Configure `rnnoise_command` or `bs_roformer_command` when using those preprocessors. Command templates can use `{input}`, `{output}`, and `{strength}`.
 - Search defaults to DuckDuckGo Instant Answer. Set `search_provider: endpoint` and configure `search_endpoint` if you need a stronger or internal search service.

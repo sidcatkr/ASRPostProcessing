@@ -31,6 +31,7 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
         _check_package("yaml", required=False),
         _check_package("tensorboard", required=False),
         _check_output_dirs(config),
+        _check_model_residency(config),
     ]
     if _needs_nvidia(config):
         checks.append(_check_nvidia())
@@ -102,6 +103,20 @@ def _check_output_dirs(config: ExperimentConfig) -> DoctorCheck:
     except Exception as exc:
         return DoctorCheck("output_dirs", "fail", str(exc))
     return DoctorCheck("output_dirs", "ok", f"{config.output_dir}, {config.runs_dir}")
+
+
+def _check_model_residency(config: ExperimentConfig) -> DoctorCheck:
+    mode = (config.model_residency or "parallel").lower()
+    if mode not in {"parallel", "sequential"}:
+        return DoctorCheck("model_residency", "fail", f"unsupported mode: {config.model_residency}")
+    if mode == "sequential" and not config.auto_start_model_servers:
+        return DoctorCheck(
+            "model_residency",
+            "warn",
+            "sequential mode only unloads model servers that this app auto-starts",
+        )
+    detail = "all required servers stay loaded" if mode == "parallel" else "one stage server is loaded at a time"
+    return DoctorCheck("model_residency", "ok", detail)
 
 
 def _check_external_preprocess(name: str, command: str, env_name: str) -> DoctorCheck:

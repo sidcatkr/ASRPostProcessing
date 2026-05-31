@@ -107,6 +107,11 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--volume-target-dbfs", type=float)
     parser.add_argument("--auto-start-model-servers", action="store_true")
     parser.add_argument("--no-auto-start-model-servers", action="store_true")
+    residency_group = parser.add_mutually_exclusive_group()
+    residency_group.add_argument("--model-residency", choices=["parallel", "sequential"])
+    residency_group.add_argument("--sequential-model-loading", action="store_true")
+    residency_group.add_argument("--parallel-model-loading", action="store_true")
+    parser.add_argument("--server-shutdown-timeout-s", type=float)
 
 
 def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
@@ -125,11 +130,17 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "noise_reduction_strength": args.noise_reduction_strength,
         "volume_normalization_strength": args.volume_normalization_strength,
         "volume_target_dbfs": args.volume_target_dbfs,
+        "model_residency": args.model_residency,
+        "server_shutdown_timeout_s": args.server_shutdown_timeout_s,
     }
     if args.auto_start_model_servers:
         overrides["auto_start_model_servers"] = True
     if args.no_auto_start_model_servers:
         overrides["auto_start_model_servers"] = False
+    if args.sequential_model_loading:
+        overrides["model_residency"] = "sequential"
+    if args.parallel_model_loading:
+        overrides["model_residency"] = "parallel"
     if args.keywords:
         overrides["keywords"] = args.keywords
     if args.enable_keyword_bias:

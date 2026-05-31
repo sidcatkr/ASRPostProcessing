@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from .config import ExperimentConfig
@@ -55,10 +55,14 @@ _LOCK = threading.Lock()
 _PROCESSES: Dict[str, subprocess.Popen] = {}
 
 
-def ensure_model_servers(config: ExperimentConfig, status_callback: Optional[StatusCallback] = None) -> List[ModelServerStatus]:
+def ensure_model_servers(
+    config: ExperimentConfig,
+    status_callback: Optional[StatusCallback] = None,
+    names: Optional[Iterable[str]] = None,
+) -> List[ModelServerStatus]:
     if not config.auto_start_model_servers:
         return []
-    specs = _server_specs(config)
+    specs = _filter_specs(_server_specs(config), names)
     if not specs:
         return []
     statuses: List[ModelServerStatus] = []
@@ -82,6 +86,36 @@ def ensure_model_servers(config: ExperimentConfig, status_callback: Optional[Sta
                 log_path=item.spec.log_path,
             )
         )
+    return statuses
+
+
+def stop_model_servers(
+    config: ExperimentConfig,
+    status_callback: Optional[StatusCallback] = None,
+    names: Optional[Iterable[str]] = None,
+) -> List[ModelServerStatus]:
+    specs = _filter_specs(_server_specs(config), names)
+    if not specs:
+        return []
+    statuses: List[ModelServerStatus] = []
+    pending: List[Tuple[ModelServerSpec, subprocess.Popen]] = []
+    with _LOCK:
+        for spec in specs:
+            process = _PROCESSES.pop(_process_key(spec), None)
+            if process is None:
+                statuses.append(
+                    ModelServerStatus(
+                        spec.name,
+                        spec.base_url,
+                        "not_managed",
+                        "no auto-started process is registered in this app process",
+                        log_path=spec.log_path,
+                    )
+                )
+            else:
+                pending.append((spec, process))
+    for spec, process in pending:
+        statuses.append(_stop_process(spec, process, float(config.server_shutdown_timeout_s), status_callback))
     return statuses
 
 
@@ -115,6 +149,23 @@ def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
             )
         )
     return specs
+
+
+def _filter_specs(specs: List[ModelServerSpec], names: Optional[Iterable[str]]) -> List[ModelServerSpec]:
+    selected = _normalize_names(names)
+    if selected is None:
+        return specs
+    return [spec for spec in specs if spec.name in selected]
+
+
+def _normalize_names(names: Optional[Iterable[str]]) -> Optional[Set[str]]:
+    if names is None:
+        return None
+    if isinstance(names, str):
+        names = [names]
+    selected = {str(name).strip().lower() for name in names if str(name).strip()}
+    aliases = {"llm": "post", "postprocess": "post", "post_processing": "post", "asr": "asr", "post": "post"}
+    return {aliases.get(name, name) for name in selected}
 
 
 def _uses_external_asr_server(config: ExperimentConfig) -> bool:
@@ -152,7 +203,7 @@ def _make_spec(
 
 
 def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallback]) -> ModelServerStatus | _PendingServer:
-    key = f"{spec.name}:{spec.base_url}"
+    key = _process_key(spec)
     if _endpoint_ready(spec.base_url):
         return ModelServerStatus(spec.name, spec.base_url, "ready", "endpoint already ready", log_path=spec.log_path)
 
@@ -178,6 +229,10 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
     _PROCESSES[key] = process
     _emit(status_callback, f"Started {spec.name} model server pid={process.pid}; waiting for {spec.base_url}")
     return _PendingServer(spec, process, "started", "server started and became ready")
+
+
+def _process_key(spec: ModelServerSpec) -> str:
+    return f"{spec.name}:{spec.base_url}"
 
 
 def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
@@ -260,6 +315,46 @@ def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional
         f"{spec.name} model server did not become ready within {timeout_s:.0f}s at {spec.base_url}. "
         f"Check log: {spec.log_path}"
     )
+
+
+def _stop_process(
+    spec: ModelServerSpec,
+    process: subprocess.Popen,
+    timeout_s: float,
+    status_callback: Optional[StatusCallback],
+) -> ModelServerStatus:
+    if process.poll() is not None:
+        return ModelServerStatus(
+            spec.name,
+            spec.base_url,
+            "exited",
+            f"managed process had already exited with returncode={process.returncode}",
+            pid=process.pid,
+            log_path=spec.log_path,
+        )
+    _emit(status_callback, f"Stopping {spec.name} model server pid={process.pid}")
+    process.terminate()
+    try:
+        process.wait(timeout=timeout_s)
+        return ModelServerStatus(
+            spec.name,
+            spec.base_url,
+            "stopped",
+            "managed process terminated to free VRAM",
+            pid=process.pid,
+            log_path=spec.log_path,
+        )
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+        return ModelServerStatus(
+            spec.name,
+            spec.base_url,
+            "killed",
+            f"managed process did not exit within {timeout_s:.0f}s and was killed",
+            pid=process.pid,
+            log_path=spec.log_path,
+        )
 
 
 def _endpoint_ready(base_url: str) -> bool:

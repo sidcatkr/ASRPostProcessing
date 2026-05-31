@@ -18,7 +18,9 @@ class ExperimentConfig:
     request_timeout_s: float = 120.0
     language: str = "ko"
     auto_start_model_servers: bool = False
+    model_residency: str = "parallel"
     server_start_timeout_s: float = 600.0
+    server_shutdown_timeout_s: float = 30.0
     server_log_dir: str = "outputs/model_servers"
     asr_server_gpu: str = "0"
     post_server_gpu: str = "1"
@@ -84,9 +86,12 @@ class ExperimentConfig:
         config.postprocess_strength = clamp01(config.postprocess_strength)
         config.rag_strength = clamp01(config.rag_strength)
         config.search_strength = clamp01(config.search_strength)
+        config.model_residency = normalize_model_residency(config.model_residency)
         config.rag_top_k = max(1, int(config.rag_top_k))
         config.chunk_max_chars = max(120, int(config.chunk_max_chars))
         config.chunk_overlap = max(0, min(int(config.chunk_overlap), config.chunk_max_chars // 2))
+        config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
+        config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))
         return config
 
 
@@ -96,6 +101,24 @@ def clamp01(value: Any) -> float:
     except (TypeError, ValueError):
         number = 0.0
     return max(0.0, min(1.0, number))
+
+
+def normalize_model_residency(value: Any) -> str:
+    normalized = str(value or "parallel").strip().lower().replace("-", "_")
+    aliases = {
+        "all": "parallel",
+        "all_at_once": "parallel",
+        "fast": "parallel",
+        "parallel": "parallel",
+        "resident": "parallel",
+        "single": "sequential",
+        "single_model": "sequential",
+        "low_vram": "sequential",
+        "low_memory": "sequential",
+        "one_at_a_time": "sequential",
+        "sequential": "sequential",
+    }
+    return aliases.get(normalized, "parallel")
 
 
 def load_config(path: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> ExperimentConfig:

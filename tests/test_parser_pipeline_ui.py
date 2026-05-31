@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
+from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner
 from asrpostprocessing.ui import run_from_ui
 
@@ -37,6 +39,37 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
             self.assertTrue((Path(tmp) / "runs" / "test-run" / "metrics.tsv").exists())
+
+    def test_sequential_model_residency_prepares_and_releases_each_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                auto_start_model_servers=True,
+                model_residency="sequential",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+            calls = []
+
+            def fake_ensure(_config, status_callback=None, names=None):
+                name = list(names or ["all"])[0]
+                calls.append(("ensure", name))
+                return [ModelServerStatus(name=name, base_url=f"http://{name}", status="ready", detail="test")]
+
+            def fake_stop(_config, status_callback=None, names=None):
+                name = list(names or ["all"])[0]
+                calls.append(("stop", name))
+                return [ModelServerStatus(name=name, base_url=f"http://{name}", status="stopped", detail="test")]
+
+            with patch("asrpostprocessing.pipeline.ensure_model_servers", side_effect=fake_ensure), patch(
+                "asrpostprocessing.pipeline.stop_model_servers", side_effect=fake_stop
+            ):
+                output = PipelineRunner(config).run(str(audio), reference_text="Claude Code로 for문 작성 보조")
+            self.assertEqual(calls, [("ensure", "asr"), ("stop", "asr"), ("ensure", "post"), ("stop", "post")])
+            self.assertEqual([item["status"] for item in output.server_statuses], ["ready", "stopped", "ready", "stopped"])
 
     def test_ui_event_smoke(self):
         with tempfile.TemporaryDirectory() as tmp:

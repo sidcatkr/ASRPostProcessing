@@ -75,6 +75,17 @@ def _get_model(config: ExperimentConfig, backend: str):
     return model
 
 
+def clear_model_cache() -> None:
+    _MODEL_CACHE.clear()
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _qwen_language(language: str):
     mapping = {"ko": "Korean", "kr": "Korean", "korean": "Korean", "en": "English", "english": "English"}
     return mapping.get((language or "").lower(), language)
