@@ -10,9 +10,11 @@ conda activate asrpp
 pip install -U pip setuptools wheel
 pip install -e ".[rag]"
 pip install -U "qwen-asr[vllm]"
+pip install -U --extra-index-url https://wheels.vllm.ai/nightly "vllm[audio]>=0.22" bitsandbytes
 ```
 
 `qwen-asr[vllm]` installs `qwen-asr-serve`, which is the required server wrapper for Qwen3-ASR. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
+`Qwen/Qwen3.5-9B` requires a recent vLLM build with `Qwen3_5ForConditionalGeneration` support. The tested 16 GB RTX 5000 server also needs bitsandbytes quantization for the post-processing model to fit on one GPU.
 
 ## Model Residency Modes
 
@@ -28,6 +30,11 @@ Sequential unloading only applies to model servers auto-started by this app. If 
 `configs/cuda.yaml` and `configs/cuda_sequential.yaml` enable `auto_start_model_servers: true`, so pressing Run in the Gradio UI will start the required model server if `/v1/models` is not already ready. They use ports `18000` and `18001` by default because some shared GPU servers reserve `8000` and `8001` for JupyterHub. Logs are written to `outputs/model_servers/asr_vllm.log` and `outputs/model_servers/post_vllm.log`.
 
 Use manual serving only when you want to pre-warm models before opening the UI, or when you need custom serving flags.
+The app auto-start path and `scripts/serve_gpu.sh` add the conda NVIDIA CUDA library directory to `LD_LIBRARY_PATH` for bitsandbytes. If you run `vllm serve` by hand and see `libnvJitLink.so.13` errors, export the matching env path first:
+
+```bash
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+```
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 qwen-asr-serve Qwen/Qwen3-ASR-1.7B \
@@ -42,10 +49,17 @@ CUDA_VISIBLE_DEVICES=1 vllm serve Qwen/Qwen3.5-9B \
   --host 0.0.0.0 \
   --port 18001 \
   --dtype float16 \
-  --max-model-len 8192
+  --max-model-len 2048 \
+  --language-model-only \
+  --quantization bitsandbytes \
+  --load-format bitsandbytes \
+  --enforce-eager \
+  --gpu-memory-utilization 0.6 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 2048
 ```
 
-The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. The post-processing default uses 8K context because transcript chunks are short. Increase `--max-model-len` through custom server commands only when the target GPU has enough VRAM.
+The ASR default caps `--max-model-len` at 32768 because Qwen3-ASR advertises 65536 context by default, which requires more KV cache than the tested 16 GB RTX 5000 nodes expose at `--gpu-memory-utilization 0.7`. The post-processing default uses 2K context because transcript chunks are short and the tested RTX 5000 needs 4-bit quantization plus eager mode to serve Qwen3.5 reliably. Increase `--max-model-len` or remove quantization through custom server commands only when the target GPU has enough VRAM.
 
 For manual parallel warmup, use:
 

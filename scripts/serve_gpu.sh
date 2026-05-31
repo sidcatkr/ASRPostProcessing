@@ -8,7 +8,13 @@ POST_PORT="${POST_PORT:-18001}"
 ASR_GPU="${ASR_GPU:-0}"
 POST_GPU="${POST_GPU:-1}"
 ASR_MAX_MODEL_LEN="${ASR_MAX_MODEL_LEN:-32768}"
-POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-8192}"
+POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-2048}"
+
+for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
+  if [[ -d "$libdir" ]]; then
+    export LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}"
+  fi
+done
 
 if [[ "${1:-}" == "asr" ]]; then
   CUDA_VISIBLE_DEVICES="$ASR_GPU" qwen-asr-serve "$ASR_MODEL" \
@@ -21,7 +27,14 @@ elif [[ "${1:-}" == "post" ]]; then
     --host 0.0.0.0 \
     --port "$POST_PORT" \
     --dtype float16 \
-    --max-model-len "$POST_MAX_MODEL_LEN"
+    --max-model-len "$POST_MAX_MODEL_LEN" \
+    --language-model-only \
+    --quantization bitsandbytes \
+    --load-format bitsandbytes \
+    --enforce-eager \
+    --gpu-memory-utilization 0.6 \
+    --max-num-seqs 1 \
+    --max-num-batched-tokens "$POST_MAX_MODEL_LEN"
 elif [[ "${1:-}" == "parallel" ]]; then
   "$0" asr &
   asr_pid="$!"

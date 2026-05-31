@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import site
 import socket
 import subprocess
 import threading
@@ -241,6 +242,7 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = spec.gpu
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env["LD_LIBRARY_PATH"] = _with_nvidia_library_paths(env.get("LD_LIBRARY_PATH", ""))
 
     try:
         if spec.command_template:
@@ -297,8 +299,36 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--dtype",
         "float16",
         "--max-model-len",
-        "8192",
+        "2048",
+        "--language-model-only",
+        "--quantization",
+        "bitsandbytes",
+        "--load-format",
+        "bitsandbytes",
+        "--enforce-eager",
+        "--gpu-memory-utilization",
+        "0.6",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "2048",
     ]
+
+
+def _with_nvidia_library_paths(current: str) -> str:
+    existing = [part for part in current.split(os.pathsep) if part]
+    additions: List[str] = []
+    for base in site.getsitepackages():
+        package_dir = Path(base) / "nvidia"
+        for relative in ("cu13/lib", "cuda_runtime/lib", "nvjitlink/lib"):
+            path = package_dir / relative
+            if path.is_dir():
+                additions.append(str(path))
+    merged: List[str] = []
+    for path in additions + existing:
+        if path not in merged:
+            merged.append(path)
+    return os.pathsep.join(merged)
 
 
 def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional[subprocess.Popen]) -> None:

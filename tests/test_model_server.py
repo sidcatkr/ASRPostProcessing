@@ -33,7 +33,12 @@ class ModelServerTest(unittest.TestCase):
             self.assertIn("32768", asr_command)
             self.assertIn("vllm", post_command)
             self.assertIn("--dtype", post_command)
-            self.assertIn("8192", post_command)
+            self.assertIn("2048", post_command)
+            self.assertIn("--language-model-only", post_command)
+            self.assertIn("--quantization", post_command)
+            self.assertIn("bitsandbytes", post_command)
+            self.assertIn("--enforce-eager", post_command)
+            self.assertIn("--max-num-seqs", post_command)
 
     def test_ready_endpoints_are_not_started(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="vllm_openai")
