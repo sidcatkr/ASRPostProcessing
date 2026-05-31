@@ -60,11 +60,18 @@ Before experiments, run the readiness check.
 asrpp doctor --config configs/cuda.yaml --check-endpoints
 ```
 
+Check current GPU and VRAM usage from the shell:
+
+```bash
+asrpp gpu
+```
+
 ```bash
 conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda.yaml --host 0.0.0.0 --port 7860
 ```
 
 With the default CUDA config, the first Run click may take several minutes because it loads both `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3.5-9B`. Subsequent runs reuse the already-ready endpoints.
+The Gradio UI also exposes a `Server GPU / VRAM status` panel with a refresh button, so you can confirm whether ports `18000` and `18001` have loaded models into VRAM.
 
 When VRAM is tight, launch the UI with the sequential config instead:
 
@@ -92,3 +99,4 @@ asrpp run \
 - Search defaults to DuckDuckGo Instant Answer. Set `search_provider: endpoint` and configure `search_endpoint` if you need a stronger or internal search service.
 - For timestamp-aware chunking, serve Qwen3-ASR with Qwen3-ForcedAligner and return timestamp metadata through the ASR backend.
 - Search is optional and cached under `outputs/search_cache` for reproducible comparisons.
+- WER/CER metrics are written to each run directory under `runs/<run_id>/` as both `metrics.tsv` and TensorBoard event files. Use `asrpp tensorboard --launch --logdir runs --port 6006` when you want the dashboard.

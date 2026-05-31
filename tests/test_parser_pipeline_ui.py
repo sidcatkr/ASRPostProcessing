@@ -38,7 +38,13 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertTrue((Path(output.output_dir) / "result.json").exists())
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
-            self.assertTrue((Path(tmp) / "runs" / "test-run" / "metrics.tsv").exists())
+            run_dir = Path(tmp) / "runs" / "test-run"
+            metrics_tsv = run_dir / "metrics.tsv"
+            self.assertTrue(metrics_tsv.exists())
+            metrics_text = metrics_tsv.read_text(encoding="utf-8")
+            self.assertIn("cer_normalized_no_space", metrics_text)
+            self.assertIn("wer_eojeol", metrics_text)
+            self.assertTrue(any(path.name.startswith("events.out.tfevents") for path in run_dir.iterdir()))
 
     def test_sequential_model_residency_prepares_and_releases_each_stage(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,7 +81,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
             audio.write_bytes(b"mock")
-            raw, corrected, diff, metrics, edits, preprocess, servers, status = run_from_ui(
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, gpu_status = run_from_ui(
                 str(audio),
                 "Claude Code로 for문 작성 보조",
                 None,
@@ -126,9 +132,10 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertFalse(preprocess["applied"])
             self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
+            self.assertIn("available", gpu_status)
 
     def test_ui_vllm_failure_has_actionable_hint(self):
-        raw, corrected, diff, metrics, edits, preprocess, servers, status = run_from_ui(
+        raw, corrected, diff, metrics, edits, preprocess, servers, status, gpu_status = run_from_ui(
             "missing.wav",
             "",
             None,
@@ -176,6 +183,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertEqual(servers, [])
         self.assertIn("Run failed:", status)
         self.assertIn("For UI-only testing", status)
+        self.assertIn("available", gpu_status)
 
 
 if __name__ == "__main__":

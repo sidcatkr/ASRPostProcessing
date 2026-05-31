@@ -50,17 +50,8 @@ class RunLogger:
             "\n".join(f"{key}\t{value}" for key, value in sorted(data.items()) if value is not None) + "\n",
             encoding="utf-8",
         )
-        try:
-            from torch.utils.tensorboard import SummaryWriter  # type: ignore
-
-            writer = SummaryWriter(log_dir=str(self.runs_dir))
-            for key, value in data.items():
-                if isinstance(value, (int, float)):
-                    writer.add_scalar(key, value, global_step=0)
-            writer.flush()
-            writer.close()
-        except Exception:
-            pass
+        if not _write_torch_tensorboard_scalars(self.runs_dir, data):
+            _write_tensorboard_scalars(self.runs_dir, data)
         return fallback
 
 
@@ -68,3 +59,38 @@ def make_run_id(prefix: str = "run") -> str:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     millis = int((time.time() % 1) * 1000)
     return f"{prefix}-{timestamp}-{millis:03d}"
+
+
+def _write_torch_tensorboard_scalars(log_dir: Path, data: Dict[str, Any]) -> bool:
+    try:
+        from torch.utils.tensorboard import SummaryWriter  # type: ignore
+
+        writer = SummaryWriter(log_dir=str(log_dir))
+        for key, value in data.items():
+            if isinstance(value, (int, float)):
+                writer.add_scalar(key, value, global_step=0)
+        writer.flush()
+        writer.close()
+        return True
+    except Exception:
+        return False
+
+
+def _write_tensorboard_scalars(log_dir: Path, data: Dict[str, Any]) -> bool:
+    try:
+        from tensorboard.compat.proto.event_pb2 import Event  # type: ignore
+        from tensorboard.compat.proto.summary_pb2 import Summary  # type: ignore
+        from tensorboard.summary.writer.event_file_writer import EventFileWriter  # type: ignore
+
+        writer = EventFileWriter(str(log_dir))
+        wall_time = time.time()
+        for key, value in data.items():
+            if not isinstance(value, (int, float)):
+                continue
+            summary = Summary(value=[Summary.Value(tag=key, simple_value=float(value))])
+            writer.add_event(Event(wall_time=wall_time, step=0, summary=summary))
+        writer.flush()
+        writer.close()
+        return True
+    except Exception:
+        return False

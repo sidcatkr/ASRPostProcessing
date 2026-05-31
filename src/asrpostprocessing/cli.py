@@ -44,6 +44,9 @@ def main(argv: Optional[list] = None) -> int:
     doctor_parser.add_argument("--check-endpoints", action="store_true")
     doctor_parser.add_argument("--json", action="store_true")
 
+    gpu_parser = subcommands.add_parser("gpu", help="Show NVIDIA GPU and VRAM status")
+    gpu_parser.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "ui":
         from .ui import launch_ui
@@ -79,8 +82,51 @@ def main(argv: Optional[list] = None) -> int:
             for check in checks:
                 print(f"{check.status.upper():5} {check.name}: {check.detail}")
         return 1 if has_failures(checks) else 0
+    if args.command == "gpu":
+        from .gpu_status import query_gpu_status
+
+        status = query_gpu_status()
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=2))
+        else:
+            print(_format_gpu_status(status))
+        return 0 if status.get("available") else 1
     parser.print_help()
     return 1
+
+
+def _format_gpu_status(status: Dict[str, Any]) -> str:
+    if not status.get("available"):
+        return f"GPU status unavailable: {status.get('error', 'unknown error')}"
+    lines = ["GPU / VRAM status:"]
+    for gpu in status.get("gpus", []):
+        lines.append(
+            "GPU {index}: {name} | VRAM {used}/{total} MiB ({percent}%) | util {util}% | temp {temp}C".format(
+                index=gpu.get("index"),
+                name=gpu.get("name"),
+                used=gpu.get("memory_used_mb"),
+                total=gpu.get("memory_total_mb"),
+                percent=gpu.get("memory_used_percent"),
+                util=gpu.get("gpu_utilization_percent"),
+                temp=gpu.get("temperature_c"),
+            )
+        )
+    processes = status.get("processes", [])
+    if processes:
+        lines.append("GPU processes:")
+        for process in processes:
+            lines.append(
+                "- pid={pid} memory={memory} MiB process={name}".format(
+                    pid=process.get("pid"),
+                    memory=process.get("used_memory_mb"),
+                    name=process.get("process_name"),
+                )
+            )
+    else:
+        lines.append("GPU processes: none")
+    for warning in status.get("warnings", []):
+        lines.append(f"Warning: {warning}")
+    return "\n".join(lines)
 
 
 def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:

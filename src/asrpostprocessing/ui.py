@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from .config import ExperimentConfig
+from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
 from .text import make_diff_html
 
@@ -165,6 +166,9 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         with gr.Row():
             preprocess_output = gr.JSON(label="Preprocess")
             server_output = gr.JSON(label="Model servers")
+        with gr.Row():
+            gpu_output = gr.JSON(label="Server GPU / VRAM status", value=query_gpu_status())
+            refresh_gpu_button = gr.Button("Refresh GPU status")
 
         run_button.click(
             fn=run_from_ui_stream,
@@ -213,15 +217,26 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 model_residency,
                 server_shutdown_timeout_s,
             ],
-            outputs=[raw_output, corrected_output, diff_output, metrics_output, edits_output, preprocess_output, server_output, progress_output],
+            outputs=[
+                raw_output,
+                corrected_output,
+                diff_output,
+                metrics_output,
+                edits_output,
+                preprocess_output,
+                server_output,
+                progress_output,
+                gpu_output,
+            ],
         )
+        refresh_gpu_button.click(fn=query_gpu_status, outputs=gpu_output)
 
     demo.queue()
     return demo.launch(server_name=host, server_port=port, share=share)
 
 
 def run_from_ui_stream(*args):
-    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers..."
+    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", query_gpu_status()
     yield run_from_ui(*args)
 
 
@@ -269,9 +284,9 @@ def run_from_ui(
     post_backend: str,
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
-) -> Tuple[str, str, str, dict, list, dict, list, str]:
+) -> Tuple[str, str, str, dict, list, dict, list, str, dict]:
     if not audio_path:
-        return "", "", "", {}, [], {}, [], "No audio input provided."
+        return "", "", "", {}, [], {}, [], "No audio input provided.", query_gpu_status()
     reference = _read_reference_from_ui(reference_text, reference_file)
     config = ExperimentConfig(
         asr_model=asr_model or "Qwen/Qwen3-ASR-1.7B",
@@ -330,7 +345,7 @@ def run_from_ui(
             )
         elif auto_start_model_servers:
             hint = "\n\nAutomatic model server startup is enabled. Check the server log path in the error above."
-        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}"
+        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", query_gpu_status()
     server_lines = _format_server_statuses(output.server_statuses)
     return (
         output.raw.text,
@@ -348,6 +363,7 @@ def run_from_ui(
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"
             f"Artifacts: {json.dumps(output.artifacts, ensure_ascii=False)}"
         ),
+        query_gpu_status(),
     )
 
 
