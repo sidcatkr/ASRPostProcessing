@@ -26,13 +26,10 @@ def query_gpu_status() -> Dict[str, Any]:
         "warnings": [],
     }
 
-    gpu_result = _run_nvidia_smi(
-        executable,
-        [
-            "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit,pstate",
-            "--format=csv,noheader,nounits",
-        ],
-    )
+    gpu_result = _query_gpus(executable, include_power=True)
+    if gpu_result.returncode != 0:
+        status["warnings"].append(f"extended GPU query failed: {_result_error(gpu_result)}")
+        gpu_result = _query_gpus(executable, include_power=False)
     if gpu_result.returncode != 0:
         status["available"] = False
         status["error"] = _result_error(gpu_result)
@@ -57,6 +54,13 @@ def query_gpu_status() -> Dict[str, Any]:
 
 def _run_nvidia_smi(executable: str, args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run([executable, *args], capture_output=True, text=True, timeout=10)
+
+
+def _query_gpus(executable: str, include_power: bool) -> subprocess.CompletedProcess:
+    fields = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu"
+    if include_power:
+        fields += ",power.draw,power.limit,pstate"
+    return _run_nvidia_smi(executable, [f"--query-gpu={fields}", "--format=csv,noheader,nounits"])
 
 
 def _parse_gpu_line(line: str) -> Dict[str, Any]:
