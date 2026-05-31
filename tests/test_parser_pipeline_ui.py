@@ -85,6 +85,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             audio.write_bytes(b"mock")
             raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
                 str(audio),
+                None,
                 "Claude Code로 for문 작성 보조",
                 None,
                 True,
@@ -140,6 +141,7 @@ class ParserPipelineUiTest(unittest.TestCase):
     def test_ui_vllm_failure_has_actionable_hint(self):
         raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
             "missing.wav",
+            None,
             "",
             None,
             False,
@@ -198,6 +200,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                 _write_pcm16_wav(audio, [1000, -1000, 1000, -1000])
                 preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
                     str(audio),
+                    None,
                     False,
                     "none",
                     0.0,
@@ -215,6 +218,62 @@ class ParserPipelineUiTest(unittest.TestCase):
                 self.assertIn("Preprocessed audio ready", status)
             finally:
                 os.chdir(current)
+
+    def test_ui_accepts_large_audio_file_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "hour-long.mp3"
+            audio.write_bytes(b"mock mp3")
+            audio.with_suffix(".txt").write_text("클러드 코드로 포물 작성 보조", encoding="utf-8")
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
+                None,
+                {"name": str(audio)},
+                "Claude Code로 for문 작성 보조",
+                None,
+                True,
+                0.5,
+                "Claude Code, for문",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                "",
+                "",
+                "",
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+            )
+        self.assertIn("클러드 코드", raw)
+        self.assertIn("Claude Code", corrected)
+        self.assertEqual(preprocessed_audio, str(audio))
+        self.assertFalse(preprocess["applied"])
+        self.assertIn("Run ID:", status)
+        self.assertIn("available", gpu_status)
 
 
 def _write_pcm16_wav(path: Path, samples):

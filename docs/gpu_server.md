@@ -91,6 +91,8 @@ conda run --no-capture-output -n asrpp asrpp ui --config configs/cuda.yaml --hos
 With the default CUDA config, the first Run click may take several minutes because it loads both `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3.5-9B`. Subsequent runs reuse the already-ready endpoints.
 The Gradio UI also exposes a `Server GPU / VRAM status` panel with a refresh button, so you can confirm whether ports `18000` and `18001` have loaded models into VRAM.
 
+For long recordings such as hour-scale MP3 files, use the `Long audio file` upload control instead of the main audio recorder/player. It sends the file path through Gradio without forcing browser-side waveform/audio preview decoding. The UI launch defaults Gradio's upload cap to `2gb`; override it with `ASRPP_GRADIO_MAX_FILE_SIZE` before starting `asrpp ui` if the server needs a different limit.
+
 RAG accepts inline text plus uploaded `.txt`, `.md`/`.markdown`, `.csv`, `.json`, and `.pdf` files. PDF extraction uses `pypdf` from the `rag` extra, then retrieval uses FAISS + sentence-transformers when available and the built-in lexical retriever otherwise.
 
 When VRAM is tight, launch the UI with the sequential config instead:

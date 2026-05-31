@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import inspect
 import json
+import os
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -27,6 +29,10 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         gr.Markdown("# ASR Post-Processing Lab")
         with gr.Row():
             audio = gr.Audio(label="Audio", type="filepath", sources=["upload", "microphone"])
+            large_audio_file = gr.File(
+                label="Long audio file (.mp3, .wav)",
+                file_types=[".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm", ".aac"],
+            )
             with gr.Column():
                 reference_text = gr.Textbox(label="Reference transcript", lines=6)
                 reference_file = gr.File(label="Reference file (.txt)", file_types=[".txt"])
@@ -181,6 +187,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             fn=run_from_ui_stream,
             inputs=[
                 audio,
+                large_audio_file,
                 reference_text,
                 reference_file,
                 enable_keyword_bias,
@@ -241,6 +248,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             fn=preview_preprocessed_audio_from_ui,
             inputs=[
                 audio,
+                large_audio_file,
                 enable_noise_reduction,
                 noise_reduction_model,
                 noise_reduction_strength,
@@ -256,7 +264,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         refresh_gpu_button.click(fn=query_gpu_status, outputs=gpu_output)
 
     demo.queue()
-    return demo.launch(server_name=host, server_port=port, share=share)
+    return demo.launch(**_launch_kwargs(host, port, share))
 
 
 def run_from_ui_stream(*args):
@@ -266,6 +274,7 @@ def run_from_ui_stream(*args):
 
 def preview_preprocessed_audio_from_ui(
     audio_path: Optional[str],
+    large_audio_file: Any,
     enable_noise_reduction: bool,
     noise_reduction_model: str,
     noise_reduction_strength: float,
@@ -276,6 +285,7 @@ def preview_preprocessed_audio_from_ui(
     bs_roformer_command: str,
     ffmpeg_command: str,
 ) -> Tuple[Optional[str], dict, str]:
+    audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
         return None, {}, "No audio input provided."
     config = _preprocess_config_from_ui(
@@ -302,6 +312,7 @@ def preview_preprocessed_audio_from_ui(
 
 def run_from_ui(
     audio_path: Optional[str],
+    large_audio_file: Any,
     reference_text: str,
     reference_file: Any,
     enable_keyword_bias: bool,
@@ -345,6 +356,7 @@ def run_from_ui(
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
 ) -> Tuple[str, str, str, dict, list, dict, list, str, Optional[str], dict]:
+    audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
         return "", "", "", {}, [], {}, [], "No audio input provided.", None, query_gpu_status()
     reference = _read_reference_from_ui(reference_text, reference_file)
@@ -460,6 +472,29 @@ def _preview_audio_path(preprocess: dict) -> Optional[str]:
     if not path:
         return None
     return str(path) if Path(str(path)).exists() else None
+
+
+def _resolve_audio_path(audio_path: Optional[str], large_audio_file: Any = None) -> Optional[str]:
+    file_paths = _file_paths(large_audio_file)
+    if file_paths:
+        return file_paths[0]
+    return audio_path
+
+
+def _launch_kwargs(host: str, port: int, share: bool) -> dict:
+    kwargs = {"server_name": host, "server_port": port, "share": share}
+    max_file_size = os.environ.get("ASRPP_GRADIO_MAX_FILE_SIZE", "2gb")
+    if not max_file_size:
+        return kwargs
+    try:
+        import gradio as gr  # type: ignore
+
+        supports_max_file_size = "max_file_size" in inspect.signature(gr.Blocks.launch).parameters
+    except Exception:
+        supports_max_file_size = False
+    if supports_max_file_size:
+        kwargs["max_file_size"] = max_file_size
+    return kwargs
 
 
 def _split_keywords(value: str) -> List[str]:
