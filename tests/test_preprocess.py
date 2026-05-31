@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import tempfile
 import unittest
 import wave
@@ -8,26 +10,36 @@ from asrpostprocessing.preprocess import preprocess_audio
 
 
 class PreprocessTest(unittest.TestCase):
-    def test_external_rnnoise_command_template(self):
+    def test_rnnoise_uses_builtin_pcm_denoise_without_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "input.wav"
-            source.write_bytes(b"fake wav for command adapter")
+            _write_pcm16_wav(source, [30, -30, 1200, -1200, 20, -20])
             config = ExperimentConfig(
                 enable_preprocess=True,
                 preprocess_model="rnnoise",
-                rnnoise_command="/bin/cp {input} {output}",
+                noise_reduction_strength=0.5,
                 output_dir=str(Path(tmp) / "outputs"),
             )
             result = preprocess_audio(str(source), config)
             self.assertTrue(result.applied)
             self.assertTrue(Path(result.audio_path).exists())
             self.assertEqual(result.steps[0]["step"], "noise_reduction")
+            self.assertEqual(result.steps[0]["metadata"]["processor"], "pcm_noise_gate")
+            self.assertFalse(any("command" in warning.lower() for warning in result.warnings))
 
-    def test_missing_external_command_falls_back_with_warning(self):
-        config = ExperimentConfig(enable_noise_reduction=True, noise_reduction_model="BS-RoFormer")
-        result = preprocess_audio("input.wav", config)
-        self.assertFalse(result.applied)
-        self.assertTrue(result.warnings)
+    def test_bs_roformer_uses_builtin_pcm_denoise_without_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.wav"
+            _write_pcm16_wav(source, [40, -40, 1400, -1400])
+            config = ExperimentConfig(
+                enable_noise_reduction=True,
+                noise_reduction_model="BS-RoFormer",
+                noise_reduction_strength=0.5,
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+            result = preprocess_audio(str(source), config)
+            self.assertTrue(result.applied)
+            self.assertEqual(result.steps[0]["metadata"]["processor"], "pcm_noise_gate")
 
     def test_noise_and_volume_are_independent_ordered_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,7 +49,6 @@ class PreprocessTest(unittest.TestCase):
                 enable_noise_reduction=True,
                 noise_reduction_model="RNNoise",
                 noise_reduction_strength=0.5,
-                rnnoise_command="/bin/cp {input} {output}",
                 enable_volume_normalization=True,
                 volume_normalization_strength=1.0,
                 volume_target_dbfs=-12,
@@ -64,6 +75,40 @@ class PreprocessTest(unittest.TestCase):
             self.assertTrue(Path(result.audio_path).exists())
             self.assertEqual(result.steps[0]["step"], "volume_normalization")
             self.assertGreater(result.steps[0]["metadata"]["target_rms"], 0)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required for compressed audio conversion")
+    def test_volume_normalization_converts_non_wav_without_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.wav"
+            compressed = Path(tmp) / "input.mp3"
+            _write_pcm16_wav(source, [1000, -1000, 1000, -1000])
+            subprocess.run(
+                [
+                    shutil.which("ffmpeg") or "ffmpeg",
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(source),
+                    str(compressed),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            config = ExperimentConfig(
+                enable_volume_normalization=True,
+                volume_normalization_strength=1.0,
+                volume_target_dbfs=-20,
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+            result = preprocess_audio(str(compressed), config)
+            self.assertTrue(result.applied)
+            self.assertTrue(Path(result.audio_path).exists())
+            self.assertIn(".normalized.wav", result.audio_path)
+            self.assertTrue(result.steps[0]["metadata"]["converted_input_path"])
+            self.assertFalse(any("command" in warning.lower() for warning in result.warnings))
 
 
 def _write_pcm16_wav(path: Path, samples):

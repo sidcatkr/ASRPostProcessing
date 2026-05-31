@@ -14,9 +14,6 @@ noise_reduction_strength: 0.0
 enable_volume_normalization: false
 volume_normalization_strength: 0.0
 volume_target_dbfs: -20.0
-ffmpeg_command: ""
-rnnoise_command: ""
-bs_roformer_command: ""
 enable_keyword_bias: true
 keyword_bias_weight: 0.5
 keywords: []

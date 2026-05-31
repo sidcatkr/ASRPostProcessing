@@ -38,9 +38,6 @@ class ExperimentConfig:
     enable_volume_normalization: bool = False
     volume_normalization_strength: float = 0.0
     volume_target_dbfs: float = -20.0
-    ffmpeg_command: str = ""
-    rnnoise_command: str = ""
-    bs_roformer_command: str = ""
 
     enable_keyword_bias: bool = False
     keyword_bias_weight: float = 0.0

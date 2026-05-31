@@ -46,11 +46,8 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
     if config.enable_rag and config.rag_embedding_backend == "faiss":
         checks.append(_check_package("faiss", required=True))
         checks.append(_check_package("sentence_transformers", required=True))
-    noise_model = (config.noise_reduction_model or config.preprocess_model or "").lower()
-    if (config.enable_noise_reduction or config.enable_preprocess) and noise_model == "rnnoise":
-        checks.append(_check_external_preprocess("rnnoise", config.rnnoise_command, "ASRPP_RNNOISE_COMMAND"))
-    if (config.enable_noise_reduction or config.enable_preprocess) and noise_model in {"bs-roformer", "bs_roformer", "bsroformer"}:
-        checks.append(_check_external_preprocess("bs_roformer", config.bs_roformer_command, "ASRPP_BS_ROFORMER_COMMAND"))
+    if _preprocess_enabled(config):
+        checks.append(_check_ffmpeg_preprocess_support())
     if check_endpoints:
         checks.append(_check_openai_endpoint("asr_endpoint", config.asr_base_url))
         checks.append(_check_openai_endpoint("post_endpoint", config.post_base_url))
@@ -120,13 +117,15 @@ def _check_model_residency(config: ExperimentConfig) -> DoctorCheck:
     return DoctorCheck("model_residency", "ok", detail)
 
 
-def _check_external_preprocess(name: str, command: str, env_name: str) -> DoctorCheck:
-    if command:
-        executable = command.split()[0]
-        if "{" in executable:
-            return DoctorCheck(f"preprocess:{name}", "ok", "command template configured")
-        return DoctorCheck(f"preprocess:{name}", "ok" if shutil.which(executable) else "warn", command)
-    return DoctorCheck(f"preprocess:{name}", "warn", f"set config command or {env_name} before using this preprocessor")
+def _check_ffmpeg_preprocess_support() -> DoctorCheck:
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return DoctorCheck("preprocess:ffmpeg", "ok", executable)
+    return DoctorCheck(
+        "preprocess:ffmpeg",
+        "warn",
+        "not found on PATH; 16-bit PCM WAV preprocessing works, compressed audio conversion/denoise needs ffmpeg",
+    )
 
 
 def _check_openai_endpoint(name: str, base_url: str) -> DoctorCheck:
@@ -142,3 +141,12 @@ def _check_openai_endpoint(name: str, base_url: str) -> DoctorCheck:
 
 def _needs_nvidia(config: ExperimentConfig) -> bool:
     return config.asr_backend != "mock" or config.post_backend != "mock"
+
+
+def _preprocess_enabled(config: ExperimentConfig) -> bool:
+    legacy_model = (config.preprocess_model or "none").lower()
+    return (
+        bool(config.enable_noise_reduction)
+        or bool(config.enable_volume_normalization)
+        or (bool(config.enable_preprocess) and legacy_model != "none")
+    )

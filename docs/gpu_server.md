@@ -117,7 +117,7 @@ asrpp run \
 - `auto_start_model_servers` starts Qwen3-ASR through the compatibility wrapper and the post-processing model through `vllm serve`. The `qwen_asr_*` backends load through the Python package instead.
 - `model_residency: parallel` keeps all required managed servers loaded. `model_residency: sequential` loads and unloads the ASR and post-processing stages one at a time.
 - Override `asr_server_command` or `post_server_command` when the server needs cluster-specific launch flags. Command templates may use `{model}`, `{host}`, `{port}`, `{base_url}`, `{gpu}`, and `{log_path}`.
-- Noise reduction and volume normalization are separate experimental variables. Configure `rnnoise_command` or `bs_roformer_command` when using those preprocessors. Command templates can use `{input}`, `{output}`, and `{strength}`.
+- Noise reduction and volume normalization are separate experimental variables. WAV input is processed internally; compressed audio such as MP3 is converted through `ffmpeg` when it is available on `PATH`.
 - Search defaults to DuckDuckGo Instant Answer. Set `search_provider: endpoint` and configure `search_endpoint` if you need a stronger or internal search service.
 - For timestamp-aware chunking, serve Qwen3-ASR with Qwen3-ForcedAligner and return timestamp metadata through the ASR backend.
 - Search is optional and cached under `outputs/search_cache` for reproducible comparisons.

@@ -97,9 +97,6 @@ class ParserPipelineUiTest(unittest.TestCase):
                 False,
                 0.0,
                 -20.0,
-                "",
-                "",
-                "",
                 True,
                 0.5,
                 False,
@@ -153,9 +150,6 @@ class ParserPipelineUiTest(unittest.TestCase):
             False,
             0.0,
             -20.0,
-            "",
-            "",
-            "",
             True,
             0.5,
             False,
@@ -207,15 +201,38 @@ class ParserPipelineUiTest(unittest.TestCase):
                     True,
                     1.0,
                     -20.0,
-                    "",
-                    "",
-                    "",
                 )
                 self.assertIsNotNone(preview_path)
                 self.assertNotEqual(preview_path, str(audio))
                 self.assertTrue(Path(preview_path).exists())
                 self.assertTrue(preprocess["applied"])
                 self.assertIn("Preprocessed audio ready", status)
+            finally:
+                os.chdir(current)
+
+    def test_preprocessed_audio_preview_applies_noise_without_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current = Path.cwd()
+            try:
+                os.chdir(tmp)
+                audio = Path(tmp) / "sample.wav"
+                _write_pcm16_wav(audio, [40, -40, 1400, -1400])
+                preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
+                    str(audio),
+                    None,
+                    True,
+                    "RNNoise",
+                    0.5,
+                    False,
+                    0.0,
+                    -20.0,
+                )
+                self.assertIsNotNone(preview_path)
+                self.assertTrue(Path(preview_path).exists())
+                self.assertTrue(preprocess["applied"])
+                self.assertIn("Preprocessed audio ready", status)
+                self.assertNotIn("No preprocessing", status)
+                self.assertNotIn("command", status.lower())
             finally:
                 os.chdir(current)
 
@@ -238,9 +255,6 @@ class ParserPipelineUiTest(unittest.TestCase):
                 False,
                 0.0,
                 -20.0,
-                "",
-                "",
-                "",
                 True,
                 0.5,
                 False,

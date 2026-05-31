@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import shlex
+import shutil
 import subprocess
 import wave
 from array import array
@@ -91,12 +91,8 @@ def _preprocess_plan(config: ExperimentConfig) -> List[Dict[str, str]]:
 
 def _noise_reduce(audio_path: str, config: ExperimentConfig, model: str) -> PreprocessResult:
     model = (model or "none").lower()
-    if model == "rnnoise":
-        command = config.rnnoise_command or os.environ.get("ASRPP_RNNOISE_COMMAND", "")
-        return _run_external_preprocessor(audio_path, config, "rnnoise", command, config.noise_reduction_strength)
-    if model in {"bs-roformer", "bs_roformer", "bsroformer"}:
-        command = config.bs_roformer_command or os.environ.get("ASRPP_BS_ROFORMER_COMMAND", "")
-        return _run_external_preprocessor(audio_path, config, "bs_roformer", command, config.noise_reduction_strength)
+    if model in {"rnnoise", "bs-roformer", "bs_roformer", "bsroformer", "basic", "built-in", "built_in", "denoise"}:
+        return _denoise_audio(audio_path, config, model)
     return PreprocessResult(
         audio_path=audio_path,
         applied=False,
@@ -105,67 +101,124 @@ def _noise_reduce(audio_path: str, config: ExperimentConfig, model: str) -> Prep
     )
 
 
-def _run_external_preprocessor(
-    audio_path: str,
-    config: ExperimentConfig,
-    model_name: str,
-    command_template: str,
-    strength_value: float,
-) -> PreprocessResult:
-    if not command_template:
-        env_name = "ASRPP_RNNOISE_COMMAND" if model_name == "rnnoise" else "ASRPP_BS_ROFORMER_COMMAND"
-        return PreprocessResult(
-            audio_path=audio_path,
-            applied=False,
-            warnings=[
-                f"{model_name} requires an external command template. "
-                f"Set config field `{model_name}_command` or environment variable `{env_name}`."
-            ],
-            metadata={"model": model_name, "fallback": "original_audio"},
-        )
+def _denoise_audio(audio_path: str, config: ExperimentConfig, model_name: str) -> PreprocessResult:
     input_path = Path(audio_path)
     output_dir = Path(config.output_dir) / "preprocessed"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{input_path.stem}.{model_name}.wav"
-    format_values = {
-        "input": str(input_path),
-        "output": str(output_path),
-        "strength": str(clamp01(strength_value)),
-    }
-    try:
-        if "{input}" in command_template or "{output}" in command_template:
-            command = command_template.format(**format_values)
-        else:
-            command = f"{command_template} {shlex.quote(str(input_path))} {shlex.quote(str(output_path))}"
-        subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
-    except Exception as exc:
+    safe_model = _safe_preprocess_name(model_name)
+    output_path = output_dir / f"{input_path.stem}.{safe_model}.denoised.wav"
+    strength = clamp01(config.noise_reduction_strength)
+    if input_path.suffix.lower() == ".wav":
+        result = _denoise_pcm16_wav(input_path, output_path, model_name, strength)
+        if result is not None:
+            return result
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
         return PreprocessResult(
             audio_path=audio_path,
             applied=False,
-            warnings=[f"{model_name} preprocessing failed: {exc}"],
+            warnings=["Noise reduction for this input requires ffmpeg on PATH or 16-bit PCM WAV input."],
             metadata={"model": model_name, "fallback": "original_audio"},
+        )
+    return _denoise_with_ffmpeg(ffmpeg, input_path, output_path, model_name, strength)
+
+
+def _denoise_pcm16_wav(input_path: Path, output_path: Path, model_name: str, strength: float) -> PreprocessResult | None:
+    try:
+        with wave.open(str(input_path), "rb") as reader:
+            params = reader.getparams()
+            frames = reader.readframes(reader.getnframes())
+    except (EOFError, wave.Error):
+        return None
+    if params.sampwidth != 2:
+        return None
+    rms = _pcm16_rms(frames)
+    if rms == 0:
+        return PreprocessResult(
+            audio_path=str(input_path),
+            applied=False,
+            warnings=["Input WAV is silent; noise reduction skipped."],
+            metadata={"model": model_name, "processor": "pcm_noise_gate", "rms": rms},
+        )
+    threshold = max(24, int(rms * (0.35 + strength)))
+    attenuation = max(0.05, 1.0 - (0.8 * strength))
+    denoised, attenuated_samples = _pcm16_noise_gate(frames, threshold, attenuation)
+    with wave.open(str(output_path), "wb") as writer:
+        writer.setparams(params)
+        writer.writeframes(denoised)
+    return PreprocessResult(
+        audio_path=str(output_path),
+        applied=True,
+        metadata={
+            "model": model_name,
+            "processor": "pcm_noise_gate",
+            "strength": strength,
+            "input_rms": rms,
+            "threshold": threshold,
+            "attenuation": attenuation,
+            "attenuated_samples": attenuated_samples,
+        },
+    )
+
+
+def _denoise_with_ffmpeg(
+    ffmpeg: str,
+    input_path: Path,
+    output_path: Path,
+    model_name: str,
+    strength: float,
+) -> PreprocessResult:
+    noise_floor = -60.0 + (35.0 * strength)
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-af",
+        f"afftdn=nf={noise_floor:.1f}",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except Exception as exc:
+        return PreprocessResult(
+            audio_path=str(input_path),
+            applied=False,
+            warnings=[f"Noise reduction failed: {exc}"],
+            metadata={"model": model_name, "processor": "ffmpeg_afftdn", "fallback": "original_audio"},
         )
     if not output_path.exists():
         return PreprocessResult(
-            audio_path=audio_path,
+            audio_path=str(input_path),
             applied=False,
-            warnings=[f"{model_name} command completed but did not create {output_path}."],
-            metadata={"model": model_name, "fallback": "original_audio"},
+            warnings=[f"Noise reduction did not create {output_path}."],
+            metadata={"model": model_name, "processor": "ffmpeg_afftdn", "fallback": "original_audio"},
         )
     return PreprocessResult(
         audio_path=str(output_path),
         applied=True,
-        metadata={"model": model_name, "command": command_template, "strength": clamp01(strength_value)},
+        metadata={
+            "model": model_name,
+            "processor": "ffmpeg_afftdn",
+            "strength": strength,
+            "noise_floor_db": noise_floor,
+        },
     )
 
 
 def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResult:
-    input_path = _volume_input_path(audio_path, config)
+    input_path = _volume_input_path(audio_path, config, "volume-input")
     if input_path is None:
         return PreprocessResult(
             audio_path=audio_path,
             applied=False,
-            warnings=["Volume normalization requires PCM WAV input or configured ffmpeg_command for conversion."],
+            warnings=["Volume normalization for this input requires ffmpeg on PATH or 16-bit PCM WAV input."],
             metadata={"model": "volume_normalization", "fallback": "input_audio"},
         )
     if input_path.suffix.lower() != ".wav":
@@ -184,12 +237,19 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
             params = reader.getparams()
             frames = reader.readframes(reader.getnframes())
         if params.sampwidth != 2:
-            return PreprocessResult(
-                audio_path=audio_path,
-                applied=False,
-                warnings=["Volume normalization supports 16-bit PCM WAV in this MVP."],
-                metadata={"sample_width": params.sampwidth},
-            )
+            converted_path = _convert_audio_to_pcm16_wav(Path(audio_path), config, "volume-input")
+            if converted_path is not None and converted_path != input_path:
+                input_path = converted_path
+                with wave.open(str(input_path), "rb") as reader:
+                    params = reader.getparams()
+                    frames = reader.readframes(reader.getnframes())
+            if params.sampwidth != 2:
+                return PreprocessResult(
+                    audio_path=audio_path,
+                    applied=False,
+                    warnings=["Volume normalization requires 16-bit PCM WAV input or ffmpeg on PATH for conversion."],
+                    metadata={"sample_width": params.sampwidth},
+                )
         rms = _pcm16_rms(frames)
         if rms == 0:
             return PreprocessResult(
@@ -227,26 +287,43 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
         )
 
 
-def _volume_input_path(audio_path: str, config: ExperimentConfig) -> Path | None:
+def _volume_input_path(audio_path: str, config: ExperimentConfig, tag: str) -> Path | None:
     input_path = Path(audio_path)
     if input_path.suffix.lower() == ".wav":
         return input_path
-    command_template = config.ffmpeg_command or os.environ.get("ASRPP_FFMPEG_COMMAND", "")
-    if not command_template:
+    return _convert_audio_to_pcm16_wav(input_path, config, tag)
+
+
+def _convert_audio_to_pcm16_wav(input_path: Path, config: ExperimentConfig, tag: str) -> Path | None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
         return None
     output_dir = Path(config.output_dir) / "preprocessed"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{input_path.stem}.volume-input.wav"
-    format_values = {"input": str(input_path), "output": str(output_path)}
+    output_path = output_dir / f"{input_path.stem}.{tag}.wav"
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
     try:
-        if "{input}" in command_template or "{output}" in command_template:
-            command = command_template.format(**format_values)
-        else:
-            command = f"{command_template} -y -i {shlex.quote(str(input_path))} {shlex.quote(str(output_path))}"
-        subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True)
     except Exception:
         return None
     return output_path if output_path.exists() else None
+
+
+def _safe_preprocess_name(value: str) -> str:
+    normalized = (value or "preprocess").lower().replace("-", "_")
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in normalized)
 
 
 def _pcm16_rms(frames: bytes) -> int:
@@ -267,6 +344,19 @@ def _pcm16_mul(frames: bytes, factor: float) -> tuple[bytes, int]:
             clipped += 1
         samples[index] = clipped_value
     return samples.tobytes(), clipped
+
+
+def _pcm16_noise_gate(frames: bytes, threshold: int, attenuation: float) -> tuple[bytes, int]:
+    samples = _pcm16_samples(frames)
+    attenuated = 0
+    for index, sample in enumerate(samples):
+        if abs(sample) > threshold:
+            continue
+        value = int(round(sample * attenuation))
+        if value != sample:
+            attenuated += 1
+        samples[index] = value
+    return samples.tobytes(), attenuated
 
 
 def _pcm16_samples(frames: bytes) -> array:

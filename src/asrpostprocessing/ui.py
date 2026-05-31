@@ -68,10 +68,6 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         label="Volume normalization strength",
                     )
                     volume_target_dbfs = gr.Slider(-40, -6, value=initial_config.volume_target_dbfs, step=1, label="Volume target dBFS")
-                with gr.Row():
-                    rnnoise_command = gr.Textbox(value=initial_config.rnnoise_command, label="RNNoise command")
-                    bs_roformer_command = gr.Textbox(value=initial_config.bs_roformer_command, label="BS-RoFormer command")
-                    ffmpeg_command = gr.Textbox(value=initial_config.ffmpeg_command, label="FFmpeg command for non-WAV")
                 preview_preprocess_button = gr.Button("Preview preprocessed audio")
             with gr.Row():
                 enable_llm = gr.Checkbox(label="LLM post-process", value=initial_config.enable_llm_postprocess)
@@ -199,9 +195,6 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 enable_volume_normalization,
                 volume_normalization_strength,
                 volume_target_dbfs,
-                rnnoise_command,
-                bs_roformer_command,
-                ffmpeg_command,
                 enable_llm,
                 postprocess_strength,
                 enable_rag,
@@ -255,9 +248,6 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 enable_volume_normalization,
                 volume_normalization_strength,
                 volume_target_dbfs,
-                rnnoise_command,
-                bs_roformer_command,
-                ffmpeg_command,
             ],
             outputs=[preprocessed_audio_output, preprocess_output, progress_output],
         )
@@ -281,9 +271,6 @@ def preview_preprocessed_audio_from_ui(
     enable_volume_normalization: bool,
     volume_normalization_strength: float,
     volume_target_dbfs: float,
-    rnnoise_command: str,
-    bs_roformer_command: str,
-    ffmpeg_command: str,
 ) -> Tuple[Optional[str], dict, str]:
     audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
@@ -295,16 +282,18 @@ def preview_preprocessed_audio_from_ui(
         enable_volume_normalization,
         volume_normalization_strength,
         volume_target_dbfs,
-        rnnoise_command,
-        bs_roformer_command,
-        ffmpeg_command,
     )
     try:
         result = preprocess_audio(audio_path, config)
     except Exception as exc:
         return None, {}, f"Preprocess preview failed: {exc}"
     preview_path = _preview_audio_path(result.to_dict())
-    status = "Preprocessed audio ready." if result.applied else "No preprocessing was applied; previewing the input audio."
+    if result.applied:
+        status = "Preprocessed audio ready."
+    elif result.steps:
+        status = "Preprocessing could not be applied; previewing the input audio."
+    else:
+        status = "No preprocessing selected; previewing the input audio."
     if result.warnings:
         status += "\n" + "\n".join(result.warnings)
     return preview_path, result.to_dict(), status
@@ -324,9 +313,6 @@ def run_from_ui(
     enable_volume_normalization: bool,
     volume_normalization_strength: float,
     volume_target_dbfs: float,
-    rnnoise_command: str,
-    bs_roformer_command: str,
-    ffmpeg_command: str,
     enable_llm: bool,
     postprocess_strength: float,
     enable_rag: bool,
@@ -387,9 +373,6 @@ def run_from_ui(
         enable_volume_normalization=bool(enable_volume_normalization),
         volume_normalization_strength=float(volume_normalization_strength),
         volume_target_dbfs=float(volume_target_dbfs),
-        rnnoise_command=rnnoise_command or "",
-        bs_roformer_command=bs_roformer_command or "",
-        ffmpeg_command=ffmpeg_command or "",
         enable_keyword_bias=bool(enable_keyword_bias),
         keyword_bias_weight=float(keyword_bias_weight),
         keywords=_split_keywords(keywords),
@@ -447,9 +430,6 @@ def _preprocess_config_from_ui(
     enable_volume_normalization: bool,
     volume_normalization_strength: float,
     volume_target_dbfs: float,
-    rnnoise_command: str,
-    bs_roformer_command: str,
-    ffmpeg_command: str,
 ) -> ExperimentConfig:
     return ExperimentConfig(
         enable_preprocess=False,
@@ -461,9 +441,6 @@ def _preprocess_config_from_ui(
         enable_volume_normalization=bool(enable_volume_normalization),
         volume_normalization_strength=float(volume_normalization_strength),
         volume_target_dbfs=float(volume_target_dbfs),
-        rnnoise_command=rnnoise_command or "",
-        bs_roformer_command=bs_roformer_command or "",
-        ffmpeg_command=ffmpeg_command or "",
     )
 
 

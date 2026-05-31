@@ -19,6 +19,18 @@ class DoctorTest(unittest.TestCase):
         nvidia_check = next(check for check in checks if check.name == "nvidia-smi")
         self.assertIn(nvidia_check.status, {"ok", "fail"})
 
+    def test_preprocess_doctor_checks_ffmpeg_without_command_template(self):
+        config = ExperimentConfig(
+            asr_backend="mock",
+            post_backend="mock",
+            enable_noise_reduction=True,
+            noise_reduction_model="RNNoise",
+        )
+        checks = run_doctor(config)
+        ffmpeg_check = next(check for check in checks if check.name == "preprocess:ffmpeg")
+        self.assertIn(ffmpeg_check.status, {"ok", "warn"})
+        self.assertNotIn("command", ffmpeg_check.detail.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
