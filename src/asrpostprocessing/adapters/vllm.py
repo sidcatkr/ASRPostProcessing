@@ -54,7 +54,10 @@ class VLLMOpenAIPostProcessAdapter:
                 {"role": "user", "content": prompt},
             ],
             "temperature": _temperature_for_strength(config.postprocess_strength),
+            "max_tokens": 512,
         }
+        if (config.post_backend or "").lower() in {"vllm", "vllm_openai"}:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         data = _post_chat(config.post_base_url, payload, config.request_timeout_s, "post-processing LLM")
         response_text = _extract_message_text(data)
         result = parse_correction_response(response_text, chunk_text)
@@ -97,6 +100,7 @@ Correction strength:
 {strength_policy}
 
 Rules:
+- Do not include reasoning or analysis text.
 - Preserve the original meaning.
 - Correct only clear ASR errors such as Korean phonetic renderings of technical terms.
 - If uncertain, keep the original phrase.
