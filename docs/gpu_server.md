@@ -13,7 +13,7 @@ pip install -U "qwen-asr[vllm]"
 pip install -U --extra-index-url https://wheels.vllm.ai/nightly "vllm[audio]>=0.22" bitsandbytes
 ```
 
-`qwen-asr[vllm]` installs `qwen-asr-serve`, which is the required server wrapper for Qwen3-ASR. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
+`qwen-asr[vllm]` installs the Qwen3-ASR server implementation. The app starts it through `python -m asrpostprocessing.qwen_asr_serve_compat` so the project can keep a small vLLM compatibility shim for recent vLLM builds. Install optional accelerators such as `flash-attn` only if the server GPU and Python/CUDA wheel set support them.
 `Qwen/Qwen3.5-9B` requires a recent vLLM build with `Qwen3_5ForConditionalGeneration` support. The tested 16 GB RTX 5000 server also needs bitsandbytes quantization for the post-processing model to fit on one GPU.
 
 ## Model Residency Modes
@@ -37,7 +37,7 @@ export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cu13/l
 ```
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 qwen-asr-serve Qwen/Qwen3-ASR-1.7B \
+CUDA_VISIBLE_DEVICES=0 python -m asrpostprocessing.qwen_asr_serve_compat Qwen/Qwen3-ASR-1.7B \
   --host 0.0.0.0 \
   --port 18000 \
   --gpu-memory-utilization 0.7 \
@@ -107,7 +107,7 @@ asrpp run \
 ## Notes
 
 - Keyword Bias is implemented as ASR chat prompt/context because Qwen3-ASR does not expose a documented hotword decoding parameter.
-- `auto_start_model_servers` starts Qwen3-ASR through `qwen-asr-serve` and the post-processing model through `vllm serve`. The `qwen_asr_*` backends load through the Python package instead.
+- `auto_start_model_servers` starts Qwen3-ASR through the compatibility wrapper and the post-processing model through `vllm serve`. The `qwen_asr_*` backends load through the Python package instead.
 - `model_residency: parallel` keeps all required managed servers loaded. `model_residency: sequential` loads and unloads the ASR and post-processing stages one at a time.
 - Override `asr_server_command` or `post_server_command` when the server needs cluster-specific launch flags. Command templates may use `{model}`, `{host}`, `{port}`, `{base_url}`, `{gpu}`, and `{log_path}`.
 - Noise reduction and volume normalization are separate experimental variables. Configure `rnnoise_command` or `bs_roformer_command` when using those preprocessors. Command templates can use `{input}`, `{output}`, and `{strength}`.

@@ -37,7 +37,8 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
         checks.append(_check_nvidia())
     if config.auto_start_model_servers and _needs_nvidia(config):
         if (config.asr_backend or "").lower() in {"vllm", "vllm_chat", "openai_audio"}:
-            checks.append(_check_executable("qwen-asr-serve", "auto-start ASR server requires qwen-asr-serve"))
+            checks.append(_check_package("qwen_asr", required=True))
+            checks.append(_check_package("vllm", required=True))
         if bool(config.enable_llm_postprocess) and (config.post_backend or "").lower() in {"vllm", "vllm_openai", "openai"}:
             checks.append(_check_executable("vllm", "auto-start post-processing server requires vllm serve"))
     if config.asr_backend.startswith("qwen_asr"):

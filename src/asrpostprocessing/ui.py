@@ -127,7 +127,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_server_command = gr.Textbox(
                     value=initial_config.asr_server_command,
                     label="Custom ASR server command",
-                    placeholder="Leave empty to use qwen-asr-serve {model} --host {host} --port {port}",
+                    placeholder="Leave empty to use python -m asrpostprocessing.qwen_asr_serve_compat {model}",
                 )
                 post_server_command = gr.Textbox(
                     value=initial_config.post_server_command,

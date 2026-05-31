@@ -5,6 +5,7 @@ import re
 import site
 import socket
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -277,7 +278,9 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
 def _default_command(spec: ModelServerSpec) -> List[str]:
     if spec.name == "asr":
         return [
-            "qwen-asr-serve",
+            sys.executable,
+            "-m",
+            "asrpostprocessing.qwen_asr_serve_compat",
             spec.model,
             "--host",
             spec.host,

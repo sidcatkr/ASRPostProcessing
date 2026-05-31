@@ -17,7 +17,7 @@ for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
 done
 
 if [[ "${1:-}" == "asr" ]]; then
-  CUDA_VISIBLE_DEVICES="$ASR_GPU" qwen-asr-serve "$ASR_MODEL" \
+  CUDA_VISIBLE_DEVICES="$ASR_GPU" python -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
     --host 0.0.0.0 \
     --port "$ASR_PORT" \
     --gpu-memory-utilization 0.7 \
