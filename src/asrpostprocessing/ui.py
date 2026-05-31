@@ -66,6 +66,35 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             with gr.Row():
                 asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="ASR base URL")
                 post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post-processing LLM API URL")
+            with gr.Accordion("Model server startup", open=True):
+                auto_start_model_servers = gr.Checkbox(
+                    label="Start required model servers when Run is pressed",
+                    value=initial_config.auto_start_model_servers,
+                )
+                with gr.Row():
+                    asr_server_gpu = gr.Textbox(value=initial_config.asr_server_gpu, label="ASR server GPU")
+                    post_server_gpu = gr.Textbox(value=initial_config.post_server_gpu, label="Post-processing server GPU")
+                    server_start_timeout_s = gr.Slider(
+                        60,
+                        1800,
+                        value=initial_config.server_start_timeout_s,
+                        step=30,
+                        label="Server start timeout seconds",
+                    )
+                with gr.Row():
+                    server_log_dir = gr.Textbox(value=initial_config.server_log_dir, label="Server log directory")
+                    asr_server_host = gr.Textbox(value=initial_config.asr_server_host, label="ASR server bind host")
+                    post_server_host = gr.Textbox(value=initial_config.post_server_host, label="Post-processing server bind host")
+                asr_server_command = gr.Textbox(
+                    value=initial_config.asr_server_command,
+                    label="Custom ASR server command",
+                    placeholder="Leave empty to use vllm serve {model} --host {host} --port {port}",
+                )
+                post_server_command = gr.Textbox(
+                    value=initial_config.post_server_command,
+                    label="Custom post-processing server command",
+                    placeholder="Leave empty to use the Qwen3.5 vLLM command",
+                )
             with gr.Row():
                 asr_backend = gr.Dropdown(
                     [
@@ -97,7 +126,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             edits_output = gr.JSON(label="Edits")
 
         run_button.click(
-            fn=run_from_ui,
+            fn=run_from_ui_stream,
             inputs=[
                 audio,
                 reference_text,
@@ -123,13 +152,28 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 post_model,
                 asr_base_url,
                 post_base_url,
+                auto_start_model_servers,
+                server_start_timeout_s,
+                server_log_dir,
+                asr_server_gpu,
+                post_server_gpu,
+                asr_server_host,
+                post_server_host,
+                asr_server_command,
+                post_server_command,
                 asr_backend,
                 post_backend,
             ],
             outputs=[raw_output, corrected_output, diff_output, metrics_output, edits_output, progress_output],
         )
 
+    demo.queue()
     return demo.launch(server_name=host, server_port=port, share=share)
+
+
+def run_from_ui_stream(*args):
+    yield "", "", "", {}, [], "Preparing run and checking model servers..."
+    yield run_from_ui(*args)
 
 
 def run_from_ui(
@@ -157,6 +201,15 @@ def run_from_ui(
     post_model: str,
     asr_base_url: str,
     post_base_url: str,
+    auto_start_model_servers: bool,
+    server_start_timeout_s: float,
+    server_log_dir: str,
+    asr_server_gpu: str,
+    post_server_gpu: str,
+    asr_server_host: str,
+    post_server_host: str,
+    asr_server_command: str,
+    post_server_command: str,
     asr_backend: str,
     post_backend: str,
 ) -> Tuple[str, str, str, dict, list, str]:
@@ -170,6 +223,15 @@ def run_from_ui(
         post_backend=post_backend,
         asr_base_url=asr_base_url or "http://127.0.0.1:8000/v1",
         post_base_url=post_base_url or "http://127.0.0.1:8001/v1",
+        auto_start_model_servers=bool(auto_start_model_servers),
+        server_start_timeout_s=float(server_start_timeout_s),
+        server_log_dir=server_log_dir or "outputs/model_servers",
+        asr_server_gpu=asr_server_gpu or "0",
+        post_server_gpu=post_server_gpu or "1",
+        asr_server_host=asr_server_host or "0.0.0.0",
+        post_server_host=post_server_host or "0.0.0.0",
+        asr_server_command=asr_server_command or "",
+        post_server_command=post_server_command or "",
         enable_preprocess=bool(enable_preprocess),
         preprocess_model=preprocess_model,
         preprocess_strength=float(preprocess_strength),
@@ -192,13 +254,16 @@ def run_from_ui(
         output = PipelineRunner(config).run(audio_path=audio_path, reference_text=reference)
     except Exception as exc:
         hint = ""
-        if asr_backend != "mock" or post_backend != "mock":
+        if (asr_backend != "mock" or post_backend != "mock") and not auto_start_model_servers:
             hint = (
                 "\n\nCurrent backends require running model servers. "
                 "For UI-only testing, set ASR backend to 'Mock ASR for UI testing' "
                 "and Post-processing backend to 'Mock post-processor for UI testing'."
             )
+        elif auto_start_model_servers:
+            hint = "\n\nAutomatic model server startup is enabled. Check the server log path in the error above."
         return "", "", "", {}, [], f"Run failed: {exc}{hint}"
+    server_lines = _format_server_statuses(output.server_statuses)
     return (
         output.raw.text,
         output.correction.corrected_text,
@@ -207,6 +272,7 @@ def run_from_ui(
         [edit.to_dict() for edit in output.correction.edits],
         (
             f"Run ID: {output.run_id}\n"
+            f"{server_lines}"
             f"Output: {output.output_dir}\n"
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"
             f"Artifacts: {json.dumps(output.artifacts, ensure_ascii=False)}"
@@ -241,3 +307,14 @@ def _file_paths(files: Any) -> List[str]:
         elif isinstance(item, dict) and item.get("name"):
             paths.append(str(item["name"]))
     return paths
+
+
+def _format_server_statuses(statuses: List[dict]) -> str:
+    if not statuses:
+        return ""
+    lines = ["Model servers:"]
+    for item in statuses:
+        pid = f" pid={item['pid']}" if item.get("pid") else ""
+        log_path = f" log={item['log_path']}" if item.get("log_path") else ""
+        lines.append(f"- {item['name']}: {item['status']} at {item['base_url']}{pid}{log_path}")
+    return "\n".join(lines) + "\n"

@@ -2,6 +2,7 @@ asr_model: Qwen/Qwen3-ASR-1.7B
 post_model: Qwen/Qwen3.5-9B
 asr_backend: mock
 post_backend: mock
+auto_start_model_servers: false
 enable_preprocess: false
 preprocess_model: none
 preprocess_strength: 0.0

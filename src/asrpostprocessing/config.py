@@ -17,6 +17,15 @@ class ExperimentConfig:
     post_base_url: str = "http://127.0.0.1:8001/v1"
     request_timeout_s: float = 120.0
     language: str = "ko"
+    auto_start_model_servers: bool = False
+    server_start_timeout_s: float = 600.0
+    server_log_dir: str = "outputs/model_servers"
+    asr_server_gpu: str = "0"
+    post_server_gpu: str = "1"
+    asr_server_host: str = "0.0.0.0"
+    post_server_host: str = "0.0.0.0"
+    asr_server_command: str = ""
+    post_server_command: str = ""
 
     enable_preprocess: bool = False
     preprocess_model: str = "none"

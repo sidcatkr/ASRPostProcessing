@@ -34,6 +34,8 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
     ]
     if _needs_nvidia(config):
         checks.append(_check_nvidia())
+    if config.auto_start_model_servers and _needs_nvidia(config):
+        checks.append(_check_vllm_executable())
     if config.asr_backend.startswith("qwen_asr"):
         checks.append(_check_package("qwen_asr", required=True))
     if config.enable_rag and config.rag_embedding_backend == "faiss":
@@ -80,6 +82,13 @@ def _check_nvidia() -> DoctorCheck:
         return DoctorCheck("nvidia-smi", "fail", str(exc))
     detail = result.stdout.strip() or "nvidia-smi returned no GPU list"
     return DoctorCheck("nvidia-smi", "ok", detail)
+
+
+def _check_vllm_executable() -> DoctorCheck:
+    executable = shutil.which("vllm")
+    if not executable:
+        return DoctorCheck("vllm", "fail", "not found on PATH; auto-start model servers requires vllm serve")
+    return DoctorCheck("vllm", "ok", executable)
 
 
 def _check_output_dirs(config: ExperimentConfig) -> DoctorCheck:

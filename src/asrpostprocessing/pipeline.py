@@ -11,6 +11,7 @@ from .config import ExperimentConfig
 from .keyword_bias import build_keyword_bias_instruction
 from .logging import RunLogger, make_run_id
 from .metrics import evaluate_transcripts
+from .model_server import ensure_model_servers
 from .preprocess import preprocess_audio
 from .rag import build_rag_index
 from .schemas import CorrectionResult, Edit, MetricsResult, RAGContext, SearchResult, TranscriptResult
@@ -27,6 +28,7 @@ class PipelineOutput:
     diff_html: str
     output_dir: str
     artifacts: Dict[str, str]
+    server_statuses: List[Dict[str, Any]]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,6 +38,7 @@ class PipelineOutput:
             "metrics": self.metrics.to_dict(),
             "output_dir": self.output_dir,
             "artifacts": self.artifacts,
+            "server_statuses": self.server_statuses,
         }
 
 
@@ -55,6 +58,7 @@ class PipelineRunner:
         if rag_inline_text:
             self.config.rag_inline_text = rag_inline_text
 
+        server_statuses = [status.to_dict() for status in ensure_model_servers(self.config)]
         preprocess_result = preprocess_audio(audio_path, self.config)
         keyword_instruction = ""
         if self.config.enable_keyword_bias:
@@ -70,7 +74,7 @@ class PipelineRunner:
 
         logger = RunLogger(self.config, run_id)
         artifacts = {
-            "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result))),
+            "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses))),
             "metrics": str(logger.write_json("metrics.json", metrics.to_dict())),
             "edits": str(logger.write_edits(correction.edits)),
             "config": str(logger.write_config()),
@@ -84,6 +88,7 @@ class PipelineRunner:
             diff_html=diff_html,
             output_dir=str(logger.output_dir),
             artifacts=artifacts,
+            server_statuses=server_statuses,
         )
 
     def _postprocess(self, raw: TranscriptResult) -> CorrectionResult:
@@ -125,11 +130,19 @@ class PipelineRunner:
         keywords = " ".join(self.config.keywords[:8])
         return " ".join(part for part in [keywords, chunk_text[:300]] if part).strip()
 
-    def _result_payload(self, raw: TranscriptResult, correction: CorrectionResult, metrics: MetricsResult, preprocess_result) -> Dict[str, Any]:
+    def _result_payload(
+        self,
+        raw: TranscriptResult,
+        correction: CorrectionResult,
+        metrics: MetricsResult,
+        preprocess_result,
+        server_statuses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         return {
             "raw": raw.to_dict(),
             "correction": correction.to_dict(),
             "metrics": metrics.to_dict(),
+            "server_statuses": server_statuses,
             "preprocess": {
                 "audio_path": preprocess_result.audio_path,
                 "applied": preprocess_result.applied,

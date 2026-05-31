@@ -99,6 +99,8 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enable-search", action="store_true")
     parser.add_argument("--search-provider", choices=["duckduckgo", "endpoint", "none"])
     parser.add_argument("--search-endpoint")
+    parser.add_argument("--auto-start-model-servers", action="store_true")
+    parser.add_argument("--no-auto-start-model-servers", action="store_true")
 
 
 def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
@@ -114,6 +116,10 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "search_provider": args.search_provider,
         "search_endpoint": args.search_endpoint,
     }
+    if args.auto_start_model_servers:
+        overrides["auto_start_model_servers"] = True
+    if args.no_auto_start_model_servers:
+        overrides["auto_start_model_servers"] = False
     if args.keywords:
         overrides["keywords"] = args.keywords
     if args.enable_keyword_bias:
