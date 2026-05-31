@@ -3,8 +3,10 @@ from __future__ import annotations
 import inspect
 import json
 import os
+from html import escape
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
+from urllib.parse import quote
 
 from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
@@ -173,8 +175,15 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             edits_output = gr.JSON(label="Edits")
         with gr.Row():
             preprocess_output = gr.JSON(label="Preprocess")
-            preprocessed_audio_output = gr.Audio(label="Preprocessed audio preview", type="filepath", format="wav")
+            preprocessed_audio_output = gr.Audio(
+                label="Preprocessed audio preview",
+                type="filepath",
+                format="wav",
+                interactive=False,
+                editable=False,
+            )
             server_output = gr.JSON(label="Model servers")
+        preprocessed_audio_player_output = gr.HTML(label="Preprocessed audio timeline")
         with gr.Row():
             gpu_output = gr.JSON(label="Server GPU / VRAM status", value=query_gpu_status())
             refresh_gpu_button = gr.Button("Refresh GPU status")
@@ -234,6 +243,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 server_output,
                 progress_output,
                 preprocessed_audio_output,
+                preprocessed_audio_player_output,
                 gpu_output,
             ],
         )
@@ -249,7 +259,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 volume_normalization_strength,
                 volume_target_dbfs,
             ],
-            outputs=[preprocessed_audio_output, preprocess_output, progress_output],
+            outputs=[preprocessed_audio_output, preprocessed_audio_player_output, preprocess_output, progress_output],
         )
         refresh_gpu_button.click(fn=query_gpu_status, outputs=gpu_output)
 
@@ -258,7 +268,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
 
 
 def run_from_ui_stream(*args):
-    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", None, query_gpu_status()
+    yield "", "", "", {}, [], {}, [], "Preparing run and checking model servers...", None, "", query_gpu_status()
     yield run_from_ui(*args)
 
 
@@ -271,10 +281,10 @@ def preview_preprocessed_audio_from_ui(
     enable_volume_normalization: bool,
     volume_normalization_strength: float,
     volume_target_dbfs: float,
-) -> Tuple[Optional[str], dict, str]:
+) -> Tuple[Optional[str], str, dict, str]:
     audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
-        return None, {}, "No audio input provided."
+        return None, "", {}, "No audio input provided."
     config = _preprocess_config_from_ui(
         enable_noise_reduction,
         noise_reduction_model,
@@ -286,8 +296,9 @@ def preview_preprocessed_audio_from_ui(
     try:
         result = preprocess_audio(audio_path, config)
     except Exception as exc:
-        return None, {}, f"Preprocess preview failed: {exc}"
+        return None, "", {}, f"Preprocess preview failed: {exc}"
     preview_path = _preview_audio_path(result.to_dict())
+    preview_html = _audio_timeline_html(preview_path, result.to_dict())
     if result.applied:
         status = "Preprocessed audio ready."
     elif result.steps:
@@ -296,7 +307,7 @@ def preview_preprocessed_audio_from_ui(
         status = "No preprocessing selected; previewing the input audio."
     if result.warnings:
         status += "\n" + "\n".join(result.warnings)
-    return preview_path, result.to_dict(), status
+    return preview_path, preview_html, result.to_dict(), status
 
 
 def run_from_ui(
@@ -341,10 +352,10 @@ def run_from_ui(
     post_backend: str,
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
-) -> Tuple[str, str, str, dict, list, dict, list, str, Optional[str], dict]:
+) -> Tuple[str, str, str, dict, list, dict, list, str, Optional[str], str, dict]:
     audio_path = _resolve_audio_path(audio_path, large_audio_file)
     if not audio_path:
-        return "", "", "", {}, [], {}, [], "No audio input provided.", None, query_gpu_status()
+        return "", "", "", {}, [], {}, [], "No audio input provided.", None, "", query_gpu_status()
     reference = _read_reference_from_ui(reference_text, reference_file)
     config = ExperimentConfig(
         asr_model=asr_model or "Qwen/Qwen3-ASR-1.7B",
@@ -400,8 +411,9 @@ def run_from_ui(
             )
         elif auto_start_model_servers:
             hint = "\n\nAutomatic model server startup is enabled. Check the server log path in the error above."
-        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", None, query_gpu_status()
+        return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", None, "", query_gpu_status()
     server_lines = _format_server_statuses(output.server_statuses)
+    preview_path = _preview_audio_path(output.preprocess)
     return (
         output.raw.text,
         output.correction.corrected_text,
@@ -418,7 +430,8 @@ def run_from_ui(
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"
             f"Artifacts: {json.dumps(output.artifacts, ensure_ascii=False)}"
         ),
-        _preview_audio_path(output.preprocess),
+        preview_path,
+        _audio_timeline_html(preview_path, output.preprocess),
         query_gpu_status(),
     )
 
@@ -453,6 +466,55 @@ def _preview_audio_path(preprocess: dict) -> Optional[str]:
     return str(path) if Path(str(path)).exists() else None
 
 
+def _audio_timeline_html(audio_path: Optional[str], preprocess: dict) -> str:
+    if isinstance(preprocess, dict) and not preprocess.get("applied"):
+        return ""
+    if not audio_path:
+        return ""
+    path = Path(audio_path)
+    if not path.exists():
+        return ""
+    duration = _preprocess_duration(preprocess)
+    duration_label = _format_seconds(duration) if duration is not None else ""
+    url = "/gradio_api/file=" + quote(str(path), safe="/")
+    separator = "&" if "?" in url else "?"
+    url = f"{url}{separator}v={path.stat().st_mtime_ns}"
+    escaped_url = escape(url, quote=True)
+    escaped_name = escape(path.name)
+    duration_html = f'<div class="asrpp-audio-time">Duration: {escape(duration_label)}</div>' if duration_label else ""
+    return (
+        '<div class="asrpp-audio-preview">'
+        f'<audio controls preload="metadata" src="{escaped_url}" style="width:100%;"></audio>'
+        f'<div class="asrpp-audio-file">{escaped_name}</div>'
+        f"{duration_html}"
+        "</div>"
+    )
+
+
+def _preprocess_duration(preprocess: dict) -> Optional[float]:
+    if not isinstance(preprocess, dict):
+        return None
+    steps = preprocess.get("steps")
+    if not isinstance(steps, list):
+        return None
+    for step in reversed(steps):
+        if not isinstance(step, dict) or not step.get("applied"):
+            continue
+        metadata = step.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("duration_seconds"), (int, float)):
+            return float(metadata["duration_seconds"])
+    return None
+
+
+def _format_seconds(value: float) -> str:
+    total_seconds = max(0, int(round(value)))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:d}:{seconds:02d}"
+
+
 def _resolve_audio_path(audio_path: Optional[str], large_audio_file: Any = None) -> Optional[str]:
     file_paths = _file_paths(large_audio_file)
     if file_paths:
@@ -463,16 +525,19 @@ def _resolve_audio_path(audio_path: Optional[str], large_audio_file: Any = None)
 def _launch_kwargs(host: str, port: int, share: bool) -> dict:
     kwargs = {"server_name": host, "server_port": port, "share": share}
     max_file_size = os.environ.get("ASRPP_GRADIO_MAX_FILE_SIZE", "2gb")
-    if not max_file_size:
-        return kwargs
-    try:
-        import gradio as gr  # type: ignore
+    if max_file_size:
+        try:
+            import gradio as gr  # type: ignore
 
-        supports_max_file_size = "max_file_size" in inspect.signature(gr.Blocks.launch).parameters
+            supports_max_file_size = "max_file_size" in inspect.signature(gr.Blocks.launch).parameters
+        except Exception:
+            supports_max_file_size = False
+        if supports_max_file_size:
+            kwargs["max_file_size"] = max_file_size
+    try:
+        kwargs["allowed_paths"] = [str((Path.cwd() / "outputs").resolve())]
     except Exception:
-        supports_max_file_size = False
-    if supports_max_file_size:
-        kwargs["max_file_size"] = max_file_size
+        pass
     return kwargs
 
 

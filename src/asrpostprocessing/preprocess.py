@@ -232,20 +232,18 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
         with wave.open(str(output_path), "wb") as writer:
             writer.setparams(params)
             writer.writeframes(normalized)
-        return PreprocessResult(
-            audio_path=str(output_path),
-            applied=True,
-            metadata={
-                "model": "volume_normalization",
-                "input_rms": rms,
-                "target_rms": target_rms,
-                "target_dbfs": float(config.volume_target_dbfs),
-                "strength": strength,
-                "gain_factor": factor,
-                "clipped_samples": clipped_samples,
-                "converted_input_path": str(input_path) if str(input_path) != audio_path else "",
-            },
-        )
+        metadata = {
+            "model": "volume_normalization",
+            "input_rms": rms,
+            "target_rms": target_rms,
+            "target_dbfs": float(config.volume_target_dbfs),
+            "strength": strength,
+            "gain_factor": factor,
+            "clipped_samples": clipped_samples,
+            "converted_input_path": str(input_path) if str(input_path) != audio_path else "",
+        }
+        metadata.update(_wav_metadata(output_path))
+        return PreprocessResult(audio_path=str(output_path), applied=True, metadata=metadata)
     except Exception as exc:
         return PreprocessResult(
             audio_path=audio_path,

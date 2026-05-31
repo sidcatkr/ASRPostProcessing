@@ -83,7 +83,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
             audio.write_bytes(b"mock")
-            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
                 str(audio),
                 None,
                 "테스트 전사 문장입니다.",
@@ -131,12 +131,13 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIsInstance(edits, list)
             self.assertFalse(preprocess["applied"])
             self.assertEqual(preprocessed_audio, str(audio))
+            self.assertEqual(preprocessed_audio_html, "")
             self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
             self.assertIn("available", gpu_status)
 
     def test_ui_vllm_failure_has_actionable_hint(self):
-        raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
+        raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
             "missing.wav",
             None,
             "",
@@ -180,6 +181,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertEqual(raw, "")
         self.assertEqual(preprocess, {})
         self.assertIsNone(preprocessed_audio)
+        self.assertEqual(preprocessed_audio_html, "")
         self.assertEqual(servers, [])
         self.assertIn("Run failed:", status)
         self.assertIn("For UI-only testing", status)
@@ -192,7 +194,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                 os.chdir(tmp)
                 audio = Path(tmp) / "sample.wav"
                 _write_pcm16_wav(audio, [1000, -1000, 1000, -1000])
-                preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
+                preview_path, preview_html, preprocess, status = preview_preprocessed_audio_from_ui(
                     str(audio),
                     None,
                     False,
@@ -206,6 +208,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                 self.assertNotEqual(preview_path, str(audio))
                 self.assertTrue(Path(preview_path).exists())
                 self.assertTrue(preprocess["applied"])
+                self.assertIn("<audio controls", preview_html)
+                self.assertIn("Duration:", preview_html)
                 self.assertIn("Preprocessed audio ready", status)
             finally:
                 os.chdir(current)
@@ -217,7 +221,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                 os.chdir(tmp)
                 audio = Path(tmp) / "sample.wav"
                 _write_pcm16_wav(audio, [40, -40, 1400, -1400] * 4000)
-                preview_path, preprocess, status = preview_preprocessed_audio_from_ui(
+                preview_path, preview_html, preprocess, status = preview_preprocessed_audio_from_ui(
                     str(audio),
                     None,
                     True,
@@ -232,10 +236,12 @@ class ParserPipelineUiTest(unittest.TestCase):
                 self.assertTrue(preprocess["applied"])
                 self.assertEqual(preprocess["steps"][0]["metadata"]["processor"], "ffmpeg_afftdn")
                 self.assertGreater(preprocess["steps"][0]["metadata"]["duration_seconds"], 0.9)
+                self.assertIn("<audio controls", preview_html)
+                self.assertIn("Duration: 0:01", preview_html)
                 self.assertIn("Preprocessed audio ready", status)
                 self.assertNotIn("No preprocessing", status)
                 self.assertNotIn("command", status.lower())
-                second_preview_path, second_preprocess, _second_status = preview_preprocessed_audio_from_ui(
+                second_preview_path, second_preview_html, second_preprocess, _second_status = preview_preprocessed_audio_from_ui(
                     str(audio),
                     None,
                     True,
@@ -246,6 +252,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                     -20.0,
                 )
                 self.assertTrue(second_preprocess["applied"])
+                self.assertIn("<audio controls", second_preview_html)
                 self.assertNotEqual(preview_path, second_preview_path)
             finally:
                 os.chdir(current)
@@ -255,7 +262,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             audio = Path(tmp) / "hour-long.mp3"
             audio.write_bytes(b"mock mp3")
             audio.with_suffix(".txt").write_text("긴 오디오 테스트 문장입니다.", encoding="utf-8")
-            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, gpu_status = run_from_ui(
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
                 None,
                 {"name": str(audio)},
                 "긴 오디오 테스트 문장입니다.",
@@ -299,6 +306,7 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertEqual(raw, "긴 오디오 테스트 문장입니다.")
         self.assertEqual(corrected, "긴 오디오 테스트 문장입니다.")
         self.assertEqual(preprocessed_audio, str(audio))
+        self.assertEqual(preprocessed_audio_html, "")
         self.assertFalse(preprocess["applied"])
         self.assertIn("Run ID:", status)
         self.assertIn("available", gpu_status)
