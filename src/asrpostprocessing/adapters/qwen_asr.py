@@ -6,7 +6,14 @@ from typing import Any, Dict, List, Tuple
 from asrpostprocessing.config import ExperimentConfig, normalize_asr_chunking_strategy
 from asrpostprocessing.schemas import TranscriptResult, TranscriptSegment
 
-from .vllm import ASRAudioChunk, _asr_audio_chunks, _asr_instruction, _rolling_asr_context
+from .vllm import (
+    ASRAudioChunk,
+    _asr_audio_chunks,
+    _asr_instruction,
+    _clean_asr_transcript_text,
+    _filter_asr_language_drift,
+    _rolling_asr_context,
+)
 
 _MODEL_CACHE: Dict[Tuple[str, str], Any] = {}
 
@@ -44,7 +51,9 @@ class QwenASRPackageAdapter:
             kwargs["context"] = context
         results = model.transcribe(**kwargs)
         result = results[0] if isinstance(results, list) else results
-        text = getattr(result, "text", "")
+        raw_text = getattr(result, "text", "")
+        text = _clean_asr_transcript_text(raw_text)
+        text, filtered_reason = _filter_asr_language_drift(text, config.language)
         language = getattr(result, "language", None) or config.language
         segments = _segments_from_timestamps(getattr(result, "time_stamps", None))
         return TranscriptResult(
@@ -55,6 +64,8 @@ class QwenASRPackageAdapter:
                 "backend": f"qwen_asr_{self.backend}",
                 "used_context": bool(context),
                 "raw_result_type": type(result).__name__,
+                "cleaned_asr_text": raw_text != text,
+                "filtered_asr_text_reason": filtered_reason,
             },
         )
 

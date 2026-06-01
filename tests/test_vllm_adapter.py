@@ -10,8 +10,10 @@ from asrpostprocessing.adapters.vllm import (
     VLLMChatASRAdapter,
     VLLMOpenAIPostProcessAdapter,
     _asr_audio_chunks,
+    _asr_instruction,
     _asr_request_timeout_s,
     _duration_from_ffmpeg_output,
+    _parse_asr_text,
     _post_chat,
     _rolling_asr_context,
     _silence_aware_chunk_specs,
@@ -91,6 +93,58 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertNotIn("Previous transcript context", first_instruction)
         self.assertIn("Previous transcript context", second_instruction)
         self.assertIn("chunk 1 text", second_instruction)
+
+    def test_asr_request_skips_empty_qwen_artifact_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "chunk0.wav"
+            second = Path(tmp) / "chunk1.wav"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            chunks = [
+                ASRAudioChunk(path=first, index=0, start_s=0.0, end_s=30.0, method="fixed"),
+                ASRAudioChunk(path=second, index=1, start_s=30.0, end_s=60.0, method="fixed"),
+            ]
+            responses = iter(["강의 전사", "language None<asr_text>"])
+
+            def fake_post(_base_url, _payload, _timeout_s, _service_name):
+                return {"choices": [{"message": {"content": next(responses)}}]}
+
+            config = ExperimentConfig(asr_backend="vllm_chat", asr_chunking_strategy="fixed", asr_chunk_seconds=30.0)
+            with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=75.0), patch(
+                "asrpostprocessing.adapters.vllm._split_audio_for_asr", return_value=chunks
+            ), patch("asrpostprocessing.adapters.vllm._post_chat", side_effect=fake_post):
+                result = VLLMChatASRAdapter().transcribe(str(Path(tmp) / "source.wav"), config)
+
+        self.assertEqual(result.text, "강의 전사")
+        self.assertEqual(result.segments[1].text, "")
+        self.assertEqual(result.metadata["chunks"][1]["text_chars"], 0)
+
+    def test_parse_asr_text_treats_empty_qwen_marker_as_empty(self):
+        parsed = _parse_asr_text("language None<asr_text>")
+
+        self.assertEqual(parsed["text"], "")
+        self.assertIn(parsed.get("language"), (None, ""))
+
+    def test_korean_asr_filters_cjk_language_drift_chunk(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": "假如我查新闻，然后卡特总统。"}}]}
+        config = ExperimentConfig(language="ko")
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"audio")
+            with patch("requests.post", return_value=response):
+                result = VLLMChatASRAdapter()._transcribe_one(str(audio), config)
+
+        self.assertEqual(result.text, "")
+        self.assertEqual(result.metadata["parsed"]["filtered_reason"], "non_korean_cjk_drift")
+
+    def test_asr_instruction_discourages_language_drift_and_artifacts(self):
+        instruction = _asr_instruction("", "")
+
+        self.assertIn("Transcribe only the Korean speech", instruction)
+        self.assertIn("Do not translate", instruction)
+        self.assertIn("empty transcript", instruction)
 
     def test_asr_uses_dedicated_timeout(self):
         response = Mock()

@@ -16,12 +16,14 @@ class _FakeASRResult:
 
 
 class _FakeQwenModel:
-    def __init__(self):
+    def __init__(self, texts=None):
         self.calls = []
+        self.texts = list(texts or [])
 
     def transcribe(self, **kwargs):
         self.calls.append(kwargs)
-        return [_FakeASRResult(f"chunk {len(self.calls)} text")]
+        text = self.texts[len(self.calls) - 1] if len(self.calls) <= len(self.texts) else f"chunk {len(self.calls)} text"
+        return [_FakeASRResult(text)]
 
 
 class QwenASRPackageAdapterTest(unittest.TestCase):
@@ -56,6 +58,36 @@ class QwenASRPackageAdapterTest(unittest.TestCase):
         self.assertNotIn("Previous transcript context", model.calls[0]["context"])
         self.assertIn("Previous transcript context", model.calls[1]["context"])
         self.assertIn("chunk 1 text", model.calls[1]["context"])
+
+    def test_package_backend_cleans_empty_qwen_marker_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "audio.wav"
+            audio.write_bytes(b"audio")
+            chunk = ASRAudioChunk(path=audio, index=0, start_s=0.0, end_s=30.0, method="single")
+            model = _FakeQwenModel(texts=["language None<asr_text>"])
+            config = ExperimentConfig(asr_backend="qwen_asr_vllm")
+            with patch("asrpostprocessing.adapters.qwen_asr._get_model", return_value=model), patch(
+                "asrpostprocessing.adapters.qwen_asr._asr_audio_chunks", return_value=[chunk]
+            ):
+                result = QwenASRPackageAdapter("vllm").transcribe(str(audio), config)
+
+        self.assertEqual(result.text, "")
+        self.assertTrue(result.metadata["cleaned_asr_text"])
+
+    def test_package_backend_filters_cjk_language_drift_for_korean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "audio.wav"
+            audio.write_bytes(b"audio")
+            chunk = ASRAudioChunk(path=audio, index=0, start_s=0.0, end_s=30.0, method="single")
+            model = _FakeQwenModel(texts=["假如我查新闻，然后卡特总统。"])
+            config = ExperimentConfig(asr_backend="qwen_asr_vllm", language="ko")
+            with patch("asrpostprocessing.adapters.qwen_asr._get_model", return_value=model), patch(
+                "asrpostprocessing.adapters.qwen_asr._asr_audio_chunks", return_value=[chunk]
+            ):
+                result = QwenASRPackageAdapter("vllm").transcribe(str(audio), config)
+
+        self.assertEqual(result.text, "")
+        self.assertEqual(result.metadata["filtered_asr_text_reason"], "non_korean_cjk_drift")
 
 
 if __name__ == "__main__":

@@ -55,6 +55,19 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertEqual(report["chunks"][0]["method"], "single")
         self.assertIn("Reference-free", report["note"])
 
+    def test_report_recommends_inspection_for_empty_chunks(self):
+        raw = TranscriptResult(
+            language="ko",
+            text="",
+            segments=[TranscriptSegment(text="", start_s=0.0, end_s=30.0)],
+            metadata={"backend": "vllm_chat", "chunked": True, "chunk_seconds": 120.0},
+        )
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
+
+        self.assertTrue(any("empty text" in warning for warning in report["warnings"]))
+        self.assertTrue(any("language drift" in action for action in report["action_items"]))
+
 
 if __name__ == "__main__":
     unittest.main()

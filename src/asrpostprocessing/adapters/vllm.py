@@ -69,9 +69,15 @@ class VLLMChatASRAdapter:
         data = _post_chat(config.asr_base_url, payload, _asr_request_timeout_s(config), "ASR")
         text = _extract_message_text(data)
         parsed = _parse_asr_text(text)
+        transcript_text = parsed["text"] if "text" in parsed else _clean_asr_transcript_text(text)
+        filtered_text, filtered_reason = _filter_asr_language_drift(transcript_text, config.language)
+        if filtered_reason:
+            parsed["text"] = filtered_text
+            parsed["filtered_reason"] = filtered_reason
+            transcript_text = filtered_text
         return TranscriptResult(
             language=parsed.get("language") or config.language,
-            text=parsed.get("text") or text,
+            text=transcript_text,
             metadata={"backend": "vllm_chat", "raw": data, "parsed": parsed},
         )
 
@@ -174,7 +180,12 @@ class VLLMOpenAIPostProcessAdapter:
 
 
 def _asr_instruction(keyword_instruction: str, previous_context: str = "") -> str:
-    base = "Transcribe the Korean conversational audio faithfully. Preserve spoken meaning and do not invent content."
+    base = (
+        "Transcribe only the Korean speech in the audio faithfully. "
+        "Preserve spoken meaning and do not invent content. "
+        "Do not translate, switch languages, add language labels, or emit XML-like tags. "
+        "If the current audio contains only silence, noise, music, or unintelligible speech, return an empty transcript."
+    )
     parts = [base]
     if previous_context:
         parts.append(
@@ -227,6 +238,7 @@ Rules:
 - Preserve the original meaning.
 - Correct only clear ASR errors such as Korean phonetic renderings of technical terms.
 - If uncertain, keep the original phrase.
+- Do not translate or expand foreign-language fragments, ASR tags, or model artifacts into plausible Korean.
 - Do not add facts that are not supported by the audio transcript or context.
 - Return compact JSON with keys: corrected_text, edits, risk, used_context_ids.
 - Each edit item must include before, after, reason, confidence.
@@ -316,19 +328,63 @@ def _extract_message_text(data: dict) -> str:
 
 
 def _parse_asr_text(text: str) -> dict:
+    raw_text = (text or "").strip()
     try:
         from qwen_asr import parse_asr_output  # type: ignore
 
-        parsed = parse_asr_output(text)
+        parsed = parse_asr_output(raw_text)
         if isinstance(parsed, dict):
-            return parsed
+            return _clean_parsed_asr(parsed, raw_text)
         if isinstance(parsed, tuple) and len(parsed) >= 2:
-            return {"language": parsed[0], "text": parsed[1]}
+            return _clean_parsed_asr({"language": parsed[0], "text": parsed[1]}, raw_text)
         if isinstance(parsed, str):
-            return {"text": parsed}
+            return {"text": _clean_asr_transcript_text(parsed)}
     except Exception:
         pass
-    return {"text": text.strip()}
+    return {"text": _clean_asr_transcript_text(raw_text)}
+
+
+def _clean_parsed_asr(parsed: dict, raw_text: str) -> dict:
+    cleaned = dict(parsed)
+    if "text" in cleaned:
+        cleaned["text"] = _clean_asr_transcript_text(str(cleaned.get("text") or ""))
+    else:
+        cleaned["text"] = _clean_asr_transcript_text(raw_text)
+    language = str(cleaned.get("language") or "").strip()
+    if language.lower() == "none":
+        cleaned["language"] = ""
+    return cleaned
+
+
+def _clean_asr_transcript_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(
+        r"(?:^|\s)language\s+(?:none|korean|english|chinese|[a-z_-]+)?\s*<\s*asr_text\s*>\s*",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"</?\s*asr_text\s*>", " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"[ \t\r\f\v]+", " ", cleaned).strip()
+
+
+def _filter_asr_language_drift(text: str, language: str) -> Tuple[str, str]:
+    if not _is_korean_target_language(language):
+        return text, ""
+    compact = "".join((text or "").split())
+    if not compact:
+        return text, ""
+    hangul_count = len(re.findall(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]", compact))
+    han_count = len(re.findall(r"[\u4e00-\u9fff]", compact))
+    if hangul_count == 0 and han_count >= 4:
+        return "", "non_korean_cjk_drift"
+    return text, ""
+
+
+def _is_korean_target_language(language: str) -> bool:
+    return (language or "").strip().lower() in {"ko", "kr", "kor", "korean", "한국어"}
 
 
 def _data_url(audio_path: str) -> str:

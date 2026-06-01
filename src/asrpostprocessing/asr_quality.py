@@ -34,6 +34,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
         warnings.append("ASR did not produce segment/chunk diagnostics.")
     if any(chunk["text_chars"] == 0 for chunk in chunk_reports):
         warnings.append("At least one ASR chunk produced empty text.")
+        action_items.append("Inspect empty ASR chunks for low-volume speech, silence, noise, or language drift.")
 
     if not action_items:
         action_items.append("If quality is still poor, compare no-preprocess, fixed 120s, and silence-aware 120s ASR runs.")
