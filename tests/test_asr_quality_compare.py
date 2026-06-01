@@ -59,6 +59,8 @@ class ASRQualityCompareTest(unittest.TestCase):
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(len(payload["rows"]), 2)
             self.assertEqual([row["chunk_seconds"] for row in payload["rows"]], [30.0, 120.0])
+            self.assertEqual(payload["summary"]["row_count"], 2)
+            self.assertEqual(payload["summary"]["warning_rows"], 1)
             self.assertEqual(payload["rows"][0]["condition"], "asr_none_fixed_30s")
             self.assertTrue(any("120s" in item for item in payload["rows"][0]["asr_quality"]["action_items"]))
 
@@ -86,7 +88,41 @@ class ASRQualityCompareTest(unittest.TestCase):
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["sample_starts_s"], [0.0, 30.0])
             self.assertEqual([row["sample_start_s"] for row in payload["rows"]], [0.0, 30.0])
+            self.assertEqual(payload["summary"]["sample_start_count"], 2)
             self.assertEqual(sample_audio.call_count, 2)
+
+    def test_compare_summary_counts_empty_and_keyword_near_miss_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "audio.wav"
+            audio.write_bytes(b"audio")
+            output = Path(tmp) / "compare.json"
+            config = ExperimentConfig(output_dir=str(Path(tmp) / "outputs"), asr_backend="mock", keywords=["선행 연구"])
+            with patch("asrpostprocessing.asr_quality_compare._sample_audio", return_value=audio), patch(
+                "asrpostprocessing.asr_quality_compare.preprocess_audio"
+            ) as preprocess, patch(
+                "asrpostprocessing.asr_quality_compare.build_asr_adapter"
+            ) as build_adapter:
+                preprocess.return_value = PreprocessResult(audio_path=str(audio), applied=False)
+                adapter = build_adapter.return_value
+                adapter.transcribe.side_effect = [
+                    TranscriptResult(language="ko", text="서면 연구를 찾아보고"),
+                    TranscriptResult(language="ko", text=""),
+                ]
+                result_path = run_asr_quality_compare(
+                    str(audio),
+                    config,
+                    output_path=str(output),
+                    chunk_seconds=[120.0],
+                    strategies=["fixed"],
+                    preprocess_mode="none",
+                    sample_seconds=10.0,
+                    sample_start_s=[0.0, 30.0],
+                )
+
+            summary = json.loads(result_path.read_text(encoding="utf-8"))["summary"]
+            self.assertEqual(summary["keyword_near_miss_rows"], 1)
+            self.assertEqual(summary["empty_transcript_rows"], 1)
+            self.assertEqual(len(summary["risky_rows"]), 2)
 
 
 if __name__ == "__main__":

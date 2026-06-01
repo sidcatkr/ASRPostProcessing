@@ -4,6 +4,7 @@ import copy
 import json
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -74,6 +75,7 @@ def run_asr_quality_compare(
         "sample_start_s": sample_starts_s[0] if len(sample_starts_s) == 1 else None,
         "sample_starts_s": sample_starts_s,
         "sample_seconds": sample_seconds,
+        "summary": _scan_summary(rows),
         "rows": rows,
     }
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -163,6 +165,54 @@ def _sample_audio(audio_path: str, config: ExperimentConfig, sample_seconds: Opt
 
 def _condition_name(mode: str, strategy: str, seconds: float) -> str:
     return f"asr_{mode}_{strategy}_{seconds:g}s"
+
+
+def _scan_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    warning_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    risky_rows = []
+    empty_count = 0
+    near_miss_count = 0
+    for row in rows:
+        quality = row.get("asr_quality") if isinstance(row.get("asr_quality"), dict) else {}
+        warnings = [str(item) for item in quality.get("warnings") or []]
+        actions = [str(item) for item in quality.get("action_items") or []]
+        near_misses = quality.get("keyword_near_misses") or []
+        flags = []
+        if int(row.get("text_chars") or 0) == 0:
+            empty_count += 1
+            flags.append("empty_transcript")
+        if near_misses:
+            near_miss_count += 1
+            flags.append("keyword_near_miss")
+        if warnings:
+            flags.append("warnings")
+            warning_counts.update(warnings)
+        if actions:
+            action_counts.update(actions)
+        if flags:
+            risky_rows.append(
+                {
+                    "condition": row.get("condition"),
+                    "sample_start_s": row.get("sample_start_s"),
+                    "sample_seconds": row.get("sample_seconds"),
+                    "text_chars": row.get("text_chars"),
+                    "flags": flags,
+                    "warnings": warnings,
+                    "keyword_near_misses": near_misses,
+                    "text_preview": row.get("text_preview", ""),
+                }
+            )
+    return {
+        "row_count": len(rows),
+        "sample_start_count": len({row.get("sample_start_s") for row in rows if row.get("sample_start_s") is not None}),
+        "empty_transcript_rows": empty_count,
+        "keyword_near_miss_rows": near_miss_count,
+        "warning_rows": sum(1 for row in rows if (row.get("asr_quality") or {}).get("warnings")),
+        "warning_counts": dict(warning_counts),
+        "action_item_counts": dict(action_counts),
+        "risky_rows": risky_rows,
+    }
 
 
 def _preview(text: str, limit: int = 500) -> str:
