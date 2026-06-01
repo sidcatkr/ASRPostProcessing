@@ -27,6 +27,9 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
 
     metadata = raw.metadata or {}
     chunk_seconds = _as_float(metadata.get("chunk_seconds")) or float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0)
+    if not (raw.text or "").strip():
+        warnings.append("ASR produced an empty transcript.")
+        action_items.append("Inspect whether the audio segment is silence, low-volume speech, noise, or filtered language drift.")
     if metadata.get("chunked") and chunk_seconds < 60.0:
         warnings.append(f"ASR audio chunks are short ({chunk_seconds:g}s); short chunks can lose lecture context.")
         action_items.append("Compare with 120s ASR chunks on the same audio.")

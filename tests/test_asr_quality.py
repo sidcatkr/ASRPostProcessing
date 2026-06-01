@@ -65,6 +65,7 @@ class ASRQualityReportTest(unittest.TestCase):
 
         report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
 
+        self.assertTrue(any("empty transcript" in warning for warning in report["warnings"]))
         self.assertTrue(any("empty text" in warning for warning in report["warnings"]))
         self.assertTrue(any("language drift" in action for action in report["action_items"]))
 
