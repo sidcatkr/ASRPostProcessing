@@ -217,9 +217,11 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         with gr.Row():
             raw_output = gr.Textbox(label="Raw transcript", lines=12)
             corrected_output = gr.Textbox(label="Corrected transcript", lines=12)
-        diff_output = gr.HTML(label="Diff")
+        diff_output = gr.HTML(label="Inline diff")
         with gr.Row():
             metrics_output = gr.JSON(label="Metrics")
+            server_output = gr.JSON(label="Model servers")
+        with gr.Accordion("Edits", open=False):
             edits_output = gr.JSON(label="Edits")
         with gr.Row():
             preprocess_output = gr.JSON(label="Preprocess")
@@ -230,7 +232,6 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 interactive=False,
                 editable=False,
             )
-            server_output = gr.JSON(label="Model servers")
         preprocessed_audio_player_output = gr.HTML(label="Preprocessed audio timeline")
         with gr.Row():
             gpu_output = gr.JSON(label="Server GPU / VRAM status", value=query_gpu_status())
