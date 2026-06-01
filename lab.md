@@ -71,6 +71,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - Gradio GUI에서 일반 오디오 입력과 긴 오디오 파일 입력을 모두 받을 수 있다.
 - Mock backend와 vLLM/OpenAI-compatible backend를 선택할 수 있다.
 - Qwen3-ASR-1.7B ASR 서버와 Qwen3.5-9B 후처리 서버를 자동 시작하거나, 이미 떠 있는 서버에 연결할 수 있다.
+- `vllm_chat`뿐 아니라 direct `qwen_asr_*` backend에서도 ASR audio chunking과 rolling context를 같은 방식으로 적용한다.
 - 서버 구동 방식은 parallel residency와 sequential residency를 지원한다.
 - 전처리 preview에서 volume normalization과 noise reduction 선택 상태를 확인할 수 있다.
 - Volume normalization은 peak를 기준으로 gain을 제한해 ASR 입력 전에 clipping이 새로 생기지 않도록 한다.
@@ -114,6 +115,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 현재 방식은 다음 점이 개선되었다:
 
 - baseline(`none`), fixed 15초, fixed 30초, silence-aware/VAD-style 30초를 같은 코드 경로에서 비교할 수 있다.
+- OpenAI-compatible vLLM endpoint와 direct qwen-asr package backend 모두에서 같은 chunk/context 조건을 비교할 수 있다.
 - silence-aware 전략은 가능한 한 무음 지점에서 chunk를 나누므로 말 중간 절단 위험을 줄인다.
 - padding을 추가해 chunk boundary 근처 음성이 잘리는 문제를 완화한다.
 - 이전 chunk transcript를 bounded rolling context로 전달해 강의식 장문 오디오에서 주제와 문장 흐름이 끊기는 문제를 완화한다.
