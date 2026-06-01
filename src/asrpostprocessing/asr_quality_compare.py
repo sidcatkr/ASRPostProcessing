@@ -173,11 +173,16 @@ def _scan_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     risky_rows = []
     empty_count = 0
     near_miss_count = 0
+    artifact_count = 0
+    phrase_instability_count = 0
+    artifact_counts: Counter[str] = Counter()
     for row in rows:
         quality = row.get("asr_quality") if isinstance(row.get("asr_quality"), dict) else {}
         warnings = [str(item) for item in quality.get("warnings") or []]
         actions = [str(item) for item in quality.get("action_items") or []]
         near_misses = quality.get("keyword_near_misses") or []
+        text_artifacts = quality.get("text_artifacts") if isinstance(quality.get("text_artifacts"), dict) else {}
+        phrase_instability = quality.get("phrase_instability") or []
         flags = []
         if int(row.get("text_chars") or 0) == 0:
             empty_count += 1
@@ -185,6 +190,13 @@ def _scan_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if near_misses:
             near_miss_count += 1
             flags.append("keyword_near_miss")
+        if _artifact_total(text_artifacts) > 0:
+            artifact_count += 1
+            flags.append("asr_artifact")
+            for key in ("asr_text_tag_count", "language_label_count", "han_char_count", "cjk_punctuation_count"):
+                artifact_counts[key] += int(text_artifacts.get(key) or 0)
+        if phrase_instability:
+            phrase_instability_count += 1
         if warnings:
             flags.append("warnings")
             warning_counts.update(warnings)
@@ -200,6 +212,7 @@ def _scan_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "flags": flags,
                     "warnings": warnings,
                     "keyword_near_misses": near_misses,
+                    "text_artifacts": text_artifacts,
                     "text_preview": row.get("text_preview", ""),
                 }
             )
@@ -208,11 +221,21 @@ def _scan_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sample_start_count": len({row.get("sample_start_s") for row in rows if row.get("sample_start_s") is not None}),
         "empty_transcript_rows": empty_count,
         "keyword_near_miss_rows": near_miss_count,
+        "asr_artifact_rows": artifact_count,
+        "phrase_instability_rows": phrase_instability_count,
+        "artifact_counts": dict(artifact_counts),
         "warning_rows": sum(1 for row in rows if (row.get("asr_quality") or {}).get("warnings")),
         "warning_counts": dict(warning_counts),
         "action_item_counts": dict(action_counts),
         "risky_rows": risky_rows,
     }
+
+
+def _artifact_total(text_artifacts: Dict[str, Any]) -> int:
+    return sum(
+        int(text_artifacts.get(key) or 0)
+        for key in ("asr_text_tag_count", "language_label_count", "han_char_count", "cjk_punctuation_count")
+    )
 
 
 def _preview(text: str, limit: int = 500) -> str:

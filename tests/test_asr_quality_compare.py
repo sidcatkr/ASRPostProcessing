@@ -106,6 +106,7 @@ class ASRQualityCompareTest(unittest.TestCase):
                 adapter = build_adapter.return_value
                 adapter.transcribe.side_effect = [
                     TranscriptResult(language="ko", text="모표 용어를 찾아보고"),
+                    TranscriptResult(language="ko", text="앞 문장 language None<asr_text> 如果测试新闻，然后示例文本。 다음 문장"),
                     TranscriptResult(language="ko", text=""),
                 ]
                 result_path = run_asr_quality_compare(
@@ -116,13 +117,18 @@ class ASRQualityCompareTest(unittest.TestCase):
                     strategies=["fixed"],
                     preprocess_mode="none",
                     sample_seconds=10.0,
-                    sample_start_s=[0.0, 30.0],
+                    sample_start_s=[0.0, 30.0, 60.0],
                 )
 
             summary = json.loads(result_path.read_text(encoding="utf-8"))["summary"]
             self.assertEqual(summary["keyword_near_miss_rows"], 1)
             self.assertEqual(summary["empty_transcript_rows"], 1)
-            self.assertEqual(len(summary["risky_rows"]), 2)
+            self.assertEqual(summary["asr_artifact_rows"], 1)
+            self.assertEqual(summary["artifact_counts"]["asr_text_tag_count"], 1)
+            self.assertEqual(summary["artifact_counts"]["language_label_count"], 1)
+            self.assertGreater(summary["artifact_counts"]["han_char_count"], 0)
+            self.assertEqual(len(summary["risky_rows"]), 3)
+            self.assertIn("asr_artifact", summary["risky_rows"][1]["flags"])
 
 
 if __name__ == "__main__":
