@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import load_config
@@ -13,6 +14,7 @@ from .doctor import doctor_as_json, has_failures, run_doctor
 from .asr_quality_compare import run_asr_quality_compare
 from .pipeline import PipelineRunner, read_reference
 from .sweep import run_sweep
+from .transcript_quality import build_transcript_quality_report
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -47,6 +49,16 @@ def main(argv: Optional[list] = None) -> int:
     asr_quality_parser.add_argument("--sample-seconds", type=float)
     asr_quality_parser.add_argument("--sample-start-s", type=float, action="append")
     _add_backend_overrides(asr_quality_parser)
+
+    transcript_quality_parser = subcommands.add_parser(
+        "transcript-quality",
+        help="Analyze existing raw/corrected transcript text files",
+    )
+    transcript_quality_parser.add_argument("--raw", required=True)
+    transcript_quality_parser.add_argument("--corrected")
+    transcript_quality_parser.add_argument("--config")
+    transcript_quality_parser.add_argument("--output")
+    transcript_quality_parser.add_argument("--keyword", action="append", dest="keywords")
 
     tb_parser = subcommands.add_parser("tensorboard", help="Show or launch TensorBoard for runs/")
     tb_parser.add_argument("--logdir", default="runs")
@@ -93,6 +105,19 @@ def main(argv: Optional[list] = None) -> int:
                 sample_start_s=args.sample_start_s or 0.0,
             )
         print(str(output_path))
+        return 0
+    if args.command == "transcript-quality":
+        config = load_config(args.config)
+        if args.keywords:
+            config.keywords = args.keywords
+        report = build_transcript_quality_report(args.raw, config, corrected_path=args.corrected)
+        if args.output:
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(str(output_path))
+        else:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.command == "tensorboard":
         command = ["tensorboard", "--logdir", args.logdir, "--port", str(args.port)]
