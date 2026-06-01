@@ -101,6 +101,9 @@ class PipelineRunner:
         logger = RunLogger(self.config, run_id)
         artifacts = {
             "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses, asr_quality))),
+            "raw_transcript": str(logger.write_text("raw_transcript.txt", raw.text)),
+            "corrected_transcript": str(logger.write_text("corrected_transcript.txt", correction.corrected_text)),
+            "diff_html": str(logger.write_text("diff.html", diff_html)),
             "asr_quality": str(logger.write_json("asr_quality.json", asr_quality)),
             "preprocess": str(logger.write_json("preprocess.json", preprocess_result.to_dict())),
             "metrics": str(logger.write_json("metrics.json", metrics.to_dict())),

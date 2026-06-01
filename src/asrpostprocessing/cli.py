@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict, Optional
 
 from .config import load_config
@@ -68,7 +70,8 @@ def main(argv: Optional[list] = None) -> int:
     if args.command == "run":
         config = load_config(args.config, overrides=_backend_overrides(args))
         reference = args.reference_text or read_reference(args.reference)
-        output = PipelineRunner(config).run(audio_path=args.audio, reference_text=reference, run_id=args.run_id)
+        with contextlib.redirect_stdout(sys.stderr):
+            output = PipelineRunner(config).run(audio_path=args.audio, reference_text=reference, run_id=args.run_id)
         print(json.dumps(output.to_dict(), ensure_ascii=False, indent=2))
         return 0
     if args.command == "sweep":
@@ -78,16 +81,17 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     if args.command == "asr-quality":
         config = load_config(args.config, overrides=_backend_overrides(args))
-        output_path = run_asr_quality_compare(
-            audio_path=args.audio,
-            base_config=config,
-            output_path=args.output,
-            chunk_seconds=args.chunk_seconds,
-            strategies=args.strategy,
-            preprocess_mode=args.preprocess_mode,
-            sample_seconds=args.sample_seconds,
-            sample_start_s=args.sample_start_s,
-        )
+        with contextlib.redirect_stdout(sys.stderr):
+            output_path = run_asr_quality_compare(
+                audio_path=args.audio,
+                base_config=config,
+                output_path=args.output,
+                chunk_seconds=args.chunk_seconds,
+                strategies=args.strategy,
+                preprocess_mode=args.preprocess_mode,
+                sample_seconds=args.sample_seconds,
+                sample_start_s=args.sample_start_s,
+            )
         print(str(output_path))
         return 0
     if args.command == "tensorboard":

@@ -23,6 +23,11 @@ class RunLogger:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    def write_text(self, name: str, text: str) -> Path:
+        path = self.output_dir / name
+        path.write_text(text or "", encoding="utf-8")
+        return path
+
     def write_edits(self, edits: Iterable[Edit]) -> Path:
         path = self.output_dir / "edits.jsonl"
         with path.open("w", encoding="utf-8") as handle:
