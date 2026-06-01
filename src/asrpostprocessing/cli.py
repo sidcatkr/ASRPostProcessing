@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 from .config import load_config
 from .doctor import doctor_as_json, has_failures, run_doctor
 from .asr_quality_compare import run_asr_quality_compare
-from .auto_experiment import run_auto_experiment
+from .auto_experiment import preview_auto_experiment, run_auto_experiment
 from .pipeline import PipelineRunner, read_reference
 from .sweep import run_sweep, shard_manifest
 from .transcript_quality import build_transcript_quality_report
@@ -48,7 +48,7 @@ def main(argv: Optional[list] = None) -> int:
     shard_parser.add_argument("--prefix", default="shard")
 
     auto_parser = subcommands.add_parser("auto-experiment", help="Run the valid toggle-condition matrix for one audio sample")
-    auto_parser.add_argument("--audio", required=True)
+    auto_parser.add_argument("--audio")
     auto_parser.add_argument("--reference")
     auto_parser.add_argument("--reference-text")
     auto_parser.add_argument("--config")
@@ -57,6 +57,7 @@ def main(argv: Optional[list] = None) -> int:
         choices=["core_ablation", "full_valid", "full_strength_sweep"],
         default="full_valid",
     )
+    auto_parser.add_argument("--preview", action="store_true", help="Print the generated condition matrix without running it")
     _add_backend_overrides(auto_parser)
 
     asr_quality_parser = subcommands.add_parser("asr-quality", help="Compare ASR-only quality across chunk/preprocess settings")
@@ -117,6 +118,26 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     if args.command == "auto-experiment":
         config = load_config(args.config, overrides=_backend_overrides(args))
+        if args.preview:
+            preview = preview_auto_experiment(config, mode=args.mode)
+            print(
+                json.dumps(
+                    {
+                        "mode": preview["mode"],
+                        "condition_count": preview["condition_count"],
+                        "case_count": preview["case_count"],
+                        "asr_cache_group_count": preview["asr_cache_group_count"],
+                        "model_axis_enabled": preview["model_axis_enabled"],
+                        "conditions": [condition.to_dict() for condition in preview["conditions"]],
+                        "cases": [case.to_dict() for case in preview["cases"]],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if not args.audio:
+            parser.error("auto-experiment --audio is required unless --preview is used")
         reference = args.reference_text or read_reference(args.reference)
         with contextlib.redirect_stdout(sys.stderr):
             report = run_auto_experiment(
@@ -288,6 +309,13 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auto-experiment-include-models", action="store_true")
     parser.add_argument("--auto-experiment-asr-model", action="append", dest="auto_experiment_asr_models")
     parser.add_argument("--auto-experiment-post-model", action="append", dest="auto_experiment_post_models")
+    parser.add_argument("--auto-experiment-keyword-weight", type=float, action="append", dest="auto_experiment_keyword_weights")
+    parser.add_argument("--auto-experiment-noise-strength", type=float, action="append", dest="auto_experiment_noise_strengths")
+    parser.add_argument("--auto-experiment-volume-strength", type=float, action="append", dest="auto_experiment_volume_strengths")
+    parser.add_argument("--auto-experiment-postprocess-strength", type=float, action="append", dest="auto_experiment_postprocess_strengths")
+    parser.add_argument("--auto-experiment-rag-strength", type=float, action="append", dest="auto_experiment_rag_strengths")
+    parser.add_argument("--auto-experiment-rag-top-k", type=int, action="append", dest="auto_experiment_rag_top_ks")
+    parser.add_argument("--auto-experiment-search-strength", type=float, action="append", dest="auto_experiment_search_strengths")
     parser.add_argument("--no-auto-experiment-saturate-lanes", action="store_true")
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument("--enable-cache", action="store_true")
@@ -327,6 +355,13 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "auto_experiment_parallelism": args.auto_experiment_parallelism,
         "auto_experiment_asr_models": args.auto_experiment_asr_models,
         "auto_experiment_post_models": args.auto_experiment_post_models,
+        "auto_experiment_keyword_weights": args.auto_experiment_keyword_weights,
+        "auto_experiment_noise_strengths": args.auto_experiment_noise_strengths,
+        "auto_experiment_volume_strengths": args.auto_experiment_volume_strengths,
+        "auto_experiment_postprocess_strengths": args.auto_experiment_postprocess_strengths,
+        "auto_experiment_rag_strengths": args.auto_experiment_rag_strengths,
+        "auto_experiment_rag_top_ks": args.auto_experiment_rag_top_ks,
+        "auto_experiment_search_strengths": args.auto_experiment_search_strengths,
         "cache_dir": args.cache_dir,
     }
     if args.auto_experiment_include_models:

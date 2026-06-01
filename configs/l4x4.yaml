@@ -68,6 +68,36 @@ auto_experiment_asr_models:
   - Qwen/Qwen3-ASR-1.7B
 auto_experiment_post_models:
   - Qwen/Qwen3.5-9B
+auto_experiment_keyword_weights:
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+auto_experiment_noise_strengths:
+  - 0.25
+  - 0.5
+  - 0.75
+auto_experiment_volume_strengths:
+  - 0.25
+  - 0.5
+  - 0.75
+auto_experiment_postprocess_strengths:
+  - 0.25
+  - 0.5
+  - 0.75
+auto_experiment_rag_strengths:
+  - 0.25
+  - 0.5
+  - 0.75
+auto_experiment_rag_top_ks:
+  - 3
+  - 5
+  - 8
+  - 12
+auto_experiment_search_strengths:
+  - 0.25
+  - 0.5
+  - 0.75
 asr_cache_enabled: true
 preprocess_cache_enabled: true
 cache_dir: outputs/cache

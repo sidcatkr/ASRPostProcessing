@@ -210,6 +210,37 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         value=", ".join(initial_config.auto_experiment_post_models),
                         placeholder="Qwen/Qwen3.5-9B, ...",
                     )
+                with gr.Row():
+                    auto_experiment_keyword_weights = gr.Textbox(
+                        label="Keyword weight sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_keyword_weights),
+                    )
+                    auto_experiment_noise_strengths = gr.Textbox(
+                        label="Noise strength sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_noise_strengths),
+                    )
+                    auto_experiment_volume_strengths = gr.Textbox(
+                        label="Volume strength sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_volume_strengths),
+                    )
+                with gr.Row():
+                    auto_experiment_postprocess_strengths = gr.Textbox(
+                        label="Postprocess strength sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_postprocess_strengths),
+                    )
+                    auto_experiment_rag_strengths = gr.Textbox(
+                        label="RAG strength sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_rag_strengths),
+                    )
+                    auto_experiment_rag_top_ks = gr.Textbox(
+                        label="RAG top-k sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_rag_top_ks),
+                    )
+                with gr.Row():
+                    auto_experiment_search_strengths = gr.Textbox(
+                        label="Search strength sweep",
+                        value=", ".join(str(value) for value in initial_config.auto_experiment_search_strengths),
+                    )
             with gr.Accordion("Model server startup", open=True):
                 with gr.Row():
                     auto_start_model_servers = gr.Checkbox(
@@ -361,6 +392,13 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 auto_experiment_include_models,
                 auto_experiment_asr_models,
                 auto_experiment_post_models,
+                auto_experiment_keyword_weights,
+                auto_experiment_noise_strengths,
+                auto_experiment_volume_strengths,
+                auto_experiment_postprocess_strengths,
+                auto_experiment_rag_strengths,
+                auto_experiment_rag_top_ks,
+                auto_experiment_search_strengths,
             ],
             outputs=[
                 raw_output,
@@ -607,6 +645,13 @@ def run_from_ui(
     auto_experiment_include_models: bool = False,
     auto_experiment_asr_models: str = "",
     auto_experiment_post_models: str = "",
+    auto_experiment_keyword_weights: str = "",
+    auto_experiment_noise_strengths: str = "",
+    auto_experiment_volume_strengths: str = "",
+    auto_experiment_postprocess_strengths: str = "",
+    auto_experiment_rag_strengths: str = "",
+    auto_experiment_rag_top_ks: str = "",
+    auto_experiment_search_strengths: str = "",
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
@@ -649,6 +694,13 @@ def run_from_ui(
         auto_experiment_include_models=bool(auto_experiment_include_models),
         auto_experiment_asr_models=_split_keywords(auto_experiment_asr_models),
         auto_experiment_post_models=_split_keywords(auto_experiment_post_models),
+        auto_experiment_keyword_weights=_split_float_grid(auto_experiment_keyword_weights),
+        auto_experiment_noise_strengths=_split_float_grid(auto_experiment_noise_strengths),
+        auto_experiment_volume_strengths=_split_float_grid(auto_experiment_volume_strengths),
+        auto_experiment_postprocess_strengths=_split_float_grid(auto_experiment_postprocess_strengths),
+        auto_experiment_rag_strengths=_split_float_grid(auto_experiment_rag_strengths),
+        auto_experiment_rag_top_ks=_split_int_grid(auto_experiment_rag_top_ks),
+        auto_experiment_search_strengths=_split_float_grid(auto_experiment_search_strengths),
         asr_cache_enabled=bool(enable_cache),
         preprocess_cache_enabled=bool(enable_cache),
         enable_noise_reduction=bool(enable_noise_reduction),
@@ -851,6 +903,30 @@ def _launch_kwargs(host: str, port: int, share: bool) -> dict:
 
 def _split_keywords(value: str) -> List[str]:
     return [item.strip() for item in (value or "").replace("\n", ",").split(",") if item.strip()]
+
+
+def _split_float_grid(value: str) -> List[float]:
+    values: List[float] = []
+    for item in _split_keywords(value):
+        try:
+            number = max(0.0, min(1.0, float(item)))
+        except ValueError:
+            continue
+        if number > 0.0 and number not in values:
+            values.append(number)
+    return values
+
+
+def _split_int_grid(value: str) -> List[int]:
+    values: List[int] = []
+    for item in _split_keywords(value):
+        try:
+            number = max(1, int(item))
+        except ValueError:
+            continue
+        if number not in values:
+            values.append(number)
+    return values
 
 
 def _read_reference_from_ui(reference_text: str, reference_file: Any) -> Optional[str]:

@@ -252,7 +252,9 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - total: 8 x 5 = 40 conditions
 - optional model axis: ASR model list x post model list. Post model axis는 LLM post-processing이 켜진 condition에만 적용한다.
 
-`core_ablation` coverage는 빠른 확인용 subset이다. `full_strength_sweep`은 full valid condition에 active 축별 strength grid를 추가한다. 기본 grid는 keyword bias `0.25/0.5/0.75/1.0`, noise/volume/post/RAG/Search `0.25/0.5/0.75`이며, strength 값은 condition id, summary CSV, ASR cache group key에 반영된다.
+`core_ablation` coverage는 빠른 확인용 subset이다. `full_strength_sweep`은 full valid condition에 active 축별 strength/top-k grid를 추가한다. 기본 grid는 keyword bias `0.25/0.5/0.75/1.0`, noise/volume/post/RAG/Search `0.25/0.5/0.75`, RAG top-k `3/5/8/12`이며, config/CLI/UI에서 grid를 바꿀 수 있다. Strength 값은 condition id, summary CSV, ASR cache group key에 반영되고, RAG top-k는 post/RAG 단계 condition id와 summary CSV에 반영된다.
+
+실행 전에 `asrpp auto-experiment --mode full_strength_sweep --preview ...`로 condition count, model-expanded case count, ASR cache group count를 JSON으로 확인할 수 있다.
 
 결과 artifact:
 

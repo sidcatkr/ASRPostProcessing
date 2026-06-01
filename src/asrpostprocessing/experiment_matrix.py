@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-KEYWORD_STRENGTH_SWEEP = [0.25, 0.5, 0.75, 1.0]
-PREPROCESS_STRENGTH_SWEEP = [0.25, 0.5, 0.75]
-POST_STRENGTH_SWEEP = [0.25, 0.5, 0.75]
+DEFAULT_KEYWORD_STRENGTH_SWEEP = [0.25, 0.5, 0.75, 1.0]
+DEFAULT_STRENGTH_SWEEP = [0.25, 0.5, 0.75]
+DEFAULT_RAG_TOP_K_SWEEP = [3, 5, 8, 12]
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ConditionSpec:
     volume_normalization_strength: Optional[float] = None
     postprocess_strength: Optional[float] = None
     rag_strength: Optional[float] = None
+    rag_top_k: Optional[int] = None
     search_strength: Optional[float] = None
 
     def to_dict(self) -> Dict[str, object]:
@@ -52,6 +53,13 @@ def generate_auto_conditions(
     include_rag: bool = True,
     include_search: bool = True,
     mode: str = "full_valid",
+    keyword_strengths: Optional[List[float]] = None,
+    noise_strengths: Optional[List[float]] = None,
+    volume_strengths: Optional[List[float]] = None,
+    postprocess_strengths: Optional[List[float]] = None,
+    rag_strengths: Optional[List[float]] = None,
+    rag_top_ks: Optional[List[int]] = None,
+    search_strengths: Optional[List[float]] = None,
 ) -> List[ConditionSpec]:
     mode = (mode or "full_valid").strip().lower().replace("-", "_")
     if mode in {"core", "core_ablation", "ablation"}:
@@ -72,7 +80,16 @@ def generate_auto_conditions(
         include_search,
     )
     if mode in {"full_strength", "full_strength_sweep", "strength", "strength_sweep"}:
-        return _strength_sweep_conditions(conditions)
+        return _strength_sweep_conditions(
+            conditions,
+            keyword_strengths=keyword_strengths,
+            noise_strengths=noise_strengths,
+            volume_strengths=volume_strengths,
+            postprocess_strengths=postprocess_strengths,
+            rag_strengths=rag_strengths,
+            rag_top_ks=rag_top_ks,
+            search_strengths=search_strengths,
+        )
     return conditions
 
 
@@ -201,28 +218,47 @@ def _condition_from_modes(pre: Dict[str, bool], post: Dict[str, bool]) -> Condit
     )
 
 
-def _strength_sweep_conditions(conditions: List[ConditionSpec]) -> List[ConditionSpec]:
+def _strength_sweep_conditions(
+    conditions: List[ConditionSpec],
+    keyword_strengths: Optional[List[float]] = None,
+    noise_strengths: Optional[List[float]] = None,
+    volume_strengths: Optional[List[float]] = None,
+    postprocess_strengths: Optional[List[float]] = None,
+    rag_strengths: Optional[List[float]] = None,
+    rag_top_ks: Optional[List[int]] = None,
+    search_strengths: Optional[List[float]] = None,
+) -> List[ConditionSpec]:
+    grids = {
+        "keyword_bias_weight": _strength_values(keyword_strengths, DEFAULT_KEYWORD_STRENGTH_SWEEP),
+        "noise_reduction_strength": _strength_values(noise_strengths, DEFAULT_STRENGTH_SWEEP),
+        "volume_normalization_strength": _strength_values(volume_strengths, DEFAULT_STRENGTH_SWEEP),
+        "postprocess_strength": _strength_values(postprocess_strengths, DEFAULT_STRENGTH_SWEEP),
+        "rag_strength": _strength_values(rag_strengths, DEFAULT_STRENGTH_SWEEP),
+        "rag_top_k": _int_values(rag_top_ks, DEFAULT_RAG_TOP_K_SWEEP),
+        "search_strength": _strength_values(search_strengths, DEFAULT_STRENGTH_SWEEP),
+    }
     expanded: List[ConditionSpec] = []
     for condition in conditions:
-        for strengths in _strength_grid_for_condition(condition):
+        for strengths in _strength_grid_for_condition(condition, grids):
             expanded.append(_condition_with_strengths(condition, strengths))
     return expanded
 
 
-def _strength_grid_for_condition(condition: ConditionSpec):
+def _strength_grid_for_condition(condition: ConditionSpec, grids: Dict[str, List[Any]]):
     axes = []
     if condition.enable_keyword_bias:
-        axes.append(("keyword_bias_weight", KEYWORD_STRENGTH_SWEEP))
+        axes.append(("keyword_bias_weight", grids["keyword_bias_weight"]))
     if condition.enable_noise_reduction:
-        axes.append(("noise_reduction_strength", PREPROCESS_STRENGTH_SWEEP))
+        axes.append(("noise_reduction_strength", grids["noise_reduction_strength"]))
     if condition.enable_volume_normalization:
-        axes.append(("volume_normalization_strength", PREPROCESS_STRENGTH_SWEEP))
+        axes.append(("volume_normalization_strength", grids["volume_normalization_strength"]))
     if condition.enable_llm_postprocess:
-        axes.append(("postprocess_strength", POST_STRENGTH_SWEEP))
+        axes.append(("postprocess_strength", grids["postprocess_strength"]))
     if condition.enable_rag:
-        axes.append(("rag_strength", POST_STRENGTH_SWEEP))
+        axes.append(("rag_strength", grids["rag_strength"]))
+        axes.append(("rag_top_k", grids["rag_top_k"]))
     if condition.enable_search:
-        axes.append(("search_strength", POST_STRENGTH_SWEEP))
+        axes.append(("search_strength", grids["search_strength"]))
     if not axes:
         yield {}
         return
@@ -232,7 +268,7 @@ def _strength_grid_for_condition(condition: ConditionSpec):
         yield dict(zip(keys, combo))
 
 
-def _condition_with_strengths(condition: ConditionSpec, strengths: Dict[str, float]) -> ConditionSpec:
+def _condition_with_strengths(condition: ConditionSpec, strengths: Dict[str, Any]) -> ConditionSpec:
     if not strengths:
         return condition
     suffix_parts = [_strength_suffix(key, value) for key, value in strengths.items()]
@@ -253,26 +289,64 @@ def _condition_with_strengths(condition: ConditionSpec, strengths: Dict[str, flo
         volume_normalization_strength=strengths.get("volume_normalization_strength"),
         postprocess_strength=strengths.get("postprocess_strength"),
         rag_strength=strengths.get("rag_strength"),
+        rag_top_k=_int_or_none(strengths.get("rag_top_k")),
         search_strength=strengths.get("search_strength"),
     )
 
 
-def _strength_suffix(key: str, value: float) -> str:
+def _strength_suffix(key: str, value: Any) -> str:
     prefixes = {
         "keyword_bias_weight": "kw",
         "noise_reduction_strength": "noise",
         "volume_normalization_strength": "vol",
         "postprocess_strength": "post",
         "rag_strength": "rag",
+        "rag_top_k": "topk",
         "search_strength": "search",
     }
-    return f"{prefixes.get(key, key)}{_strength_key(value)}"
+    if key == "rag_top_k":
+        return f"{prefixes[key]}{int(value)}"
+    return f"{prefixes.get(key, key)}{_strength_key(float(value))}"
 
 
 def _strength_key(value: Optional[float]) -> str:
     if value is None:
         return ""
     return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def _strength_values(values: Optional[List[float]], fallback: List[float]) -> List[float]:
+    if not values:
+        return list(fallback)
+    deduped: List[float] = []
+    for value in values:
+        try:
+            number = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+        if number > 0.0 and number not in deduped:
+            deduped.append(number)
+    return deduped or list(fallback)
+
+
+def _int_values(values: Optional[List[int]], fallback: List[int]) -> List[int]:
+    if not values:
+        return list(fallback)
+    deduped: List[int] = []
+    for value in values:
+        try:
+            number = max(1, int(value))
+        except (TypeError, ValueError):
+            continue
+        if number not in deduped:
+            deduped.append(number)
+    return deduped or list(fallback)
+
+
+def _int_or_none(value) -> Optional[int]:
+    if value is None:
+        return None
+    return int(value)
 
 
 def _label_for(part: str) -> str:

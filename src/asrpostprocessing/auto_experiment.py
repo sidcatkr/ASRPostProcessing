@@ -39,16 +39,9 @@ def run_auto_experiment(
     mode: str = "full_valid",
     status_callback: Optional[StatusCallback] = None,
 ) -> Dict[str, Any]:
-    conditions = generate_auto_conditions(
-        include_keyword_bias=base_config.enable_keyword_bias,
-        include_noise_reduction=base_config.enable_noise_reduction,
-        include_volume_normalization=base_config.enable_volume_normalization,
-        include_llm_postprocess=base_config.enable_llm_postprocess,
-        include_rag=base_config.enable_rag,
-        include_search=base_config.enable_search,
-        mode=mode,
-    )
-    cases = _expand_model_cases(conditions, base_config)
+    preview = preview_auto_experiment(base_config, mode=mode)
+    conditions = preview["conditions"]
+    cases = preview["cases"]
     run_id = make_run_id("auto-experiment")
     output_dir = Path(base_config.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -90,12 +83,43 @@ def run_auto_experiment(
         "mode": mode,
         "condition_count": len(conditions),
         "case_count": len(cases),
+        "asr_cache_group_count": preview["asr_cache_group_count"],
         "elapsed_s": time.time() - started,
         "summary_csv": str(summary_path),
         "analysis_json": str(analysis_path),
         "conditions_json": str(manifest_path),
         "analysis": analysis,
         "rows": rows,
+    }
+
+
+def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_valid") -> Dict[str, Any]:
+    conditions = generate_auto_conditions(
+        include_keyword_bias=base_config.enable_keyword_bias,
+        include_noise_reduction=base_config.enable_noise_reduction,
+        include_volume_normalization=base_config.enable_volume_normalization,
+        include_llm_postprocess=base_config.enable_llm_postprocess,
+        include_rag=base_config.enable_rag,
+        include_search=base_config.enable_search,
+        mode=mode,
+        keyword_strengths=base_config.auto_experiment_keyword_weights,
+        noise_strengths=base_config.auto_experiment_noise_strengths,
+        volume_strengths=base_config.auto_experiment_volume_strengths,
+        postprocess_strengths=base_config.auto_experiment_postprocess_strengths,
+        rag_strengths=base_config.auto_experiment_rag_strengths,
+        rag_top_ks=base_config.auto_experiment_rag_top_ks,
+        search_strengths=base_config.auto_experiment_search_strengths,
+    )
+    cases = _expand_model_cases(conditions, base_config)
+    return {
+        "mode": mode,
+        "conditions": conditions,
+        "cases": cases,
+        "condition_count": len(conditions),
+        "case_count": len(cases),
+        "asr_cache_group_count": _asr_cache_group_count(cases),
+        "model_axis_enabled": bool(base_config.auto_experiment_include_models),
+        "condition_ids": [condition.condition_id for condition in conditions],
     }
 
 
@@ -169,6 +193,10 @@ def _prime_asr_cache(
                 _emit(status_callback, f"ASR cache priming failed for {case.case_id}: {exc}")
 
 
+def _asr_cache_group_count(cases: List[ExperimentCase]) -> int:
+    return len({f"{case.condition.asr_group_key}|asr={case.asr_model}" for case in cases})
+
+
 def _prime_one_asr_group(
     audio_path: str,
     base_config: ExperimentConfig,
@@ -230,6 +258,7 @@ def _run_condition(
         "volume_normalization_strength": config.volume_normalization_strength,
         "postprocess_strength": config.postprocess_strength,
         "rag_strength": config.rag_strength,
+        "rag_top_k": config.rag_top_k if case.condition.enable_rag else "",
         "search_strength": config.search_strength,
         "asr_cache_key": asr_cache.get("key") if isinstance(asr_cache, dict) else "",
         "asr_cache_hit": asr_cache.get("hit") if isinstance(asr_cache, dict) else "",
@@ -315,6 +344,8 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
         config.rag_strength = 0.5
     elif not config.enable_rag:
         config.rag_strength = 0.0
+    if config.enable_rag and condition.rag_top_k is not None:
+        config.rag_top_k = condition.rag_top_k
     if config.enable_search and condition.search_strength is not None:
         config.search_strength = condition.search_strength
     elif config.enable_search and config.search_strength <= 0:
@@ -353,6 +384,7 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "volume_normalization_strength",
         "postprocess_strength",
         "rag_strength",
+        "rag_top_k",
         "search_strength",
         "asr_cache_key",
         "asr_cache_hit",
@@ -513,6 +545,7 @@ def _error_row(case: ExperimentCase, exc: Exception) -> Dict[str, Any]:
         "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
         "rag_enabled": case.condition.enable_rag,
         "search_enabled": case.condition.enable_search,
+        "rag_top_k": case.condition.rag_top_k or "",
         "error": str(exc),
     }
 

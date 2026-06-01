@@ -104,6 +104,64 @@ class CliTest(unittest.TestCase):
             self.assertEqual(payload["files"]["raw"], str(raw))
             self.assertIn("asr_quality", payload)
 
+    def test_auto_experiment_preview_prints_condition_matrix_without_audio(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(
+                [
+                    "auto-experiment",
+                    "--asr-backend",
+                    "mock",
+                    "--post-backend",
+                    "mock",
+                    "--enable-keyword-bias",
+                    "--mode",
+                    "full_strength_sweep",
+                    "--auto-experiment-keyword-weight",
+                    "0.4",
+                    "--auto-experiment-keyword-weight",
+                    "0.8",
+                    "--preview",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["condition_count"], 12)
+        self.assertEqual(payload["asr_cache_group_count"], 3)
+        self.assertIn("keyword__kw0p4", [condition["condition_id"] for condition in payload["conditions"]])
+
+    def test_auto_experiment_preview_accepts_rag_top_k_grid(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(
+                [
+                    "auto-experiment",
+                    "--asr-backend",
+                    "mock",
+                    "--post-backend",
+                    "mock",
+                    "--enable-rag",
+                    "--mode",
+                    "full_strength_sweep",
+                    "--auto-experiment-postprocess-strength",
+                    "0.5",
+                    "--auto-experiment-rag-strength",
+                    "0.25",
+                    "--auto-experiment-rag-top-k",
+                    "3",
+                    "--auto-experiment-rag-top-k",
+                    "7",
+                    "--preview",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["condition_count"], 4)
+        rag_conditions = [condition for condition in payload["conditions"] if condition["enable_rag"]]
+        self.assertEqual({condition["rag_top_k"] for condition in rag_conditions}, {3, 7})
+
 
 if __name__ == "__main__":
     unittest.main()

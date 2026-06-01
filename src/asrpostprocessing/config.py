@@ -6,6 +6,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS = [0.25, 0.5, 0.75, 1.0]
+DEFAULT_AUTO_EXPERIMENT_STRENGTHS = [0.25, 0.5, 0.75]
+DEFAULT_AUTO_EXPERIMENT_RAG_TOP_KS = [3, 5, 8, 12]
+
 
 @dataclass
 class ExperimentConfig:
@@ -50,6 +54,15 @@ class ExperimentConfig:
     auto_experiment_include_models: bool = False
     auto_experiment_asr_models: List[str] = field(default_factory=list)
     auto_experiment_post_models: List[str] = field(default_factory=list)
+    auto_experiment_keyword_weights: List[float] = field(
+        default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS)
+    )
+    auto_experiment_noise_strengths: List[float] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_STRENGTHS))
+    auto_experiment_volume_strengths: List[float] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_STRENGTHS))
+    auto_experiment_postprocess_strengths: List[float] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_STRENGTHS))
+    auto_experiment_rag_strengths: List[float] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_STRENGTHS))
+    auto_experiment_rag_top_ks: List[int] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_RAG_TOP_KS))
+    auto_experiment_search_strengths: List[float] = field(default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_STRENGTHS))
     asr_cache_enabled: bool = False
     preprocess_cache_enabled: bool = False
     cache_dir: str = "outputs/cache"
@@ -136,6 +149,35 @@ class ExperimentConfig:
         config.post_base_urls = normalize_url_list(config.post_base_urls)
         config.auto_experiment_asr_models = normalize_url_list(config.auto_experiment_asr_models)
         config.auto_experiment_post_models = normalize_url_list(config.auto_experiment_post_models)
+        config.auto_experiment_keyword_weights = normalize_strength_grid(
+            config.auto_experiment_keyword_weights,
+            DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS,
+        )
+        config.auto_experiment_noise_strengths = normalize_strength_grid(
+            config.auto_experiment_noise_strengths,
+            DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
+        )
+        config.auto_experiment_volume_strengths = normalize_strength_grid(
+            config.auto_experiment_volume_strengths,
+            DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
+        )
+        config.auto_experiment_postprocess_strengths = normalize_strength_grid(
+            config.auto_experiment_postprocess_strengths,
+            DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
+        )
+        config.auto_experiment_rag_strengths = normalize_strength_grid(
+            config.auto_experiment_rag_strengths,
+            DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
+        )
+        config.auto_experiment_rag_top_ks = normalize_int_grid(
+            config.auto_experiment_rag_top_ks,
+            DEFAULT_AUTO_EXPERIMENT_RAG_TOP_KS,
+            minimum=1,
+        )
+        config.auto_experiment_search_strengths = normalize_strength_grid(
+            config.auto_experiment_search_strengths,
+            DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
+        )
         return config
 
 
@@ -194,6 +236,42 @@ def normalize_url_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def normalize_strength_grid(value: Any, fallback: List[float]) -> List[float]:
+    if not value:
+        return list(fallback)
+    if isinstance(value, str):
+        value = [part.strip() for part in value.replace("\n", ",").split(",")]
+    if not isinstance(value, list):
+        return list(fallback)
+    strengths: List[float] = []
+    for item in value:
+        try:
+            number = clamp01(item)
+        except Exception:
+            continue
+        if number > 0.0 and number not in strengths:
+            strengths.append(number)
+    return strengths or list(fallback)
+
+
+def normalize_int_grid(value: Any, fallback: List[int], minimum: int = 1) -> List[int]:
+    if not value:
+        return list(fallback)
+    if isinstance(value, str):
+        value = [part.strip() for part in value.replace("\n", ",").split(",")]
+    if not isinstance(value, list):
+        return list(fallback)
+    numbers: List[int] = []
+    for item in value:
+        try:
+            number = max(minimum, int(item))
+        except (TypeError, ValueError):
+            continue
+        if number not in numbers:
+            numbers.append(number)
+    return numbers or list(fallback)
 
 
 def normalize_pipeline_lanes(value: Any) -> List[Dict[str, Any]]:

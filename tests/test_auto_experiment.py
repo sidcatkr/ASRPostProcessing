@@ -59,9 +59,47 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertIsNotNone(full_condition.volume_normalization_strength)
         self.assertIsNotNone(full_condition.postprocess_strength)
         self.assertIsNotNone(full_condition.rag_strength)
+        self.assertIsNotNone(full_condition.rag_top_k)
         self.assertIsNotNone(full_condition.search_strength)
         self.assertIn("kw=", full_condition.asr_group_key)
         self.assertGreater(len({condition.asr_group_key for condition in conditions}), 8)
+
+    def test_full_strength_sweep_accepts_custom_grids(self):
+        conditions = generate_auto_conditions(
+            include_keyword_bias=True,
+            include_noise_reduction=False,
+            include_volume_normalization=False,
+            include_llm_postprocess=False,
+            include_rag=False,
+            include_search=False,
+            mode="full_strength_sweep",
+            keyword_strengths=[0.4, 0.8],
+        )
+
+        self.assertEqual(len(conditions), 3)
+        self.assertEqual(
+            {condition.keyword_bias_weight for condition in conditions if condition.enable_keyword_bias},
+            {0.4, 0.8},
+        )
+
+    def test_full_strength_sweep_accepts_custom_rag_top_k_grid(self):
+        conditions = generate_auto_conditions(
+            include_keyword_bias=True,
+            include_noise_reduction=False,
+            include_volume_normalization=False,
+            include_llm_postprocess=True,
+            include_rag=True,
+            include_search=False,
+            mode="full_strength_sweep",
+            keyword_strengths=[0.4],
+            postprocess_strengths=[0.5],
+            rag_strengths=[0.25],
+            rag_top_ks=[3, 7],
+        )
+
+        rag_conditions = [condition for condition in conditions if condition.enable_rag]
+        self.assertEqual({condition.rag_top_k for condition in rag_conditions}, {3, 7})
+        self.assertTrue(any("__topk7" in condition.condition_id for condition in rag_conditions))
 
     def test_l4x4_config_loads_pipeline_lanes(self):
         config = load_config("configs/l4x4.yaml")
@@ -159,6 +197,7 @@ class AutoExperimentTest(unittest.TestCase):
                 enable_volume_normalization=False,
                 enable_llm_postprocess=False,
                 auto_experiment_parallelism=2,
+                auto_experiment_keyword_weights=[0.4, 0.8],
                 asr_cache_enabled=True,
                 preprocess_cache_enabled=True,
             )
@@ -171,9 +210,45 @@ class AutoExperimentTest(unittest.TestCase):
             )
 
             keyword_rows = [row for row in report["rows"] if row["keyword_bias_enabled"]]
-            self.assertEqual({float(row["keyword_bias_weight"]) for row in keyword_rows}, {0.25, 0.5, 0.75, 1.0})
+            self.assertEqual({float(row["keyword_bias_weight"]) for row in keyword_rows}, {0.4, 0.8})
             baseline = next(row for row in report["rows"] if row["condition_id"] == "baseline")
             self.assertEqual(float(baseline["keyword_bias_weight"]), 0.0)
+
+    def test_auto_experiment_strength_case_applies_rag_top_k(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=True,
+                enable_search=False,
+                auto_experiment_parallelism=2,
+                auto_experiment_postprocess_strengths=[0.5],
+                auto_experiment_rag_strengths=[0.25],
+                auto_experiment_rag_top_ks=[3, 7],
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+            )
+
+            report = run_auto_experiment(
+                str(audio),
+                config,
+                reference_text="테스트 전사 문장입니다.",
+                mode="full_strength_sweep",
+            )
+
+            rag_rows = [row for row in report["rows"] if row["rag_enabled"]]
+            self.assertEqual({int(row["rag_top_k"]) for row in rag_rows}, {3, 7})
+            with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertIn("rag_top_k", rows[0])
 
 
 if __name__ == "__main__":
