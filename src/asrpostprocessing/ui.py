@@ -20,6 +20,15 @@ from .text import make_diff_html
 
 RUN_STATUS_POLL_INTERVAL_S = 1.0
 RUN_STATUS_RECENT_EVENT_LIMIT = 8
+NOISE_REDUCTION_MODEL_CHOICES = [
+    ("None", "none"),
+    ("FFmpeg afftdn", "afftdn"),
+    ("RNNoise", "rnnoise"),
+    ("DeepFilterNet2", "deepfilternet2"),
+    ("DeepFilterNet2-PF", "deepfilternet2_pf"),
+    ("DeepFilterNet3", "deepfilternet3"),
+    ("BS-RoFormer", "bs-roformer"),
+]
 RunOutput = Tuple[str, str, str, dict, list, dict, list, str, Optional[str], str, dict]
 
 
@@ -58,8 +67,8 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 with gr.Row():
                     enable_noise_reduction = gr.Checkbox(label="Noise reduction", value=initial_config.enable_noise_reduction)
                     noise_reduction_model = gr.Dropdown(
-                        ["none", "afftdn", "RNNoise", "DeepFilterNet2", "DeepFilterNet2-PF", "DeepFilterNet3", "BS-RoFormer"],
-                        value=initial_config.noise_reduction_model,
+                        NOISE_REDUCTION_MODEL_CHOICES,
+                        value=_canonical_noise_reduction_model(initial_config.noise_reduction_model),
                         label="Noise reduction model",
                     )
                     noise_reduction_strength = gr.Slider(
@@ -980,6 +989,30 @@ def _format_pipeline_lanes(config: ExperimentConfig) -> str:
         post_url = lane.get("post_base_url") or "primary post"
         parts.append(f"{name}: ASR GPU {asr_gpu} {asr_url} -> POST GPU {post_gpu} {post_url}")
     return "Pipeline lanes: " + "; ".join(parts) + "\n"
+
+
+def _canonical_noise_reduction_model(value: str) -> str:
+    normalized = str(value or "none").strip().lower().replace("-", "_")
+    aliases = {
+        "none": "none",
+        "off": "none",
+        "false": "none",
+        "afftdn": "afftdn",
+        "ffmpeg_afftdn": "afftdn",
+        "basic": "afftdn",
+        "built_in": "afftdn",
+        "denoise": "afftdn",
+        "rnnoise": "rnnoise",
+        "deepfilternet2": "deepfilternet2",
+        "deep_filter_net2": "deepfilternet2",
+        "deepfilternet2_pf": "deepfilternet2_pf",
+        "deep_filter_net2_pf": "deepfilternet2_pf",
+        "deepfilternet3": "deepfilternet3",
+        "deep_filter_net3": "deepfilternet3",
+        "bs_roformer": "bs-roformer",
+        "bsroformer": "bs-roformer",
+    }
+    return aliases.get(normalized, normalized.replace("_", "-") if normalized.startswith("bs_") else normalized)
 
 
 def _split_keywords(value: str) -> List[str]:

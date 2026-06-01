@@ -11,10 +11,23 @@ from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
-from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui, run_from_ui_stream
+from asrpostprocessing.ui import (
+    NOISE_REDUCTION_MODEL_CHOICES,
+    _canonical_noise_reduction_model,
+    preview_preprocessed_audio_from_ui,
+    run_from_ui,
+    run_from_ui_stream,
+)
 
 
 class ParserPipelineUiTest(unittest.TestCase):
+    def test_noise_reduction_dropdown_accepts_config_canonical_values(self):
+        choice_values = {value for _, value in NOISE_REDUCTION_MODEL_CHOICES}
+        self.assertIn(_canonical_noise_reduction_model("deepfilternet2"), choice_values)
+        self.assertIn(_canonical_noise_reduction_model("DeepFilterNet2"), choice_values)
+        self.assertIn(_canonical_noise_reduction_model("DeepFilterNet2-PF"), choice_values)
+        self.assertIn(_canonical_noise_reduction_model("RNNoise"), choice_values)
+
     def test_parse_correction_json(self):
         payload = '{"corrected_text":"교정된 문장","edits":[{"before":"원문","after":"교정","reason":"term","confidence":0.8}],"risk":"low","used_context_ids":["ctx1"]}'
         result = parse_correction_response(payload, "원문 문장")
