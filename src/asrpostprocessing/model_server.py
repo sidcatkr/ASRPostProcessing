@@ -351,10 +351,11 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
         return _PendingServer(spec, process, "ready", "managed process became ready")
 
     if _tcp_port_open(spec.base_url):
+        detail = _open_port_detail(spec)
         raise RuntimeError(
-            f"{spec.name} model server port {spec.port} is already open, but {spec.base_url}/models is not an "
-            "OpenAI-compatible model endpoint. Change the base URL port in the UI/config or stop the process "
-            "that is using the port."
+            f"{spec.name} model server port {spec.port} is already open, but {spec.base_url}/models is not serving "
+            f"the expected model {spec.model!r}. {detail} Change the base URL port in the UI/config or stop "
+            "the process that is using the port."
         )
 
     try:
@@ -566,11 +567,16 @@ def _stop_process(
     status_callback: Optional[StatusCallback],
 ) -> ModelServerStatus:
     if process.poll() is not None:
+        port_released = _wait_until_port_closed(spec, timeout_s, status_callback)
+        status = "exited" if port_released else "exited_port_open"
+        detail = f"managed process had already exited with returncode={process.returncode}"
+        if not port_released:
+            detail += f", but port {spec.port} is still open"
         return ModelServerStatus(
             spec.name,
             spec.base_url,
-            "exited",
-            f"managed process had already exited with returncode={process.returncode}",
+            status,
+            detail,
             pid=process.pid,
             log_path=spec.log_path,
         )
@@ -578,22 +584,34 @@ def _stop_process(
     _signal_process_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=timeout_s)
+        port_released = _wait_until_port_closed(spec, timeout_s, status_callback)
+        status = "stopped" if port_released else "stopped_port_open"
+        detail = "managed process terminated and port released to free VRAM" if port_released else (
+            f"managed process terminated, but port {spec.port} is still open"
+        )
         return ModelServerStatus(
             spec.name,
             spec.base_url,
-            "stopped",
-            "managed process terminated to free VRAM",
+            status,
+            detail,
             pid=process.pid,
             log_path=spec.log_path,
         )
     except subprocess.TimeoutExpired:
         _signal_process_group(process, signal.SIGKILL)
         process.wait(timeout=10)
+        port_released = _wait_until_port_closed(spec, timeout_s, status_callback)
+        status = "killed" if port_released else "killed_port_open"
+        detail = f"managed process did not exit within {timeout_s:.0f}s and was killed"
+        if port_released:
+            detail += "; port released"
+        else:
+            detail += f", but port {spec.port} is still open"
         return ModelServerStatus(
             spec.name,
             spec.base_url,
-            "killed",
-            f"managed process did not exit within {timeout_s:.0f}s and was killed",
+            status,
+            detail,
             pid=process.pid,
             log_path=spec.log_path,
         )
@@ -612,39 +630,78 @@ def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
 
 
 def _endpoint_ready(base_url: str, expected_model: str = "") -> bool:
+    payload, _ = _fetch_models_payload(base_url)
+    if payload is None:
+        return False
+    if not expected_model:
+        return True
+    return _models_payload_contains(payload, expected_model)
+
+
+def _wait_until_port_closed(
+    spec: ModelServerSpec,
+    timeout_s: float,
+    status_callback: Optional[StatusCallback],
+) -> bool:
+    if not _tcp_port_open(spec.base_url):
+        return True
+    _emit(status_callback, f"Waiting for {spec.name} port {spec.port} to close before reusing the stage endpoint.")
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if not _tcp_port_open(spec.base_url):
+            return True
+    return not _tcp_port_open(spec.base_url)
+
+
+def _fetch_models_payload(base_url: str) -> Tuple[Optional[object], str]:
     try:
         import requests  # type: ignore
 
         response = requests.get(base_url.rstrip("/") + "/models", timeout=3)
         if not 200 <= response.status_code < 300:
-            return False
-        if not expected_model:
-            return True
+            return None, f"{base_url}/models returned HTTP {response.status_code}"
         try:
-            payload = response.json()
-        except Exception:
-            return False
-        return _models_payload_contains(payload, expected_model)
-    except Exception:
-        return False
+            return response.json(), ""
+        except Exception as exc:
+            return None, f"{base_url}/models did not return JSON: {exc}"
+    except Exception as exc:
+        return None, f"{base_url}/models request failed: {exc}"
+
+
+def _open_port_detail(spec: ModelServerSpec) -> str:
+    payload, error = _fetch_models_payload(spec.base_url)
+    if payload is None:
+        return error
+    model_ids = _models_payload_model_ids(payload)
+    if model_ids:
+        return f"Found model(s) on that endpoint: {', '.join(model_ids)}."
+    return "The endpoint responded to /models, but no model id/root/model fields were found."
 
 
 def _models_payload_contains(payload: object, expected_model: str) -> bool:
     expected = str(expected_model or "").strip()
     if not expected:
         return True
+    return expected in _models_payload_model_ids(payload)
+
+
+def _models_payload_model_ids(payload: object) -> List[str]:
     if not isinstance(payload, dict):
-        return False
+        return []
     items = payload.get("data")
     if not isinstance(items, list):
-        return False
+        return []
+    model_ids: List[str] = []
     for item in items:
         if not isinstance(item, dict):
             continue
         values = [item.get("id"), item.get("root"), item.get("model")]
-        if any(str(value or "").strip() == expected for value in values):
-            return True
-    return False
+        for value in values:
+            normalized = str(value or "").strip()
+            if normalized and normalized not in model_ids:
+                model_ids.append(normalized)
+    return model_ids
 
 
 def _tcp_port_open(base_url: str) -> bool:

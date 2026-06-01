@@ -9,6 +9,7 @@ from asrpostprocessing.model_server import (
     _default_command,
     _gpu_memory_utilization_for_spec,
     _models_payload_contains,
+    _models_payload_model_ids,
     _server_specs,
     ensure_model_servers,
     stop_model_servers,
@@ -127,6 +128,7 @@ class ModelServerTest(unittest.TestCase):
 
         self.assertTrue(_models_payload_contains(payload, "Qwen/Qwen3-ASR-1.7B"))
         self.assertFalse(_models_payload_contains(payload, "Qwen/Qwen3.5-9B"))
+        self.assertEqual(_models_payload_model_ids(payload), ["Qwen/Qwen3-ASR-1.7B"])
 
     def test_adaptive_gpu_memory_utilization_uses_free_vram_without_overclaiming(self):
         config = ExperimentConfig(
@@ -165,9 +167,24 @@ class ModelServerTest(unittest.TestCase):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
         with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
             "asrpostprocessing.model_server._tcp_port_open", return_value=True
+        ), patch(
+            "asrpostprocessing.model_server._fetch_models_payload",
+            return_value=(None, "connection accepted but no model endpoint responded"),
         ), patch("asrpostprocessing.model_server._start_process") as start_process:
             with self.assertRaisesRegex(RuntimeError, "already open"):
                 ensure_model_servers(config)
+        start_process.assert_not_called()
+
+    def test_open_wrong_model_port_reports_served_model(self):
+        config = ExperimentConfig(auto_start_model_servers=True, asr_backend="mock", post_backend="vllm_openai")
+        payload = {"data": [{"id": "Qwen/Qwen3-ASR-1.7B"}]}
+        with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
+            "asrpostprocessing.model_server._tcp_port_open", return_value=True
+        ), patch("asrpostprocessing.model_server._fetch_models_payload", return_value=(payload, "")), patch(
+            "asrpostprocessing.model_server._start_process"
+        ) as start_process:
+            with self.assertRaisesRegex(RuntimeError, "Qwen/Qwen3.5-9B.*Qwen/Qwen3-ASR-1.7B"):
+                ensure_model_servers(config, names=["post"])
         start_process.assert_not_called()
 
     def test_can_prepare_only_one_stage_server(self):
@@ -189,11 +206,35 @@ class ModelServerTest(unittest.TestCase):
         key = f"{spec.name}:{spec.base_url}"
         _PROCESSES[key] = process
         try:
-            statuses = stop_model_servers(config, names=["asr"])
+            with patch("asrpostprocessing.model_server.os.getpgid", side_effect=ProcessLookupError), patch(
+                "asrpostprocessing.model_server._tcp_port_open", return_value=False
+            ):
+                statuses = stop_model_servers(config, names=["asr"])
         finally:
             _PROCESSES.pop(key, None)
         self.assertEqual(statuses[0].status, "stopped")
         process.terminate.assert_called_once()
+
+    def test_stop_model_servers_waits_for_port_release(self):
+        config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
+        spec = _server_specs(config)[0]
+        process = Mock()
+        process.pid = 123
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        key = f"{spec.name}:{spec.base_url}"
+        _PROCESSES[key] = process
+        messages = []
+        try:
+            with patch("asrpostprocessing.model_server.os.getpgid", side_effect=ProcessLookupError), patch(
+                "asrpostprocessing.model_server._tcp_port_open", side_effect=[True, False]
+            ), patch("asrpostprocessing.model_server.time.sleep"):
+                statuses = stop_model_servers(config, status_callback=messages.append, names=["asr"])
+        finally:
+            _PROCESSES.pop(key, None)
+        self.assertEqual(statuses[0].status, "stopped")
+        self.assertIn("port released", statuses[0].detail)
+        self.assertTrue(any("Waiting for asr port" in message for message in messages))
 
 
 if __name__ == "__main__":
