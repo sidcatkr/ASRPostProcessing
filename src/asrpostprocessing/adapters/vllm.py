@@ -6,8 +6,8 @@ import mimetypes
 import re
 import subprocess
 from pathlib import Path
-from uuid import uuid4
 from typing import Iterable, List, NamedTuple, Optional
+from uuid import uuid4
 
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
@@ -46,7 +46,7 @@ class VLLMChatASRAdapter:
             ],
             "temperature": 0.0,
         }
-        data = _post_chat(config.asr_base_url, payload, config.request_timeout_s, "ASR")
+        data = _post_chat(config.asr_base_url, payload, _asr_request_timeout_s(config), "ASR")
         text = _extract_message_text(data)
         parsed = _parse_asr_text(text)
         return TranscriptResult(
@@ -92,7 +92,12 @@ class VLLMChatASRAdapter:
             language=language,
             text="\n".join(texts).strip(),
             segments=segments,
-            metadata={"backend": "vllm_chat", "chunked": True, "chunks": chunk_metadata},
+            metadata={
+                "backend": "vllm_chat",
+                "chunked": True,
+                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 15.0) or 15.0),
+                "chunks": chunk_metadata,
+            },
         )
 
 
@@ -207,6 +212,14 @@ def _post_chat(base_url: str, payload: dict, timeout_s: float, service_name: str
                 f"Original error: {exc}{detail}"
             ) from exc
         return response.json()
+    except requests.exceptions.ReadTimeout as exc:
+        raise RuntimeError(
+            f"{service_name} vLLM OpenAI-compatible endpoint request failed at {url}. "
+            f"Start the model server or switch the backend to mock for UI testing. "
+            f"Original error: {exc}. "
+            "The request reached the server but did not finish before the client timeout; "
+            "for ASR, use shorter asr_chunk_seconds or increase asr_request_timeout_s."
+        ) from exc
     except Exception as exc:
         if isinstance(exc, RuntimeError):
             raise
@@ -266,10 +279,14 @@ def _data_url(audio_path: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _asr_request_timeout_s(config: ExperimentConfig) -> float:
+    return max(30.0, float(getattr(config, "asr_request_timeout_s", config.request_timeout_s) or config.request_timeout_s))
+
+
 def _asr_audio_chunks(audio_path: str, config: ExperimentConfig) -> List[ASRAudioChunk]:
     path = Path(audio_path)
     duration = _audio_duration_seconds(path)
-    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0))
+    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 15.0) or 15.0))
     if duration is None or duration <= chunk_seconds * ASR_CHUNK_THRESHOLD_RATIO:
         return [ASRAudioChunk(path=path, index=0, start_s=0.0, end_s=duration)]
     chunks = _split_audio_for_asr(path, chunk_seconds, duration)

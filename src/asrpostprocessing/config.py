@@ -16,7 +16,8 @@ class ExperimentConfig:
     asr_base_url: str = "http://127.0.0.1:18000/v1"
     post_base_url: str = "http://127.0.0.1:18001/v1"
     request_timeout_s: float = 120.0
-    asr_chunk_seconds: float = 30.0
+    asr_request_timeout_s: float = 300.0
+    asr_chunk_seconds: float = 15.0
     language: str = "ko"
     auto_start_model_servers: bool = False
     model_residency: str = "parallel"
@@ -88,6 +89,7 @@ class ExperimentConfig:
         config.rag_top_k = max(1, int(config.rag_top_k))
         config.chunk_max_chars = max(120, int(config.chunk_max_chars))
         config.chunk_overlap = max(0, min(int(config.chunk_overlap), config.chunk_max_chars // 2))
+        config.asr_request_timeout_s = max(30.0, float(config.asr_request_timeout_s))
         config.asr_chunk_seconds = max(5.0, float(config.asr_chunk_seconds))
         config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
         config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))

@@ -3,7 +3,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from asrpostprocessing.adapters.vllm import ASRAudioChunk, VLLMChatASRAdapter, VLLMOpenAIPostProcessAdapter, _duration_from_ffmpeg_output, _post_chat
+import requests
+
+from asrpostprocessing.adapters.vllm import (
+    ASRAudioChunk,
+    VLLMChatASRAdapter,
+    VLLMOpenAIPostProcessAdapter,
+    _asr_request_timeout_s,
+    _duration_from_ffmpeg_output,
+    _post_chat,
+)
 from asrpostprocessing.config import ExperimentConfig
 
 
@@ -64,6 +73,21 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertTrue(payloads[0]["messages"][0]["content"][1]["audio_url"]["url"].startswith("data:audio/"))
         self.assertIn(";base64", payloads[0]["messages"][0]["content"][1]["audio_url"]["url"])
 
+    def test_asr_uses_dedicated_timeout(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": "transcript"}}]}
+        config = ExperimentConfig(request_timeout_s=120.0, asr_request_timeout_s=300.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"audio")
+            with patch("requests.post", return_value=response) as post:
+                result = VLLMChatASRAdapter()._transcribe_one(str(audio), config)
+
+        self.assertEqual(result.text, "transcript")
+        self.assertEqual(post.call_args.kwargs["timeout"], 300.0)
+        self.assertEqual(_asr_request_timeout_s(config), 300.0)
+
     def test_post_chat_includes_response_body_for_bad_request(self):
         response = Mock()
         response.text = '{"error":"Input length exceeds model context"}'
@@ -73,9 +97,20 @@ class VLLMAdapterTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Input length exceeds model context"):
                 _post_chat(config.asr_base_url, {"messages": []}, config.request_timeout_s, "ASR")
 
+    def test_post_chat_gives_actionable_timeout_hint(self):
+        config = ExperimentConfig(asr_base_url="http://127.0.0.1:18000/v1")
+        with patch("requests.post", side_effect=requests.exceptions.ReadTimeout("read timeout=120.0")):
+            with self.assertRaisesRegex(RuntimeError, "asr_chunk_seconds"):
+                _post_chat(config.asr_base_url, {"messages": []}, config.request_timeout_s, "ASR")
+
     def test_ffmpeg_duration_output_is_parsed(self):
         output = "Duration: 01:02:03.45, start: 0.000000, bitrate: 192 kb/s"
         self.assertEqual(_duration_from_ffmpeg_output(output), 3723.45)
+
+    def test_default_asr_chunk_and_timeout_are_conservative_for_rtx5000(self):
+        config = ExperimentConfig()
+        self.assertEqual(config.asr_chunk_seconds, 15.0)
+        self.assertEqual(config.asr_request_timeout_s, 300.0)
 
 
 if __name__ == "__main__":
