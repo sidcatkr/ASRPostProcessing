@@ -121,6 +121,13 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertTrue(any(phrase.startswith("목표 용어를") for phrase in phrases))
         self.assertTrue(any("near-duplicate phrase" in warning for warning in report["warnings"]))
 
+    def test_report_ignores_common_suffix_phrase_variants(self):
+        raw = TranscriptResult(language="ko", text="오늘은 우리가 이제 시작합니다. 내일은 우리는 이제 정리합니다.")
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
+
+        self.assertEqual(report["phrase_instability"], [])
+
     def test_correction_quality_counts_resolved_keyword_near_misses(self):
         raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다.")
         correction = CorrectionResult(

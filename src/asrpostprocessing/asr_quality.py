@@ -349,7 +349,7 @@ def _near_phrase_score(left: Tuple[str, ...], right: Tuple[str, ...]) -> Optiona
     ]
     if len(differing_tokens) != 1:
         return None
-    if _is_affix_variant(*differing_tokens[0]):
+    if _is_affix_variant(*differing_tokens[0]) or _is_korean_suffix_variant(*differing_tokens[0]):
         return None
     left_key = "".join(left).lower()
     right_key = "".join(right).lower()
@@ -369,6 +369,28 @@ def _is_affix_variant(left: str, right: str) -> bool:
     if len(longer) - len(shorter) > 2:
         return False
     return longer.startswith(shorter) or longer.endswith(shorter)
+
+
+def _is_korean_suffix_variant(left: str, right: str) -> bool:
+    if not _is_hangul_text(left) or not _is_hangul_text(right):
+        return False
+    common_prefix = 0
+    for left_char, right_char in zip(left, right):
+        if left_char != right_char:
+            break
+        common_prefix += 1
+    if common_prefix >= 2 and len(left) - common_prefix <= 2 and len(right) - common_prefix <= 2:
+        return True
+    common_suffix = 0
+    for left_char, right_char in zip(reversed(left), reversed(right)):
+        if left_char != right_char:
+            break
+        common_suffix += 1
+    return common_suffix >= 2 and len(left) - common_suffix <= 2 and len(right) - common_suffix <= 2
+
+
+def _is_hangul_text(text: str) -> bool:
+    return bool(text) and len(_HANGUL_RE.findall(text)) == len(text)
 
 
 def _levenshtein_distance(left: str, right: str) -> int:
