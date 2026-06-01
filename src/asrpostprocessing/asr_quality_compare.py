@@ -27,47 +27,52 @@ def run_asr_quality_compare(
     strategies: Optional[Iterable[str]] = None,
     preprocess_mode: str = "both",
     sample_seconds: Optional[float] = None,
-    sample_start_s: float = 0.0,
+    sample_start_s: float | Iterable[float] = 0.0,
 ) -> Path:
-    source_audio = _sample_audio(audio_path, base_config, sample_seconds, sample_start_s)
     output = Path(output_path) if output_path else Path(base_config.output_dir) / "asr_quality_compare.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     rows: List[Dict[str, Any]] = []
     modes = _preprocess_modes(preprocess_mode)
-    for mode in modes:
-        for strategy in list(strategies or DEFAULT_COMPARE_STRATEGIES):
-            for seconds in list(chunk_seconds or DEFAULT_COMPARE_CHUNK_SECONDS):
-                config = copy.deepcopy(base_config)
-                _apply_asr_compare_condition(config, mode, strategy, seconds)
-                server_statuses = []
-                if config.auto_start_model_servers:
-                    server_statuses = [status.to_dict() for status in ensure_model_servers(config, names=["asr"])]
-                started = time.time()
-                preprocess_result = preprocess_audio(str(source_audio), config)
-                keyword_instruction = ""
-                if config.enable_keyword_bias:
-                    keyword_instruction = build_keyword_bias_instruction(config.keywords, config.keyword_bias_weight)
-                raw = build_asr_adapter(config).transcribe(preprocess_result.audio_path, config, keyword_instruction=keyword_instruction)
-                elapsed_s = time.time() - started
-                quality = build_asr_quality_report(raw, preprocess_result.to_dict(), config)
-                rows.append(
-                    {
-                        "condition": _condition_name(mode, strategy, seconds),
-                        "audio": str(source_audio),
-                        "preprocess_mode": mode,
-                        "strategy": strategy,
-                        "chunk_seconds": float(seconds),
-                        "elapsed_s": elapsed_s,
-                        "text_chars": len(raw.text or ""),
-                        "text_preview": _preview(raw.text),
-                        "asr_quality": quality,
-                        "server_statuses": server_statuses,
-                    }
-                )
+    sample_starts_s = _sample_starts(sample_start_s, sample_seconds)
+    for start_s in sample_starts_s:
+        source_audio = _sample_audio(audio_path, base_config, sample_seconds, start_s)
+        for mode in modes:
+            for strategy in list(strategies or DEFAULT_COMPARE_STRATEGIES):
+                for seconds in list(chunk_seconds or DEFAULT_COMPARE_CHUNK_SECONDS):
+                    config = copy.deepcopy(base_config)
+                    _apply_asr_compare_condition(config, mode, strategy, seconds)
+                    server_statuses = []
+                    if config.auto_start_model_servers:
+                        server_statuses = [status.to_dict() for status in ensure_model_servers(config, names=["asr"])]
+                    started = time.time()
+                    preprocess_result = preprocess_audio(str(source_audio), config)
+                    keyword_instruction = ""
+                    if config.enable_keyword_bias:
+                        keyword_instruction = build_keyword_bias_instruction(config.keywords, config.keyword_bias_weight)
+                    raw = build_asr_adapter(config).transcribe(preprocess_result.audio_path, config, keyword_instruction=keyword_instruction)
+                    elapsed_s = time.time() - started
+                    quality = build_asr_quality_report(raw, preprocess_result.to_dict(), config)
+                    rows.append(
+                        {
+                            "condition": _condition_name(mode, strategy, seconds),
+                            "audio": str(source_audio),
+                            "sample_start_s": float(start_s),
+                            "sample_seconds": sample_seconds,
+                            "preprocess_mode": mode,
+                            "strategy": strategy,
+                            "chunk_seconds": float(seconds),
+                            "elapsed_s": elapsed_s,
+                            "text_chars": len(raw.text or ""),
+                            "text_preview": _preview(raw.text),
+                            "asr_quality": quality,
+                            "server_statuses": server_statuses,
+                        }
+                    )
     payload = {
         "audio": str(audio_path),
-        "sample_audio": str(source_audio),
-        "sample_start_s": float(sample_start_s),
+        "sample_audio": rows[0]["audio"] if len(rows) == 1 else "",
+        "sample_start_s": sample_starts_s[0] if len(sample_starts_s) == 1 else None,
+        "sample_starts_s": sample_starts_s,
         "sample_seconds": sample_seconds,
         "rows": rows,
     }
@@ -95,6 +100,27 @@ def _preprocess_modes(mode: str) -> List[str]:
     if normalized in {"none", "configured"}:
         return [normalized]
     raise ValueError("preprocess_mode must be one of: none, configured, both")
+
+
+def _sample_starts(sample_start_s: float | Iterable[float], sample_seconds: Optional[float]) -> List[float]:
+    if sample_seconds is None:
+        return [0.0]
+    if isinstance(sample_start_s, (str, bytes)):
+        values: Iterable[Any] = [sample_start_s]
+    else:
+        try:
+            values = list(sample_start_s)  # type: ignore[arg-type]
+        except TypeError:
+            values = [sample_start_s]
+    starts = []
+    for value in values:
+        try:
+            start = max(0.0, float(value))
+        except (TypeError, ValueError):
+            continue
+        if start not in starts:
+            starts.append(start)
+    return starts or [0.0]
 
 
 def _sample_audio(audio_path: str, config: ExperimentConfig, sample_seconds: Optional[float], sample_start_s: float) -> Path:

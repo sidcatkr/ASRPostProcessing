@@ -45,7 +45,7 @@ def main(argv: Optional[list] = None) -> int:
     asr_quality_parser.add_argument("--strategy", choices=["fixed", "silence", "none"], action="append")
     asr_quality_parser.add_argument("--preprocess-mode", choices=["none", "configured", "both"], default="both")
     asr_quality_parser.add_argument("--sample-seconds", type=float)
-    asr_quality_parser.add_argument("--sample-start-s", type=float, default=0.0)
+    asr_quality_parser.add_argument("--sample-start-s", type=float, action="append")
     _add_backend_overrides(asr_quality_parser)
 
     tb_parser = subcommands.add_parser("tensorboard", help="Show or launch TensorBoard for runs/")
@@ -90,7 +90,7 @@ def main(argv: Optional[list] = None) -> int:
                 strategies=args.strategy,
                 preprocess_mode=args.preprocess_mode,
                 sample_seconds=args.sample_seconds,
-                sample_start_s=args.sample_start_s,
+                sample_start_s=args.sample_start_s or 0.0,
             )
         print(str(output_path))
         return 0

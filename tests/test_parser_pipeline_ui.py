@@ -53,6 +53,8 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
             result_payload = json.loads((Path(output.output_dir) / "result.json").read_text(encoding="utf-8"))
             self.assertIn("asr_quality", result_payload)
+            self.assertIn("artifacts", result_payload)
+            self.assertEqual(result_payload["artifacts"]["raw_transcript"], output.artifacts["raw_transcript"])
             self.assertIn("raw_transcript", output.artifacts)
             self.assertEqual(output.asr_quality["backend"], "mock")
             run_dir = Path(tmp) / "runs" / "test-run"

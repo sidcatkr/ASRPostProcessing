@@ -33,13 +33,28 @@ class CliTest(unittest.TestCase):
     def test_asr_quality_stdout_remains_path_when_backend_logs_to_stdout(self):
         def fake_compare(**_kwargs):
             print("backend warning")
+            self.assertEqual(_kwargs["sample_start_s"], [0.0, 30.0])
             return Path("compare.json")
 
         stdout = io.StringIO()
         stderr = io.StringIO()
         with patch("asrpostprocessing.cli.run_asr_quality_compare", side_effect=fake_compare):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = main(["asr-quality", "--audio", "audio.wav", "--asr-backend", "mock"])
+                code = main(
+                    [
+                        "asr-quality",
+                        "--audio",
+                        "audio.wav",
+                        "--asr-backend",
+                        "mock",
+                        "--sample-seconds",
+                        "10",
+                        "--sample-start-s",
+                        "0",
+                        "--sample-start-s",
+                        "30",
+                    ]
+                )
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout.getvalue().strip(), "compare.json")

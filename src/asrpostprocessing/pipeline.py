@@ -100,7 +100,7 @@ class PipelineRunner:
         self._emit("Writing run artifacts.")
         logger = RunLogger(self.config, run_id)
         artifacts = {
-            "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses, asr_quality))),
+            "result": str(logger.output_dir / "result.json"),
             "raw_transcript": str(logger.write_text("raw_transcript.txt", raw.text)),
             "corrected_transcript": str(logger.write_text("corrected_transcript.txt", correction.corrected_text)),
             "diff_html": str(logger.write_text("diff.html", diff_html)),
@@ -111,6 +111,7 @@ class PipelineRunner:
             "config": str(logger.write_config()),
             "tensorboard_fallback": str(logger.write_tensorboard_metrics(metrics)),
         }
+        logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses, asr_quality, artifacts))
         output = PipelineOutput(
             run_id=run_id,
             raw=raw,
@@ -223,11 +224,13 @@ class PipelineRunner:
         preprocess_result,
         server_statuses: List[Dict[str, Any]],
         asr_quality: Dict[str, Any],
+        artifacts: Dict[str, str],
     ) -> Dict[str, Any]:
         return {
             "raw": raw.to_dict(),
             "correction": correction.to_dict(),
             "metrics": metrics.to_dict(),
+            "artifacts": artifacts,
             "server_statuses": server_statuses,
             "preprocess": preprocess_result.to_dict(),
             "asr_quality": asr_quality,
