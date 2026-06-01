@@ -78,6 +78,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - Keyword Bias, LLM 후처리, RAG, Search를 각각 독립적으로 켜고 끌 수 있다.
 - RAW transcript, corrected transcript, diff, CER/WER 계열 metric, edit list, preprocess 결과, server status를 UI에서 확인할 수 있다.
 - 실행 artifact에는 `asr_quality.json`이 포함되어 chunk별 길이/문자 밀도, preprocessing warning, clipping 여부, 권장 재실험 조건을 확인할 수 있다.
+- CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
 - 실행 중 GPU/VRAM snapshot과 최근 진행 이벤트를 표시한다.
 - ASR 요청에는 post-processing 요청과 별도의 timeout(`asr_request_timeout_s`)을 적용한다.
 - 긴 오디오는 ASR 전 단계에서 audio chunk로 나누어 vLLM ASR endpoint에 순차 요청할 수 있다.
@@ -126,6 +127,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.
 - chunk별 metadata가 남기 때문에 오류 분석과 재현이 쉬워진다.
 - `asr_quality.json`을 별도 artifact로 남겨 `/tmp/raw.txt`처럼 transcript만 남은 상황에서도 preprocess와 chunk 조건을 추적할 수 있다.
+- `asrpp asr-quality --sample-seconds 120 --chunk-seconds 30 --chunk-seconds 60 --chunk-seconds 120`처럼 `/tmp` 문제 구간만 잘라 비교할 수 있다.
 
 ## 실험 비교 축
 

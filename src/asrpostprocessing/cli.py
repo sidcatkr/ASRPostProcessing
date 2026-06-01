@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from .config import load_config
 from .doctor import doctor_as_json, has_failures, run_doctor
+from .asr_quality_compare import run_asr_quality_compare
 from .pipeline import PipelineRunner, read_reference
 from .sweep import run_sweep
 
@@ -33,6 +34,17 @@ def main(argv: Optional[list] = None) -> int:
     sweep_parser = subcommands.add_parser("sweep", help="Run a weight grid over a manifest CSV")
     sweep_parser.add_argument("--manifest", required=True)
     sweep_parser.add_argument("--config")
+
+    asr_quality_parser = subcommands.add_parser("asr-quality", help="Compare ASR-only quality across chunk/preprocess settings")
+    asr_quality_parser.add_argument("--audio", required=True)
+    asr_quality_parser.add_argument("--config")
+    asr_quality_parser.add_argument("--output")
+    asr_quality_parser.add_argument("--chunk-seconds", type=float, action="append")
+    asr_quality_parser.add_argument("--strategy", choices=["fixed", "silence", "none"], action="append")
+    asr_quality_parser.add_argument("--preprocess-mode", choices=["none", "configured", "both"], default="both")
+    asr_quality_parser.add_argument("--sample-seconds", type=float)
+    asr_quality_parser.add_argument("--sample-start-s", type=float, default=0.0)
+    _add_backend_overrides(asr_quality_parser)
 
     tb_parser = subcommands.add_parser("tensorboard", help="Show or launch TensorBoard for runs/")
     tb_parser.add_argument("--logdir", default="runs")
@@ -63,6 +75,20 @@ def main(argv: Optional[list] = None) -> int:
         config = load_config(args.config)
         summary_path = run_sweep(args.manifest, config)
         print(str(summary_path))
+        return 0
+    if args.command == "asr-quality":
+        config = load_config(args.config, overrides=_backend_overrides(args))
+        output_path = run_asr_quality_compare(
+            audio_path=args.audio,
+            base_config=config,
+            output_path=args.output,
+            chunk_seconds=args.chunk_seconds,
+            strategies=args.strategy,
+            preprocess_mode=args.preprocess_mode,
+            sample_seconds=args.sample_seconds,
+            sample_start_s=args.sample_start_s,
+        )
+        print(str(output_path))
         return 0
     if args.command == "tensorboard":
         command = ["tensorboard", "--logdir", args.logdir, "--port", str(args.port)]
