@@ -110,6 +110,33 @@ class VLLMAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.corrected_text, "서론 연구를 찾아보고 읽어볼 거니까")
 
+    def test_postprocess_keyword_near_miss_rejects_unrelated_context_words(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"corrected_text":"청중 그날 청중이 누구냐",'
+                            '"edits":[],"risk":"unchanged","used_context_ids":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        config = ExperimentConfig(
+            post_backend="vllm_openai",
+            post_base_url="http://127.0.0.1:18001/v1",
+            keywords=["청중 분석"],
+            postprocess_strength=0.9,
+        )
+        with patch("requests.post", return_value=response):
+            result = VLLMOpenAIPostProcessAdapter().correct("청중 그날 청중이 누구냐", config, [], [])
+
+        self.assertEqual(result.corrected_text, "청중 그날 청중이 누구냐")
+        self.assertNotIn("keyword_near_miss_corrections", result.metadata)
+
     def test_asr_request_splits_long_audio_into_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = Path(tmp) / "chunk0.wav"

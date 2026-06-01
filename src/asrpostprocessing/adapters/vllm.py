@@ -332,7 +332,13 @@ def _keyword_near_miss_after(before: str, keyword: str, keyword_tokens: List[str
         adjusted, suffix = _strip_keyword_particle_suffix(before_token, keyword_token)
         adjusted_tokens.append(adjusted)
         suffixes.append(suffix)
-    if not any(_phrase_key(left) == _phrase_key(right) for left, right in zip(adjusted_tokens, keyword_tokens)):
+    token_pairs = list(zip(adjusted_tokens, keyword_tokens))
+    if not any(_phrase_key(left) == _phrase_key(right) for left, right in token_pairs):
+        return ""
+    non_exact_pairs = [(left, right) for left, right in token_pairs if _phrase_key(left) != _phrase_key(right)]
+    if not non_exact_pairs:
+        return ""
+    if any(_hangul_phonetic_distance_ratio(left, right) > 0.7 for left, right in non_exact_pairs):
         return ""
     before_key = "".join(_phrase_key(token) for token in adjusted_tokens)
     if len(before_key) < 4 or _hangul_count(before_key) < 2:
@@ -387,6 +393,87 @@ def _levenshtein_distance(left: str, right: str) -> int:
             )
         previous = current
     return previous[-1]
+
+
+HANGUL_CHO = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
+HANGUL_JUNG = [
+    "ㅏ",
+    "ㅐ",
+    "ㅑ",
+    "ㅒ",
+    "ㅓ",
+    "ㅔ",
+    "ㅕ",
+    "ㅖ",
+    "ㅗ",
+    "ㅘ",
+    "ㅙ",
+    "ㅚ",
+    "ㅛ",
+    "ㅜ",
+    "ㅝ",
+    "ㅞ",
+    "ㅟ",
+    "ㅠ",
+    "ㅡ",
+    "ㅢ",
+    "ㅣ",
+]
+HANGUL_JONG = [
+    "",
+    "ㄱ",
+    "ㄲ",
+    "ㄳ",
+    "ㄴ",
+    "ㄵ",
+    "ㄶ",
+    "ㄷ",
+    "ㄹ",
+    "ㄺ",
+    "ㄻ",
+    "ㄼ",
+    "ㄽ",
+    "ㄾ",
+    "ㄿ",
+    "ㅀ",
+    "ㅁ",
+    "ㅂ",
+    "ㅄ",
+    "ㅅ",
+    "ㅆ",
+    "ㅇ",
+    "ㅈ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ",
+    "ㅎ",
+]
+
+
+def _hangul_phonetic_distance_ratio(left: str, right: str) -> float:
+    left_key = _hangul_phonetic_key(left)
+    right_key = _hangul_phonetic_key(right)
+    if not left_key or not right_key:
+        return 1.0
+    return _levenshtein_distance(left_key, right_key) / max(len(left_key), len(right_key))
+
+
+def _hangul_phonetic_key(text: str) -> str:
+    parts = []
+    for char in text or "":
+        code = ord(char) - 0xAC00
+        if 0 <= code < 11172:
+            cho = code // 588
+            jung = (code % 588) // 28
+            jong = code % 28
+            parts.append(HANGUL_CHO[cho])
+            parts.append(HANGUL_JUNG[jung])
+            if HANGUL_JONG[jong]:
+                parts.append(HANGUL_JONG[jong])
+        else:
+            parts.append(char.lower())
+    return "".join(parts)
 
 
 def _temperature_for_strength(strength: float) -> float:
