@@ -79,6 +79,27 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertEqual(report["keyword_near_misses"][0]["after"], "선행 연구를")
         self.assertTrue(any("keyword near-miss" in warning for warning in report["warnings"]))
 
+    def test_report_surfaces_filtered_language_drift(self):
+        raw = TranscriptResult(
+            language="ko",
+            text="쉬다 와요. 다음 곡 잡자.",
+            segments=[
+                TranscriptSegment(
+                    text="쉬다 와요. 다음 곡 잡자.",
+                    start_s=3300.0,
+                    end_s=3360.0,
+                    metadata={"asr_metadata": {"parsed": {"filtered_reason": "inline_cjk_drift_removed"}}},
+                )
+            ],
+            metadata={"backend": "vllm_chat", "chunked": True, "chunk_seconds": 120.0},
+        )
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
+
+        self.assertEqual(report["language_drift"]["filtered_reasons"], ["inline_cjk_drift_removed"])
+        self.assertEqual(report["chunks"][0]["filtered_reason"], "inline_cjk_drift_removed")
+        self.assertTrue(any("language drift" in warning for warning in report["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

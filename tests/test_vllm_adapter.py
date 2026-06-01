@@ -13,6 +13,7 @@ from asrpostprocessing.adapters.vllm import (
     _asr_instruction,
     _asr_request_timeout_s,
     _duration_from_ffmpeg_output,
+    _filter_asr_language_drift,
     _parse_asr_text,
     _post_chat,
     _rolling_asr_context,
@@ -254,6 +255,34 @@ class VLLMAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.text, "")
         self.assertEqual(result.metadata["parsed"]["filtered_reason"], "non_korean_cjk_drift")
+
+    def test_korean_asr_removes_inline_cjk_drift_before_postprocess(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자."
+                    }
+                }
+            ]
+        }
+        config = ExperimentConfig(language="ko")
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"audio")
+            with patch("requests.post", return_value=response):
+                result = VLLMChatASRAdapter()._transcribe_one(str(audio), config)
+
+        self.assertEqual(result.text, "쉬다 와요. 다음 곡 잡자.")
+        self.assertEqual(result.metadata["parsed"]["filtered_reason"], "inline_cjk_drift_removed")
+
+    def test_korean_asr_keeps_short_hanja_terms(self):
+        text, reason = _filter_asr_language_drift("공자 曰 다음 문장", "ko")
+
+        self.assertEqual(text, "공자 曰 다음 문장")
+        self.assertEqual(reason, "")
 
     def test_asr_instruction_discourages_language_drift_and_artifacts(self):
         instruction = _asr_instruction("", "")

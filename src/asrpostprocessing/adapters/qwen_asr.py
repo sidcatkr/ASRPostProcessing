@@ -55,7 +55,7 @@ class QwenASRPackageAdapter:
         text = _clean_asr_transcript_text(raw_text)
         text, filtered_reason = _filter_asr_language_drift(text, config.language)
         language = getattr(result, "language", None) or config.language
-        segments = _segments_from_timestamps(getattr(result, "time_stamps", None))
+        segments = _segments_from_timestamps(getattr(result, "time_stamps", None), config.language)
         return TranscriptResult(
             language=language,
             text=text,
@@ -137,16 +137,22 @@ class QwenASRPackageAdapter:
         )
 
 
-def _segments_from_timestamps(time_stamps) -> List[TranscriptSegment]:
+def _segments_from_timestamps(time_stamps, language: str = "") -> List[TranscriptSegment]:
     segments: List[TranscriptSegment] = []
     for timestamp in time_stamps or []:
         if isinstance(timestamp, dict):
+            raw_text = str(timestamp.get("text", ""))
+            text = _clean_asr_transcript_text(raw_text)
+            text, filtered_reason = _filter_asr_language_drift(text, language)
+            metadata = {"raw": timestamp}
+            if filtered_reason:
+                metadata["filtered_asr_text_reason"] = filtered_reason
             segments.append(
                 TranscriptSegment(
-                    text=str(timestamp.get("text", "")),
+                    text=text,
                     start_s=_to_float(timestamp.get("start")),
                     end_s=_to_float(timestamp.get("end")),
-                    metadata={"raw": timestamp},
+                    metadata=metadata,
                 )
             )
     return segments

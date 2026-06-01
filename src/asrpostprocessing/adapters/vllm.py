@@ -603,14 +603,49 @@ def _clean_asr_transcript_text(text: str) -> str:
 def _filter_asr_language_drift(text: str, language: str) -> Tuple[str, str]:
     if not _is_korean_target_language(language):
         return text, ""
-    compact = "".join((text or "").split())
+    original_compact = "".join((text or "").split())
+    original_hangul_count = len(_HANGUL_RE.findall(original_compact))
+    original_han_count = len(_HAN_RE.findall(original_compact))
+    if original_hangul_count == 0 and original_han_count >= 4:
+        return "", "non_korean_cjk_drift"
+    filtered_text, removed_inline_cjk = _remove_inline_cjk_drift(text)
+    compact = "".join((filtered_text or "").split())
     if not compact:
-        return text, ""
-    hangul_count = len(re.findall(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]", compact))
-    han_count = len(re.findall(r"[\u4e00-\u9fff]", compact))
+        return filtered_text, "non_korean_cjk_drift" if removed_inline_cjk else ""
+    hangul_count = len(_HANGUL_RE.findall(compact))
+    han_count = len(_HAN_RE.findall(compact))
     if hangul_count == 0 and han_count >= 4:
         return "", "non_korean_cjk_drift"
+    if removed_inline_cjk:
+        return filtered_text, "inline_cjk_drift_removed"
     return text, ""
+
+
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_CJK_DRIFT_RUN_RE = re.compile(r"[\u4e00-\u9fff][\u4e00-\u9fff\u3000-\u303f\uff00-\uffef·，。！？、：；“”‘’《》「」『』（）()…,.?!\s-]*")
+_CJK_DRIFT_PUNCT_RE = re.compile(r"[\u3000-\u303f\uff00-\uffef，。！？、：；]")
+
+
+def _remove_inline_cjk_drift(text: str) -> Tuple[str, bool]:
+    changed = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal changed
+        block = match.group(0)
+        han_count = len(_HAN_RE.findall(block))
+        has_cjk_punctuation = bool(_CJK_DRIFT_PUNCT_RE.search(block))
+        if han_count >= 4 and (has_cjk_punctuation or han_count >= 6):
+            changed = True
+            return " "
+        return block
+
+    cleaned = _CJK_DRIFT_RUN_RE.sub(replace, text or "")
+    if changed:
+        cleaned = re.sub(r"[ \t\r\f\v]+", " ", cleaned)
+        cleaned = re.sub(r"\s+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n\s+", "\n", cleaned)
+    return cleaned.strip(), changed
 
 
 def _is_korean_target_language(language: str) -> bool:

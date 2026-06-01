@@ -11,6 +11,7 @@ from .schemas import TranscriptResult
 def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], config: ExperimentConfig) -> Dict[str, Any]:
     chunk_reports = _chunk_reports(raw)
     keyword_near_misses = _keyword_near_misses(raw.text or "", config)
+    language_drift_reasons = _language_drift_reasons(raw)
     warnings: List[str] = []
     action_items: List[str] = []
 
@@ -41,6 +42,9 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     if any(chunk["text_chars"] == 0 for chunk in chunk_reports):
         warnings.append("At least one ASR chunk produced empty text.")
         action_items.append("Inspect empty ASR chunks for low-volume speech, silence, noise, or language drift.")
+    if language_drift_reasons:
+        warnings.append("ASR language drift artifact(s) were filtered before post-processing.")
+        action_items.append("Inspect filtered ASR chunks if transcript context is missing near those timestamps.")
     if keyword_near_misses:
         warnings.append("ASR contains keyword near-miss candidate(s).")
         action_items.append("Enable keyword-guided post-processing or inspect the listed near-miss terms.")
@@ -60,6 +64,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
             "chunk_count": len(chunk_reports),
         },
         "preprocess": _preprocess_summary(preprocess),
+        "language_drift": {"filtered_reasons": language_drift_reasons},
         "keyword_near_misses": keyword_near_misses,
         "chunks": chunk_reports,
         "warnings": _dedupe(warnings),
@@ -117,7 +122,38 @@ def _chunk_report(index: int, start_s: Optional[float], end_s: Optional[float], 
     }
     if "audio_path" in metadata:
         report["audio_path"] = metadata["audio_path"]
+    filtered_reason = _filtered_reason_from_metadata(metadata)
+    if filtered_reason:
+        report["filtered_reason"] = filtered_reason
     return report
+
+
+def _language_drift_reasons(raw: TranscriptResult) -> List[str]:
+    reasons = []
+    metadata = raw.metadata if isinstance(raw.metadata, dict) else {}
+    reason = _filtered_reason_from_metadata(metadata)
+    if reason:
+        reasons.append(reason)
+    for segment in raw.segments or []:
+        segment_metadata = segment.metadata if isinstance(segment.metadata, dict) else {}
+        reason = _filtered_reason_from_metadata(segment_metadata)
+        if reason:
+            reasons.append(reason)
+    return _dedupe(reasons)
+
+
+def _filtered_reason_from_metadata(metadata: Dict[str, Any]) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    direct = str(metadata.get("filtered_asr_text_reason") or "").strip()
+    if direct:
+        return direct
+    parsed = metadata.get("parsed") if isinstance(metadata.get("parsed"), dict) else {}
+    parsed_reason = str(parsed.get("filtered_reason") or "").strip()
+    if parsed_reason:
+        return parsed_reason
+    asr_metadata = metadata.get("asr_metadata") if isinstance(metadata.get("asr_metadata"), dict) else {}
+    return _filtered_reason_from_metadata(asr_metadata) if asr_metadata else ""
 
 
 def _preprocess_summary(preprocess: Dict[str, Any]) -> Dict[str, Any]:
