@@ -55,6 +55,61 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertIn("서론 연구", prompt)
         self.assertEqual(result.corrected_text, "교정된 문장")
 
+    def test_postprocess_applies_high_strength_keyword_near_miss(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '"edits":[],"risk":"unchanged","used_context_ids":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        config = ExperimentConfig(
+            post_backend="vllm_openai",
+            post_base_url="http://127.0.0.1:18001/v1",
+            keywords=["선행 연구"],
+            postprocess_strength=0.9,
+        )
+        with patch("requests.post", return_value=response):
+            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+
+        self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 읽어볼 거니까")
+        self.assertEqual(result.edits[-1].before, "서론 연구를")
+        self.assertEqual(result.edits[-1].after, "선행 연구를")
+        self.assertIn("keyword_near_miss_corrections", result.metadata)
+
+    def test_postprocess_keeps_keyword_near_miss_disabled_at_balanced_strength(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '"edits":[],"risk":"unchanged","used_context_ids":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        config = ExperimentConfig(
+            post_backend="vllm_openai",
+            post_base_url="http://127.0.0.1:18001/v1",
+            keywords=["선행 연구"],
+            postprocess_strength=0.5,
+        )
+        with patch("requests.post", return_value=response):
+            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+
+        self.assertEqual(result.corrected_text, "서론 연구를 찾아보고 읽어볼 거니까")
+
     def test_asr_request_splits_long_audio_into_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = Path(tmp) / "chunk0.wav"
