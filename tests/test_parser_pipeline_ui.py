@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import time
 import unittest
@@ -39,8 +40,12 @@ class ParserPipelineUiTest(unittest.TestCase):
             output = PipelineRunner(config).run(str(audio), reference_text="테스트 전사 문장입니다.", run_id="test-run")
             self.assertEqual(output.correction.corrected_text, "테스트 전사 문장입니다.")
             self.assertTrue((Path(output.output_dir) / "result.json").exists())
+            self.assertTrue((Path(output.output_dir) / "asr_quality.json").exists())
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
+            result_payload = json.loads((Path(output.output_dir) / "result.json").read_text(encoding="utf-8"))
+            self.assertIn("asr_quality", result_payload)
+            self.assertEqual(output.asr_quality["backend"], "mock")
             run_dir = Path(tmp) / "runs" / "test-run"
             metrics_tsv = run_dir / "metrics.tsv"
             self.assertTrue(metrics_tsv.exists())

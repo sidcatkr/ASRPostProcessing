@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import build_asr_adapter, build_postprocess_adapter
+from .asr_quality import build_asr_quality_report
 from .chunking import chunk_segments, chunk_text
 from .config import ExperimentConfig, normalize_model_residency
 from .keyword_bias import build_keyword_bias_instruction
@@ -32,6 +33,7 @@ class PipelineOutput:
     artifacts: Dict[str, str]
     server_statuses: List[Dict[str, Any]]
     preprocess: Dict[str, Any]
+    asr_quality: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -43,6 +45,7 @@ class PipelineOutput:
             "artifacts": self.artifacts,
             "server_statuses": self.server_statuses,
             "preprocess": self.preprocess,
+            "asr_quality": self.asr_quality,
         }
 
 
@@ -92,11 +95,13 @@ class PipelineRunner:
         self._emit("Evaluating transcript metrics.")
         metrics = evaluate_transcripts(reference_text, raw.text, correction.corrected_text, latency_ms=latency_ms)
         diff_html = make_diff_html(raw.text, correction.corrected_text)
+        asr_quality = build_asr_quality_report(raw, preprocess_result.to_dict(), self.config)
 
         self._emit("Writing run artifacts.")
         logger = RunLogger(self.config, run_id)
         artifacts = {
-            "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses))),
+            "result": str(logger.write_json("result.json", self._result_payload(raw, correction, metrics, preprocess_result, server_statuses, asr_quality))),
+            "asr_quality": str(logger.write_json("asr_quality.json", asr_quality)),
             "preprocess": str(logger.write_json("preprocess.json", preprocess_result.to_dict())),
             "metrics": str(logger.write_json("metrics.json", metrics.to_dict())),
             "edits": str(logger.write_edits(correction.edits)),
@@ -113,6 +118,7 @@ class PipelineRunner:
             artifacts=artifacts,
             server_statuses=server_statuses,
             preprocess=preprocess_result.to_dict(),
+            asr_quality=asr_quality,
         )
         self._emit(f"Run {run_id} complete in {latency_ms / 1000.0:.1f}s.")
         return output
@@ -213,6 +219,7 @@ class PipelineRunner:
         metrics: MetricsResult,
         preprocess_result,
         server_statuses: List[Dict[str, Any]],
+        asr_quality: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "raw": raw.to_dict(),
@@ -220,6 +227,7 @@ class PipelineRunner:
             "metrics": metrics.to_dict(),
             "server_statuses": server_statuses,
             "preprocess": preprocess_result.to_dict(),
+            "asr_quality": asr_quality,
             "config": self.config.to_dict(),
         }
 
