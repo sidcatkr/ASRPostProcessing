@@ -6,7 +6,11 @@ asr_base_url: http://127.0.0.1:18000/v1
 post_base_url: http://127.0.0.1:18001/v1
 request_timeout_s: 120
 asr_request_timeout_s: 300
-asr_chunk_seconds: 15
+asr_chunking_strategy: silence
+asr_chunk_seconds: 30
+asr_chunk_padding_seconds: 0.5
+asr_silence_threshold_db: -35
+asr_min_silence_seconds: 0.6
 auto_start_model_servers: true
 model_residency: sequential
 server_start_timeout_s: 900

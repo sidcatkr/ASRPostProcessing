@@ -106,6 +106,47 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
             with gr.Row():
                 asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="ASR base URL")
                 post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post-processing LLM API URL")
+            with gr.Accordion("ASR request chunking", open=True):
+                with gr.Row():
+                    asr_chunking_strategy = gr.Dropdown(
+                        [
+                            ("Silence-aware / VAD-style", "silence"),
+                            ("Fixed-duration segments", "fixed"),
+                            ("No audio chunking", "none"),
+                        ],
+                        value=initial_config.asr_chunking_strategy,
+                        label="ASR audio chunking",
+                    )
+                    asr_chunk_seconds = gr.Slider(5, 120, value=initial_config.asr_chunk_seconds, step=5, label="ASR max chunk seconds")
+                    asr_request_timeout_s = gr.Slider(
+                        30,
+                        900,
+                        value=initial_config.asr_request_timeout_s,
+                        step=30,
+                        label="ASR request timeout seconds",
+                    )
+                with gr.Row():
+                    asr_chunk_padding_seconds = gr.Slider(
+                        0,
+                        5,
+                        value=initial_config.asr_chunk_padding_seconds,
+                        step=0.1,
+                        label="Silence chunk padding seconds",
+                    )
+                    asr_silence_threshold_db = gr.Slider(
+                        -80,
+                        -10,
+                        value=initial_config.asr_silence_threshold_db,
+                        step=1,
+                        label="Silence threshold dB",
+                    )
+                    asr_min_silence_seconds = gr.Slider(
+                        0.1,
+                        5.0,
+                        value=initial_config.asr_min_silence_seconds,
+                        step=0.1,
+                        label="Minimum silence seconds",
+                    )
             with gr.Accordion("Model server startup", open=True):
                 with gr.Row():
                     auto_start_model_servers = gr.Checkbox(
@@ -239,6 +280,12 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 post_backend,
                 model_residency,
                 server_shutdown_timeout_s,
+                asr_chunking_strategy,
+                asr_chunk_seconds,
+                asr_chunk_padding_seconds,
+                asr_silence_threshold_db,
+                asr_min_silence_seconds,
+                asr_request_timeout_s,
             ],
             outputs=[
                 raw_output,
@@ -468,6 +515,12 @@ def run_from_ui(
     post_backend: str,
     model_residency: str = "parallel",
     server_shutdown_timeout_s: float = 30.0,
+    asr_chunking_strategy: str = "silence",
+    asr_chunk_seconds: float = 30.0,
+    asr_chunk_padding_seconds: float = 0.5,
+    asr_silence_threshold_db: float = -35.0,
+    asr_min_silence_seconds: float = 0.6,
+    asr_request_timeout_s: float = 300.0,
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
@@ -482,6 +535,12 @@ def run_from_ui(
         post_backend=post_backend,
         asr_base_url=asr_base_url or "http://127.0.0.1:18000/v1",
         post_base_url=post_base_url or "http://127.0.0.1:18001/v1",
+        asr_request_timeout_s=float(asr_request_timeout_s or 300.0),
+        asr_chunking_strategy=asr_chunking_strategy or "silence",
+        asr_chunk_seconds=float(asr_chunk_seconds or 30.0),
+        asr_chunk_padding_seconds=float(asr_chunk_padding_seconds or 0.0),
+        asr_silence_threshold_db=float(asr_silence_threshold_db or -35.0),
+        asr_min_silence_seconds=float(asr_min_silence_seconds or 0.6),
         auto_start_model_servers=bool(auto_start_model_servers),
         model_residency=model_residency or "parallel",
         server_start_timeout_s=float(server_start_timeout_s),
@@ -543,6 +602,7 @@ def run_from_ui(
         (
             f"Run ID: {output.run_id}\n"
             f"Model residency: {config.model_residency}\n"
+            f"ASR chunking: {config.asr_chunking_strategy} ({config.asr_chunk_seconds:g}s, timeout {config.asr_request_timeout_s:g}s)\n"
             f"{server_lines}"
             f"Output: {output.output_dir}\n"
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"

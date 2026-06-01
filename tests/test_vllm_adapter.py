@@ -9,9 +9,11 @@ from asrpostprocessing.adapters.vllm import (
     ASRAudioChunk,
     VLLMChatASRAdapter,
     VLLMOpenAIPostProcessAdapter,
+    _asr_audio_chunks,
     _asr_request_timeout_s,
     _duration_from_ffmpeg_output,
     _post_chat,
+    _silence_aware_chunk_specs,
 )
 from asrpostprocessing.config import ExperimentConfig
 
@@ -50,8 +52,8 @@ class VLLMAdapterTest(unittest.TestCase):
             first.write_bytes(b"first")
             second.write_bytes(b"second")
             chunks = [
-                ASRAudioChunk(path=first, index=0, start_s=0.0, end_s=30.0),
-                ASRAudioChunk(path=second, index=1, start_s=30.0, end_s=60.0),
+                ASRAudioChunk(path=first, index=0, start_s=0.0, end_s=30.0, method="fixed"),
+                ASRAudioChunk(path=second, index=1, start_s=30.0, end_s=60.0, method="fixed"),
             ]
             payloads = []
 
@@ -59,7 +61,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 payloads.append(payload)
                 return {"choices": [{"message": {"content": f"chunk {len(payloads)} text"}}]}
 
-            config = ExperimentConfig(asr_backend="vllm_chat", asr_base_url="http://127.0.0.1:18000/v1")
+            config = ExperimentConfig(asr_backend="vllm_chat", asr_base_url="http://127.0.0.1:18000/v1", asr_chunking_strategy="fixed")
             with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=75.0), patch(
                 "asrpostprocessing.adapters.vllm._split_audio_for_asr", return_value=chunks
             ), patch("asrpostprocessing.adapters.vllm._post_chat", side_effect=fake_post):
@@ -67,6 +69,8 @@ class VLLMAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.text, "chunk 1 text\nchunk 2 text")
         self.assertTrue(result.metadata["chunked"])
+        self.assertEqual(result.metadata["chunking_strategy"], "fixed")
+        self.assertEqual(result.metadata["chunks"][0]["method"], "fixed")
         self.assertEqual(len(result.segments), 2)
         self.assertEqual(result.segments[1].start_s, 30.0)
         self.assertEqual(len(payloads), 2)
@@ -107,10 +111,54 @@ class VLLMAdapterTest(unittest.TestCase):
         output = "Duration: 01:02:03.45, start: 0.000000, bitrate: 192 kb/s"
         self.assertEqual(_duration_from_ffmpeg_output(output), 3723.45)
 
-    def test_default_asr_chunk_and_timeout_are_conservative_for_rtx5000(self):
+    def test_default_asr_chunking_and_timeout_are_conservative_for_rtx5000(self):
         config = ExperimentConfig()
-        self.assertEqual(config.asr_chunk_seconds, 15.0)
+        self.assertEqual(config.asr_chunking_strategy, "silence")
+        self.assertEqual(config.asr_chunk_seconds, 30.0)
+        self.assertEqual(config.asr_chunk_padding_seconds, 0.5)
         self.assertEqual(config.asr_request_timeout_s, 300.0)
+
+    def test_none_chunking_strategy_keeps_long_audio_whole(self):
+        config = ExperimentConfig(asr_chunking_strategy="none")
+        with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=600.0), patch(
+            "asrpostprocessing.adapters.vllm._split_audio_for_asr_silence"
+        ) as silence_split, patch("asrpostprocessing.adapters.vllm._split_audio_for_asr") as fixed_split:
+            chunks = _asr_audio_chunks("long.wav", config)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].method, "none")
+        self.assertEqual(chunks[0].end_s, 600.0)
+        silence_split.assert_not_called()
+        fixed_split.assert_not_called()
+
+    def test_silence_chunking_falls_back_to_fixed_segments(self):
+        fixed_chunks = [
+            ASRAudioChunk(path=Path("chunk0.wav"), index=0, start_s=0.0, end_s=30.0, method="fixed"),
+            ASRAudioChunk(path=Path("chunk1.wav"), index=1, start_s=30.0, end_s=60.0, method="fixed"),
+        ]
+        config = ExperimentConfig(asr_chunking_strategy="silence", asr_chunk_seconds=30.0)
+        with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=75.0), patch(
+            "asrpostprocessing.adapters.vllm._split_audio_for_asr_silence", return_value=[]
+        ) as silence_split, patch("asrpostprocessing.adapters.vllm._split_audio_for_asr", return_value=fixed_chunks) as fixed_split:
+            chunks = _asr_audio_chunks("long.wav", config)
+
+        self.assertEqual(chunks, fixed_chunks)
+        silence_split.assert_called_once()
+        fixed_split.assert_called_once()
+
+    def test_silence_aware_chunk_specs_split_on_silence_and_pad_without_overlap(self):
+        specs = _silence_aware_chunk_specs([(20.0, 21.0)], duration=50.0, chunk_seconds=30.0, padding_seconds=0.5)
+
+        self.assertEqual(len(specs), 2)
+        self.assertAlmostEqual(specs[0].start_s, 0.0)
+        self.assertAlmostEqual(specs[0].end_s, 20.5)
+        self.assertAlmostEqual(specs[1].start_s, 20.5)
+        self.assertAlmostEqual(specs[1].end_s, 50.0)
+        self.assertEqual(specs[0].speech_end_s, 20.0)
+        self.assertEqual(specs[1].speech_start_s, 21.0)
+
+    def test_silence_aware_chunk_specs_require_detected_silence(self):
+        self.assertEqual(_silence_aware_chunk_specs([], duration=50.0, chunk_seconds=30.0, padding_seconds=0.5), [])
 
 
 if __name__ == "__main__":

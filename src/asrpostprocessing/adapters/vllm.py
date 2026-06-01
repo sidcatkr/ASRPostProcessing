@@ -5,11 +5,12 @@ import json
 import mimetypes
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, NamedTuple, Optional
+from typing import Iterable, List, Optional, Tuple
 from uuid import uuid4
 
-from asrpostprocessing.config import ExperimentConfig
+from asrpostprocessing.config import ExperimentConfig, normalize_asr_chunking_strategy
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.preprocess import ffmpeg_executable
 from asrpostprocessing.schemas import CorrectionResult, RAGContext, SearchResult, TranscriptResult, TranscriptSegment
@@ -18,17 +19,30 @@ ASR_CHUNK_OUTPUT_DIR = Path("outputs/asr_chunks")
 ASR_CHUNK_THRESHOLD_RATIO = 1.1
 
 
-class ASRAudioChunk(NamedTuple):
+@dataclass(frozen=True)
+class ASRAudioChunk:
     path: Path
     index: int
     start_s: float
     end_s: Optional[float]
+    method: str = "single"
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class AudioChunkSpec:
+    start_s: float
+    end_s: float
+    method: str = "silence"
+    speech_start_s: Optional[float] = None
+    speech_end_s: Optional[float] = None
 
 
 class VLLMChatASRAdapter:
     def transcribe(self, audio_path: str, config: ExperimentConfig, keyword_instruction: str = "") -> TranscriptResult:
         chunks = _asr_audio_chunks(audio_path, config)
-        if len(chunks) > 1:
+        if len(chunks) > 1 or (chunks and chunks[0].path != Path(audio_path)):
             return self._transcribe_chunks(chunks, config, keyword_instruction)
         return self._transcribe_one(audio_path, config, keyword_instruction)
 
@@ -76,7 +90,14 @@ class VLLMChatASRAdapter:
                     text=text,
                     start_s=chunk.start_s,
                     end_s=chunk.end_s,
-                    metadata={"chunk_index": chunk.index, "audio_path": str(chunk.path), "asr_metadata": result.metadata},
+                    metadata={
+                        "chunk_index": chunk.index,
+                        "audio_path": str(chunk.path),
+                        "chunk_method": chunk.method,
+                        "speech_start_s": chunk.speech_start_s,
+                        "speech_end_s": chunk.speech_end_s,
+                        "asr_metadata": result.metadata,
+                    },
                 )
             )
             chunk_metadata.append(
@@ -85,6 +106,9 @@ class VLLMChatASRAdapter:
                     "audio_path": str(chunk.path),
                     "start_s": chunk.start_s,
                     "end_s": chunk.end_s,
+                    "method": chunk.method,
+                    "speech_start_s": chunk.speech_start_s,
+                    "speech_end_s": chunk.speech_end_s,
                     "text_chars": len(text),
                 }
             )
@@ -95,7 +119,9 @@ class VLLMChatASRAdapter:
             metadata={
                 "backend": "vllm_chat",
                 "chunked": True,
-                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 15.0) or 15.0),
+                "chunking_strategy": normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence")),
+                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0),
+                "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
                 "chunks": chunk_metadata,
             },
         )
@@ -218,7 +244,8 @@ def _post_chat(base_url: str, payload: dict, timeout_s: float, service_name: str
             f"Start the model server or switch the backend to mock for UI testing. "
             f"Original error: {exc}. "
             "The request reached the server but did not finish before the client timeout; "
-            "for ASR, use shorter asr_chunk_seconds or increase asr_request_timeout_s."
+            "for ASR, use silence/fixed asr_chunking_strategy with shorter asr_chunk_seconds "
+            "or increase asr_request_timeout_s."
         ) from exc
     except Exception as exc:
         if isinstance(exc, RuntimeError):
@@ -286,9 +313,16 @@ def _asr_request_timeout_s(config: ExperimentConfig) -> float:
 def _asr_audio_chunks(audio_path: str, config: ExperimentConfig) -> List[ASRAudioChunk]:
     path = Path(audio_path)
     duration = _audio_duration_seconds(path)
-    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 15.0) or 15.0))
+    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0))
+    strategy = normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence"))
+    if strategy == "none":
+        return [ASRAudioChunk(path=path, index=0, start_s=0.0, end_s=duration, method="none")]
     if duration is None or duration <= chunk_seconds * ASR_CHUNK_THRESHOLD_RATIO:
         return [ASRAudioChunk(path=path, index=0, start_s=0.0, end_s=duration)]
+    if strategy == "silence":
+        chunks = _split_audio_for_asr_silence(path, config, duration, chunk_seconds)
+        if chunks:
+            return chunks
     chunks = _split_audio_for_asr(path, chunk_seconds, duration)
     if chunks:
         return chunks
@@ -296,6 +330,284 @@ def _asr_audio_chunks(audio_path: str, config: ExperimentConfig) -> List[ASRAudi
         f"ASR input is {duration:.1f}s, which is too long for one vLLM ASR request, "
         "but ffmpeg could not create audio chunks."
     )
+
+
+def _split_audio_for_asr_silence(
+    input_path: Path,
+    config: ExperimentConfig,
+    duration: float,
+    chunk_seconds: float,
+) -> List[ASRAudioChunk]:
+    ffmpeg = ffmpeg_executable()
+    if not ffmpeg:
+        return []
+    threshold_db = max(-80.0, min(-10.0, float(getattr(config, "asr_silence_threshold_db", -35.0) or -35.0)))
+    min_silence_s = max(0.1, min(5.0, float(getattr(config, "asr_min_silence_seconds", 0.6) or 0.6)))
+    padding_s = max(0.0, min(5.0, float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0)))
+    silences = _detect_silences(ffmpeg, input_path, threshold_db, min_silence_s, duration)
+    specs = _silence_aware_chunk_specs(silences, duration, chunk_seconds, padding_s)
+    if not specs:
+        return []
+    return _write_audio_chunk_specs(ffmpeg, input_path, specs, "silence")
+
+
+def _detect_silences(
+    ffmpeg: str,
+    input_path: Path,
+    threshold_db: float,
+    min_silence_s: float,
+    duration: float,
+) -> List[Tuple[float, float]]:
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(input_path),
+        "-af",
+        f"silencedetect=noise={threshold_db:.1f}dB:d={min_silence_s:.3f}",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(30.0, min(600.0, duration * 0.25 + 30.0)),
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    output = (result.stderr or "") + "\n" + (result.stdout or "")
+    silences: List[Tuple[float, float]] = []
+    pending_start: Optional[float] = None
+    for match in re.finditer(r"silence_(start|end):\s*([0-9]+(?:\.[0-9]+)?)", output):
+        value = float(match.group(2))
+        if match.group(1) == "start":
+            pending_start = value
+            continue
+        start = pending_start if pending_start is not None else max(0.0, value - min_silence_s)
+        if value > start:
+            silences.append((start, value))
+        pending_start = None
+    if pending_start is not None and duration > pending_start:
+        silences.append((pending_start, duration))
+    return _merge_silence_intervals(silences, duration)
+
+
+def _merge_silence_intervals(silences: List[Tuple[float, float]], duration: float) -> List[Tuple[float, float]]:
+    normalized: List[Tuple[float, float]] = []
+    for start_s, end_s in silences:
+        start_s = max(0.0, min(duration, start_s))
+        end_s = max(0.0, min(duration, end_s))
+        if end_s > start_s:
+            normalized.append((start_s, end_s))
+    if not normalized:
+        return []
+    normalized.sort()
+    merged = [normalized[0]]
+    for start_s, end_s in normalized[1:]:
+        previous_start, previous_end = merged[-1]
+        if start_s <= previous_end + 0.05:
+            merged[-1] = (previous_start, max(previous_end, end_s))
+        else:
+            merged.append((start_s, end_s))
+    return merged
+
+
+def _silence_aware_chunk_specs(
+    silences: List[Tuple[float, float]],
+    duration: float,
+    chunk_seconds: float,
+    padding_seconds: float,
+) -> List[AudioChunkSpec]:
+    if not silences:
+        return []
+    speech_intervals = _silences_to_speech_intervals(silences, duration)
+    if not speech_intervals:
+        return []
+    specs = _merge_speech_intervals(speech_intervals, chunk_seconds)
+    return _apply_chunk_padding(specs, duration, padding_seconds)
+
+
+def _silences_to_speech_intervals(silences: List[Tuple[float, float]], duration: float) -> List[Tuple[float, float]]:
+    intervals: List[Tuple[float, float]] = []
+    cursor = 0.0
+    for silence_start, silence_end in silences:
+        if silence_start - cursor > 0.05:
+            intervals.append((cursor, silence_start))
+        cursor = max(cursor, silence_end)
+    if duration - cursor > 0.05:
+        intervals.append((cursor, duration))
+    return intervals
+
+
+def _merge_speech_intervals(intervals: List[Tuple[float, float]], chunk_seconds: float) -> List[AudioChunkSpec]:
+    specs: List[AudioChunkSpec] = []
+    pending: Optional[AudioChunkSpec] = None
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending is not None:
+            specs.append(pending)
+            pending = None
+
+    for start_s, end_s in intervals:
+        if end_s <= start_s:
+            continue
+        if end_s - start_s > chunk_seconds:
+            flush_pending()
+            specs.extend(_split_long_speech_interval(start_s, end_s, chunk_seconds))
+            continue
+        if pending is None:
+            pending = AudioChunkSpec(
+                start_s=start_s,
+                end_s=end_s,
+                method="silence",
+                speech_start_s=start_s,
+                speech_end_s=end_s,
+            )
+            continue
+        if end_s - pending.start_s <= chunk_seconds:
+            pending = AudioChunkSpec(
+                start_s=pending.start_s,
+                end_s=end_s,
+                method="silence",
+                speech_start_s=pending.speech_start_s,
+                speech_end_s=end_s,
+            )
+        else:
+            flush_pending()
+            pending = AudioChunkSpec(
+                start_s=start_s,
+                end_s=end_s,
+                method="silence",
+                speech_start_s=start_s,
+                speech_end_s=end_s,
+            )
+    flush_pending()
+    return specs
+
+
+def _split_long_speech_interval(start_s: float, end_s: float, chunk_seconds: float) -> List[AudioChunkSpec]:
+    specs: List[AudioChunkSpec] = []
+    cursor = start_s
+    while cursor < end_s:
+        next_end = min(end_s, cursor + chunk_seconds)
+        if next_end - cursor > 0.05:
+            specs.append(
+                AudioChunkSpec(
+                    start_s=cursor,
+                    end_s=next_end,
+                    method="silence_long_speech",
+                    speech_start_s=cursor,
+                    speech_end_s=next_end,
+                )
+            )
+        cursor = next_end
+    return specs
+
+
+def _apply_chunk_padding(
+    specs: List[AudioChunkSpec],
+    duration: float,
+    padding_seconds: float,
+) -> List[AudioChunkSpec]:
+    padding_seconds = max(0.0, padding_seconds)
+    padded: List[AudioChunkSpec] = []
+    for spec in specs:
+        start_s = max(0.0, spec.start_s - padding_seconds)
+        end_s = min(duration, spec.end_s + padding_seconds)
+        if padded and start_s < padded[-1].end_s:
+            previous = padded[-1]
+            previous_boundary = previous.speech_end_s if previous.speech_end_s is not None else previous.end_s
+            current_boundary = spec.speech_start_s if spec.speech_start_s is not None else spec.start_s
+            boundary = (previous_boundary + current_boundary) / 2.0
+            boundary = max(previous.start_s, min(previous.end_s, boundary))
+            padded[-1] = AudioChunkSpec(
+                start_s=previous.start_s,
+                end_s=boundary,
+                method=previous.method,
+                speech_start_s=previous.speech_start_s,
+                speech_end_s=previous.speech_end_s,
+            )
+            start_s = max(start_s, boundary)
+        if end_s - start_s > 0.05:
+            padded.append(
+                AudioChunkSpec(
+                    start_s=start_s,
+                    end_s=end_s,
+                    method=spec.method,
+                    speech_start_s=spec.speech_start_s,
+                    speech_end_s=spec.speech_end_s,
+                )
+            )
+    return padded
+
+
+def _write_audio_chunk_specs(
+    ffmpeg: str,
+    input_path: Path,
+    specs: List[AudioChunkSpec],
+    method_prefix: str,
+) -> List[ASRAudioChunk]:
+    output_dir = ASR_CHUNK_OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = _safe_audio_stem(input_path)
+    run_id = uuid4().hex[:10]
+    chunks: List[ASRAudioChunk] = []
+    for output_index, spec in enumerate(specs):
+        output_path = output_dir / f"{safe_stem}.asrchunk.{method_prefix}.{run_id}.{output_index:05d}.wav"
+        if not _write_audio_chunk(ffmpeg, input_path, output_path, spec.start_s, spec.end_s):
+            return []
+        chunks.append(
+            ASRAudioChunk(
+                path=output_path,
+                index=len(chunks),
+                start_s=spec.start_s,
+                end_s=spec.end_s,
+                method=spec.method,
+                speech_start_s=spec.speech_start_s,
+                speech_end_s=spec.speech_end_s,
+            )
+        )
+    return chunks
+
+
+def _write_audio_chunk(ffmpeg: str, input_path: Path, output_path: Path, start_s: float, end_s: float) -> bool:
+    duration = max(0.05, end_s - start_s)
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{start_s:.3f}",
+        "-i",
+        str(input_path),
+        "-t",
+        f"{duration:.3f}",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except Exception:
+        return False
+    return output_path.exists() and output_path.stat().st_size > 0
 
 
 def _split_audio_for_asr(input_path: Path, chunk_seconds: float, duration: Optional[float]) -> List[ASRAudioChunk]:
@@ -343,7 +655,7 @@ def _split_audio_for_asr(input_path: Path, chunk_seconds: float, duration: Optio
     for index, path in enumerate(paths):
         start_s = index * chunk_seconds
         end_s = min(start_s + chunk_seconds, duration) if duration is not None else None
-        chunks.append(ASRAudioChunk(path=path, index=index, start_s=start_s, end_s=end_s))
+        chunks.append(ASRAudioChunk(path=path, index=index, start_s=start_s, end_s=end_s, method="fixed"))
     return chunks
 
 

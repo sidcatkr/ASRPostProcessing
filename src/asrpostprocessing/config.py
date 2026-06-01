@@ -17,7 +17,11 @@ class ExperimentConfig:
     post_base_url: str = "http://127.0.0.1:18001/v1"
     request_timeout_s: float = 120.0
     asr_request_timeout_s: float = 300.0
-    asr_chunk_seconds: float = 15.0
+    asr_chunking_strategy: str = "silence"
+    asr_chunk_seconds: float = 30.0
+    asr_chunk_padding_seconds: float = 0.5
+    asr_silence_threshold_db: float = -35.0
+    asr_min_silence_seconds: float = 0.6
     language: str = "ko"
     auto_start_model_servers: bool = False
     model_residency: str = "parallel"
@@ -90,7 +94,11 @@ class ExperimentConfig:
         config.chunk_max_chars = max(120, int(config.chunk_max_chars))
         config.chunk_overlap = max(0, min(int(config.chunk_overlap), config.chunk_max_chars // 2))
         config.asr_request_timeout_s = max(30.0, float(config.asr_request_timeout_s))
+        config.asr_chunking_strategy = normalize_asr_chunking_strategy(config.asr_chunking_strategy)
         config.asr_chunk_seconds = max(5.0, float(config.asr_chunk_seconds))
+        config.asr_chunk_padding_seconds = max(0.0, min(5.0, float(config.asr_chunk_padding_seconds)))
+        config.asr_silence_threshold_db = max(-80.0, min(-10.0, float(config.asr_silence_threshold_db)))
+        config.asr_min_silence_seconds = max(0.1, min(5.0, float(config.asr_min_silence_seconds)))
         config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
         config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))
         return config
@@ -120,6 +128,27 @@ def normalize_model_residency(value: Any) -> str:
         "sequential": "sequential",
     }
     return aliases.get(normalized, "parallel")
+
+
+def normalize_asr_chunking_strategy(value: Any) -> str:
+    normalized = str(value or "silence").strip().lower().replace("-", "_")
+    aliases = {
+        "auto": "silence",
+        "vad": "silence",
+        "silence": "silence",
+        "silence_aware": "silence",
+        "speech": "silence",
+        "fixed": "fixed",
+        "segment": "fixed",
+        "segments": "fixed",
+        "none": "none",
+        "no": "none",
+        "off": "none",
+        "disabled": "none",
+        "disable": "none",
+        "false": "none",
+    }
+    return aliases.get(normalized, "silence")
 
 
 def load_config(path: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> ExperimentConfig:
