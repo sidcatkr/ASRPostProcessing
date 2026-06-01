@@ -101,6 +101,10 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - RAG/Search는 단독 correction module로 취급하지 않고 LLM post-processing에 종속된 valid condition으로만 실행한다.
 - Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄이며, model axis가 켜져 있으면 ASR model별 cache group을 분리한다.
 - `auto_experiment_saturate_lanes`가 켜져 있으면 condition worker와 ASR cache priming worker를 pipeline lane 수 기준으로 자동 확장해 endpoint가 놀지 않도록 한다.
+- model server auto-start와 `scripts/serve_l4x4.sh`는 `server_gpu_memory_utilization: auto` / `GPU_MEMORY_UTILIZATION=auto`를 지원한다.
+- auto GPU memory mode는 서버 시작 시점의 `nvidia-smi` free VRAM을 읽고 `server_gpu_memory_reserved_mb`만 남긴 뒤, `server_gpu_memory_utilization_max` 상한 안에서 lane별 vLLM `--gpu-memory-utilization` 값을 계산한다.
+- 따라서 GPU 0에 다른 사용자의 Python 프로세스가 떠 있으면 그 프로세스에 영향을 주지 않는 남은 VRAM만 사용하고, 해당 프로세스가 사라진 뒤 새로 시작하면 GPU 0도 자동으로 최대 상한까지 사용한다.
+- vLLM/Torch compile cache 충돌을 피하기 위해 각 lane은 독립적인 `VLLM_CACHE_ROOT`를 사용한다.
 - 전처리 모델 표기를 정리해 `afftdn`은 기존 ffmpeg spectral denoise baseline, `rnnoise`는 실제 RNNoise backend, `deepfilternet2/3`는 실제 DeepFilterNet backend로 분리했다.
 - DeepFilterNet/RNNoise backend가 설치되지 않은 경우 해당 모델을 가짜 afftdn으로 실행하지 않고 warning과 함께 original audio fallback을 남긴다.
 - DeepFilterNet/RNNoise enhanced output은 `noise_reduction_strength`에 따라 original/enhanced alpha mix를 적용할 수 있어 denoise artifact로 ASR이 악화되는지 실험할 수 있다.
@@ -157,6 +161,8 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - `asrpp asr-quality --sample-seconds 120 --chunk-seconds 30 --chunk-seconds 60 --chunk-seconds 120`처럼 `/tmp` 문제 구간만 잘라 비교할 수 있다.
 - L4 x4 profile에서는 RTX5000 생존용 post LLM 설정이던 4-bit bitsandbytes, 2K context, `max-num-seqs=1` 제약을 제거하고 bfloat16, 8K context, batched serving으로 후처리 처리량을 높인다.
 - GPU를 tensor-parallel 한 덩어리로만 묶지 않고 ASR/post lane replica로 사용하므로 sweep과 Auto Experiment처럼 조건 수가 많은 연구 작업에서 전체 처리량이 좋아진다.
+- GPU memory utilization을 고정값으로 박아 두지 않고 시작 시점 free VRAM에서 자동 계산하므로, 다른 사용자의 프로세스가 있는 GPU도 안전하게 공동 사용할 수 있고 빈 GPU는 더 공격적으로 채울 수 있다.
+- GPU별/port별 cache root를 분리해 여러 vLLM 서버를 동시에 올릴 때 Torch Inductor/Triton compile cache 파일이 서로 덮이는 문제를 줄인다.
 - ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
 - preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
 - Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
@@ -192,6 +198,19 @@ GPU나 port를 더 늘리는 경우:
     LANES=0:1:18000:18001,2:3:18002:18003 scripts/serve_l4x4.sh all
 
 이 구조는 서버 자원을 절약하기 위한 설정이 아니라, ASR endpoint와 post-processing endpoint를 동시에 resident 상태로 두고 condition-level 병렬 실행과 chunk-level 병렬 후처리를 통해 처리량을 극대화하기 위한 설정이다.
+
+## Automatic Scalable GPU 정책
+
+L4 x4 profile은 GPU를 아끼기 위한 profile이 아니다. 모델 서버는 가능한 모든 lane을 동시에 resident 상태로 두고, Auto Experiment와 postprocess chunk 병렬화를 통해 endpoint pool을 계속 사용하도록 설계되어 있다.
+
+GPU memory allocation은 다음 설정으로 제어한다:
+
+- `server_gpu_memory_utilization: auto`: 시작 시점의 실제 free VRAM을 기준으로 vLLM memory fraction을 계산한다.
+- `server_gpu_memory_utilization_max`: GPU가 비어 있을 때 사용할 최대 fraction이다. 기본 profile은 안정적인 대량 실행을 위해 0.90을 사용하지만 config/env에서 더 크게 올릴 수 있다.
+- `server_gpu_memory_reserved_mb`: 외부 프로세스와 CUDA runtime 여유분을 위해 남길 VRAM이다.
+- `VLLM_CACHE_ROOT`: lane별로 자동 분리되어 동시 launch 중 compile cache 충돌을 줄인다.
+
+이 정책은 GPU 번호나 특정 PID를 hardcoding하지 않는다. 예를 들어 GPU 0에 다른 사용자의 Python 프로세스가 약간의 VRAM만 사용 중이면, 서버 시작 시 GPU 0의 남은 VRAM을 읽어 그 범위 안에서 ASR 서버를 올린다. 나중에 그 프로세스가 없어지고 서버를 새로 시작하면 같은 config가 GPU 0을 `server_gpu_memory_utilization_max`까지 사용한다. 이미 실행 중인 vLLM 프로세스의 KV cache 예약은 vLLM 특성상 런타임에 동적으로 커지지 않으므로, free VRAM 변화 반영은 다음 launch/restart 시점에 적용된다.
 
 ## Auto Experiment Matrix
 

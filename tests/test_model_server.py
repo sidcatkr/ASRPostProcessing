@@ -4,7 +4,14 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.model_server import _PROCESSES, _default_command, _server_specs, ensure_model_servers, stop_model_servers
+from asrpostprocessing.model_server import (
+    _PROCESSES,
+    _default_command,
+    _gpu_memory_utilization_for_spec,
+    _server_specs,
+    ensure_model_servers,
+    stop_model_servers,
+)
 
 
 class ModelServerTest(unittest.TestCase):
@@ -82,6 +89,39 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual([spec.stage for spec in specs], ["asr", "post", "asr", "post"])
         self.assertEqual([spec.gpu for spec in specs], ["0", "1", "2", "3"])
         self.assertEqual(specs[2].port, 18002)
+
+    def test_adaptive_gpu_memory_utilization_uses_free_vram_without_overclaiming(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="vllm_chat",
+            post_backend="mock",
+            server_gpu_memory_utilization="auto",
+            server_gpu_memory_utilization_max=0.9,
+            server_gpu_memory_reserved_mb=256,
+        )
+        spec = _server_specs(config)[0]
+        completed = Mock(returncode=0, stdout="24570, 20300\n")
+        with patch("asrpostprocessing.model_server.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "asrpostprocessing.model_server.subprocess.run", return_value=completed
+        ):
+            utilization = float(_gpu_memory_utilization_for_spec(spec))
+        self.assertAlmostEqual(utilization, (20300 - 256) / 24570, places=4)
+
+    def test_adaptive_gpu_memory_utilization_uses_cap_when_gpu_is_empty(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="vllm_chat",
+            post_backend="mock",
+            server_gpu_memory_utilization="auto",
+            server_gpu_memory_utilization_max=0.9,
+            server_gpu_memory_reserved_mb=256,
+        )
+        spec = _server_specs(config)[0]
+        completed = Mock(returncode=0, stdout="24570, 24500\n")
+        with patch("asrpostprocessing.model_server.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "asrpostprocessing.model_server.subprocess.run", return_value=completed
+        ):
+            self.assertEqual(_gpu_memory_utilization_for_spec(spec), "0.9")
 
     def test_open_non_model_port_fails_fast(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")

@@ -37,6 +37,9 @@ class ExperimentConfig:
     post_server_host: str = "0.0.0.0"
     asr_server_command: str = ""
     post_server_command: str = ""
+    server_gpu_memory_utilization: str = "auto"
+    server_gpu_memory_utilization_max: float = 0.90
+    server_gpu_memory_reserved_mb: int = 256
     pipeline_lanes: List[Dict[str, Any]] = field(default_factory=list)
     postprocess_parallelism: int = 1
     auto_experiment_parallelism: int = 1
@@ -116,6 +119,11 @@ class ExperimentConfig:
         config.asr_context_chars = max(0, min(2000, int(config.asr_context_chars)))
         config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
         config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))
+        config.server_gpu_memory_utilization = str(config.server_gpu_memory_utilization or "auto").strip() or "auto"
+        config.server_gpu_memory_utilization_max = max(
+            0.05, min(0.99, float(config.server_gpu_memory_utilization_max))
+        )
+        config.server_gpu_memory_reserved_mb = max(0, int(config.server_gpu_memory_reserved_mb))
         config.postprocess_parallelism = max(1, min(64, int(config.postprocess_parallelism)))
         config.auto_experiment_parallelism = max(1, min(64, int(config.auto_experiment_parallelism)))
         config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)

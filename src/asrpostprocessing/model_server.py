@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import site
 import socket
 import subprocess
@@ -31,6 +32,9 @@ class ModelServerSpec:
     gpu: str
     command_template: str
     log_path: str
+    gpu_memory_utilization: str = "auto"
+    gpu_memory_utilization_max: float = 0.90
+    gpu_memory_reserved_mb: int = 256
 
 
 @dataclass
@@ -141,6 +145,9 @@ def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
                         str(lane.get("asr_server_gpu") or lane.get("asr_gpu") or config.asr_server_gpu),
                         str(lane.get("asr_server_command") or config.asr_server_command),
                         log_dir,
+                        str(lane.get("server_gpu_memory_utilization") or config.server_gpu_memory_utilization),
+                        float(lane.get("server_gpu_memory_utilization_max") or config.server_gpu_memory_utilization_max),
+                        int(lane.get("server_gpu_memory_reserved_mb") or config.server_gpu_memory_reserved_mb),
                     )
                 )
             if _uses_external_post_server(config):
@@ -155,6 +162,9 @@ def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
                         str(lane.get("post_server_gpu") or lane.get("post_gpu") or config.post_server_gpu),
                         str(lane.get("post_server_command") or config.post_server_command),
                         log_dir,
+                        str(lane.get("server_gpu_memory_utilization") or config.server_gpu_memory_utilization),
+                        float(lane.get("server_gpu_memory_utilization_max") or config.server_gpu_memory_utilization_max),
+                        int(lane.get("server_gpu_memory_reserved_mb") or config.server_gpu_memory_reserved_mb),
                     )
                 )
         return specs
@@ -170,6 +180,9 @@ def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
                 config.asr_server_gpu,
                 config.asr_server_command,
                 log_dir,
+                config.server_gpu_memory_utilization,
+                config.server_gpu_memory_utilization_max,
+                config.server_gpu_memory_reserved_mb,
             )
         )
     if _uses_external_post_server(config):
@@ -184,6 +197,9 @@ def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
                 config.post_server_gpu,
                 config.post_server_command,
                 log_dir,
+                config.server_gpu_memory_utilization,
+                config.server_gpu_memory_utilization_max,
+                config.server_gpu_memory_reserved_mb,
             )
         )
     return specs
@@ -224,6 +240,9 @@ def _make_spec(
     gpu: str,
     command_template: str,
     log_dir: Path,
+    gpu_memory_utilization: str,
+    gpu_memory_utilization_max: float,
+    gpu_memory_reserved_mb: int,
 ) -> ModelServerSpec:
     parsed = urlparse(base_url)
     if not parsed.scheme or not parsed.hostname or not parsed.port:
@@ -239,6 +258,9 @@ def _make_spec(
         gpu=str(gpu),
         command_template=command_template,
         log_path=str(log_dir / f"{name}_vllm.log"),
+        gpu_memory_utilization=str(gpu_memory_utilization or "auto"),
+        gpu_memory_utilization_max=float(gpu_memory_utilization_max),
+        gpu_memory_reserved_mb=int(gpu_memory_reserved_mb),
     )
 
 
@@ -308,6 +330,8 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
     env["CUDA_VISIBLE_DEVICES"] = spec.gpu
     env.setdefault("PYTHONUNBUFFERED", "1")
     env["LD_LIBRARY_PATH"] = _with_nvidia_library_paths(env.get("LD_LIBRARY_PATH", ""))
+    env["VLLM_CACHE_ROOT"] = _vllm_cache_root(spec)
+    gpu_memory_utilization = _gpu_memory_utilization_for_spec(spec)
 
     try:
         if spec.command_template:
@@ -318,6 +342,8 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
                 base_url=spec.base_url,
                 gpu=spec.gpu,
                 log_path=spec.log_path,
+                gpu_memory_utilization=gpu_memory_utilization,
+                vllm_cache_root=env["VLLM_CACHE_ROOT"],
             )
             return subprocess.Popen(
                 command,
@@ -340,7 +366,8 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
 
 
 def _default_command(spec: ModelServerSpec) -> List[str]:
-    if spec.name == "asr":
+    gpu_memory_utilization = _gpu_memory_utilization_for_spec(spec)
+    if spec.stage == "asr":
         return [
             sys.executable,
             "-m",
@@ -351,7 +378,7 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
             "--port",
             str(spec.port),
             "--gpu-memory-utilization",
-            "0.7",
+            gpu_memory_utilization,
             "--max-model-len",
             "32768",
             "--attention-backend",
@@ -379,12 +406,73 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--attention-backend",
         "TRITON_ATTN",
         "--gpu-memory-utilization",
-        "0.6",
+        gpu_memory_utilization,
         "--max-num-seqs",
         "1",
         "--max-num-batched-tokens",
         "2048",
     ]
+
+
+def _gpu_memory_utilization_for_spec(spec: ModelServerSpec) -> str:
+    requested = str(spec.gpu_memory_utilization or "auto").strip().lower()
+    if requested not in {"auto", "adaptive"}:
+        return requested
+    ratios = _free_memory_ratios(spec.gpu, spec.gpu_memory_reserved_mb)
+    if not ratios:
+        return _format_gpu_memory_utilization(spec.gpu_memory_utilization_max)
+    ratio = min(spec.gpu_memory_utilization_max, min(ratios))
+    ratio = max(0.05, min(0.99, ratio))
+    return _format_gpu_memory_utilization(ratio)
+
+
+def _free_memory_ratios(gpu: str, reserved_mb: int) -> List[float]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return []
+    ratios: List[float] = []
+    for index in _gpu_indices(gpu):
+        try:
+            result = subprocess.run(
+                [
+                    executable,
+                    f"--id={index}",
+                    "--query-gpu=memory.total,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                total_mb = float(parts[0])
+                free_mb = float(parts[1])
+            except ValueError:
+                continue
+            if total_mb > 0:
+                ratios.append(max(0.0, (free_mb - float(reserved_mb)) / total_mb))
+    return ratios
+
+
+def _gpu_indices(gpu: str) -> List[str]:
+    tokens = [part.strip() for part in re.split(r"[,\s]+", str(gpu or "")) if part.strip()]
+    return [token for token in tokens if token.isdigit()]
+
+
+def _format_gpu_memory_utilization(value: float) -> str:
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _vllm_cache_root(spec: ModelServerSpec) -> str:
+    return str(Path(spec.log_path).parent / "vllm_cache" / _safe_name(spec.name))
 
 
 def _with_nvidia_library_paths(current: str) -> str:

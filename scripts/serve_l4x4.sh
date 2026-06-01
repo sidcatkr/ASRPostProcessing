@@ -8,7 +8,10 @@ ASR_MAX_MODEL_LEN="${ASR_MAX_MODEL_LEN:-65536}"
 POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-8192}"
 POST_MAX_NUM_SEQS="${POST_MAX_NUM_SEQS:-8}"
 POST_MAX_BATCHED_TOKENS="${POST_MAX_BATCHED_TOKENS:-16384}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-auto}"
+GPU_MEMORY_UTILIZATION_MAX="${GPU_MEMORY_UTILIZATION_MAX:-0.90}"
+GPU_MEMORY_RESERVED_MB="${GPU_MEMORY_RESERVED_MB:-256}"
+VLLM_CACHE_ROOT_BASE="${VLLM_CACHE_ROOT_BASE:-outputs/model_servers_l4x4/vllm_cache}"
 
 for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
   if [[ -d "$libdir" ]]; then
@@ -16,26 +19,88 @@ for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
   fi
 done
 
+gpu_memory_utilization() {
+  local gpu="$1"
+  if [[ "$GPU_MEMORY_UTILIZATION" != "auto" && "$GPU_MEMORY_UTILIZATION" != "adaptive" ]]; then
+    printf '%s\n' "$GPU_MEMORY_UTILIZATION"
+    return
+  fi
+  python - "$gpu" "$GPU_MEMORY_UTILIZATION_MAX" "$GPU_MEMORY_RESERVED_MB" <<'PY'
+import subprocess
+import sys
+
+gpu, max_value, reserved_mb = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+ratios = []
+for token in gpu.replace(",", " ").split():
+    if not token.isdigit():
+        continue
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            f"--id={token}",
+            "--query-gpu=memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        continue
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            total_mb = float(parts[0])
+            free_mb = float(parts[1])
+        except ValueError:
+            continue
+        if total_mb > 0:
+            ratios.append(max(0.0, (free_mb - reserved_mb) / total_mb))
+value = min(max_value, min(ratios)) if ratios else max_value
+value = max(0.05, min(0.99, value))
+print(f"{value:.4f}".rstrip("0").rstrip("."))
+PY
+}
+
+cache_root_for() {
+  local stage="$1"
+  local gpu="$2"
+  local port="$3"
+  printf '%s/%s_gpu%s_port%s\n' "$VLLM_CACHE_ROOT_BASE" "$stage" "$gpu" "$port"
+}
+
 start_asr() {
   local gpu="$1"
   local port="$2"
-  CUDA_VISIBLE_DEVICES="$gpu" python -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
+  local gpu_memory
+  local cache_root
+  gpu_memory="$(gpu_memory_utilization "$gpu")"
+  cache_root="$(cache_root_for asr "$gpu" "$port")"
+  mkdir -p "$cache_root"
+  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" python -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
     --host 0.0.0.0 \
     --port "$port" \
-    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
+    --gpu-memory-utilization "$gpu_memory" \
     --max-model-len "$ASR_MAX_MODEL_LEN"
 }
 
 start_post() {
   local gpu="$1"
   local port="$2"
-  CUDA_VISIBLE_DEVICES="$gpu" vllm serve "$POST_MODEL" \
+  local gpu_memory
+  local cache_root
+  gpu_memory="$(gpu_memory_utilization "$gpu")"
+  cache_root="$(cache_root_for post "$gpu" "$port")"
+  mkdir -p "$cache_root"
+  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" vllm serve "$POST_MODEL" \
     --host 0.0.0.0 \
     --port "$port" \
     --dtype bfloat16 \
     --max-model-len "$POST_MAX_MODEL_LEN" \
     --language-model-only \
-    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
+    --gpu-memory-utilization "$gpu_memory" \
     --max-num-seqs "$POST_MAX_NUM_SEQS" \
     --max-num-batched-tokens "$POST_MAX_BATCHED_TOKENS"
 }
