@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import asdict, dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+KEYWORD_STRENGTH_SWEEP = [0.25, 0.5, 0.75, 1.0]
+PREPROCESS_STRENGTH_SWEEP = [0.25, 0.5, 0.75]
+POST_STRENGTH_SWEEP = [0.25, 0.5, 0.75]
 
 
 @dataclass(frozen=True)
@@ -16,6 +20,12 @@ class ConditionSpec:
     enable_llm_postprocess: bool = False
     enable_rag: bool = False
     enable_search: bool = False
+    keyword_bias_weight: Optional[float] = None
+    noise_reduction_strength: Optional[float] = None
+    volume_normalization_strength: Optional[float] = None
+    postprocess_strength: Optional[float] = None
+    rag_strength: Optional[float] = None
+    search_strength: Optional[float] = None
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -25,8 +35,11 @@ class ConditionSpec:
         return "|".join(
             [
                 f"k={int(self.enable_keyword_bias)}",
+                f"kw={_strength_key(self.keyword_bias_weight) if self.enable_keyword_bias else ''}",
                 f"n={int(self.enable_noise_reduction)}",
+                f"ns={_strength_key(self.noise_reduction_strength) if self.enable_noise_reduction else ''}",
                 f"v={int(self.enable_volume_normalization)}",
+                f"vs={_strength_key(self.volume_normalization_strength) if self.enable_volume_normalization else ''}",
             ]
         )
 
@@ -50,7 +63,7 @@ def generate_auto_conditions(
             include_rag,
             include_search,
         )
-    return _full_valid_conditions(
+    conditions = _full_valid_conditions(
         include_keyword_bias,
         include_noise_reduction,
         include_volume_normalization,
@@ -58,6 +71,9 @@ def generate_auto_conditions(
         include_rag,
         include_search,
     )
+    if mode in {"full_strength", "full_strength_sweep", "strength", "strength_sweep"}:
+        return _strength_sweep_conditions(conditions)
+    return conditions
 
 
 def _full_valid_conditions(
@@ -183,6 +199,80 @@ def _condition_from_modes(pre: Dict[str, bool], post: Dict[str, bool]) -> Condit
         enable_rag=bool(post.get("rag") and post.get("llm")),
         enable_search=bool(post.get("search") and post.get("llm")),
     )
+
+
+def _strength_sweep_conditions(conditions: List[ConditionSpec]) -> List[ConditionSpec]:
+    expanded: List[ConditionSpec] = []
+    for condition in conditions:
+        for strengths in _strength_grid_for_condition(condition):
+            expanded.append(_condition_with_strengths(condition, strengths))
+    return expanded
+
+
+def _strength_grid_for_condition(condition: ConditionSpec):
+    axes = []
+    if condition.enable_keyword_bias:
+        axes.append(("keyword_bias_weight", KEYWORD_STRENGTH_SWEEP))
+    if condition.enable_noise_reduction:
+        axes.append(("noise_reduction_strength", PREPROCESS_STRENGTH_SWEEP))
+    if condition.enable_volume_normalization:
+        axes.append(("volume_normalization_strength", PREPROCESS_STRENGTH_SWEEP))
+    if condition.enable_llm_postprocess:
+        axes.append(("postprocess_strength", POST_STRENGTH_SWEEP))
+    if condition.enable_rag:
+        axes.append(("rag_strength", POST_STRENGTH_SWEEP))
+    if condition.enable_search:
+        axes.append(("search_strength", POST_STRENGTH_SWEEP))
+    if not axes:
+        yield {}
+        return
+    keys = [axis[0] for axis in axes]
+    values = [axis[1] for axis in axes]
+    for combo in itertools.product(*values):
+        yield dict(zip(keys, combo))
+
+
+def _condition_with_strengths(condition: ConditionSpec, strengths: Dict[str, float]) -> ConditionSpec:
+    if not strengths:
+        return condition
+    suffix_parts = [_strength_suffix(key, value) for key, value in strengths.items()]
+    suffix = "__" + "__".join(suffix_parts)
+    label_suffix = " (" + ", ".join(part.replace("_", " ") for part in suffix_parts) + ")"
+    return ConditionSpec(
+        condition_id=f"{condition.condition_id}{suffix}",
+        label=f"{condition.label}{label_suffix}",
+        group=f"{condition.group}_strength",
+        enable_keyword_bias=condition.enable_keyword_bias,
+        enable_noise_reduction=condition.enable_noise_reduction,
+        enable_volume_normalization=condition.enable_volume_normalization,
+        enable_llm_postprocess=condition.enable_llm_postprocess,
+        enable_rag=condition.enable_rag,
+        enable_search=condition.enable_search,
+        keyword_bias_weight=strengths.get("keyword_bias_weight"),
+        noise_reduction_strength=strengths.get("noise_reduction_strength"),
+        volume_normalization_strength=strengths.get("volume_normalization_strength"),
+        postprocess_strength=strengths.get("postprocess_strength"),
+        rag_strength=strengths.get("rag_strength"),
+        search_strength=strengths.get("search_strength"),
+    )
+
+
+def _strength_suffix(key: str, value: float) -> str:
+    prefixes = {
+        "keyword_bias_weight": "kw",
+        "noise_reduction_strength": "noise",
+        "volume_normalization_strength": "vol",
+        "postprocess_strength": "post",
+        "rag_strength": "rag",
+        "search_strength": "search",
+    }
+    return f"{prefixes.get(key, key)}{_strength_key(value)}"
+
+
+def _strength_key(value: Optional[float]) -> str:
+    if value is None:
+        return ""
+    return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
 def _label_for(part: str) -> str:

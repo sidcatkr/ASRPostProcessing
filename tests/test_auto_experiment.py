@@ -31,6 +31,38 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertLess(len(conditions), 40)
         self.assertTrue(any(condition.condition_id == "llm__rag__search" for condition in conditions))
 
+    def test_full_strength_sweep_expands_strength_axes_and_cache_groups(self):
+        conditions = generate_auto_conditions(
+            include_keyword_bias=True,
+            include_noise_reduction=True,
+            include_volume_normalization=True,
+            include_llm_postprocess=True,
+            include_rag=True,
+            include_search=True,
+            mode="full_strength_sweep",
+        )
+
+        self.assertGreater(len(conditions), 40)
+        self.assertTrue(any("__kw0p25" in condition.condition_id for condition in conditions))
+        full_condition = next(
+            condition
+            for condition in conditions
+            if condition.enable_keyword_bias
+            and condition.enable_noise_reduction
+            and condition.enable_volume_normalization
+            and condition.enable_llm_postprocess
+            and condition.enable_rag
+            and condition.enable_search
+        )
+        self.assertIsNotNone(full_condition.keyword_bias_weight)
+        self.assertIsNotNone(full_condition.noise_reduction_strength)
+        self.assertIsNotNone(full_condition.volume_normalization_strength)
+        self.assertIsNotNone(full_condition.postprocess_strength)
+        self.assertIsNotNone(full_condition.rag_strength)
+        self.assertIsNotNone(full_condition.search_strength)
+        self.assertIn("kw=", full_condition.asr_group_key)
+        self.assertGreater(len({condition.asr_group_key for condition in conditions}), 8)
+
     def test_l4x4_config_loads_pipeline_lanes(self):
         config = load_config("configs/l4x4.yaml")
         self.assertEqual(config.model_residency, "parallel")
@@ -112,6 +144,36 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
             models = {(row["asr_model"], row["post_model"]) for row in report["rows"] if row["llm_postprocess_enabled"]}
             self.assertEqual(models, {("asr-a", "post-a"), ("asr-a", "post-b"), ("asr-b", "post-a"), ("asr-b", "post-b")})
+
+    def test_auto_experiment_strength_case_applies_override_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=True,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=False,
+                auto_experiment_parallelism=2,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+            )
+
+            report = run_auto_experiment(
+                str(audio),
+                config,
+                reference_text="테스트 전사 문장입니다.",
+                mode="full_strength_sweep",
+            )
+
+            keyword_rows = [row for row in report["rows"] if row["keyword_bias_enabled"]]
+            self.assertEqual({float(row["keyword_bias_weight"]) for row in keyword_rows}, {0.25, 0.5, 0.75, 1.0})
+            baseline = next(row for row in report["rows"] if row["condition_id"] == "baseline")
+            self.assertEqual(float(baseline["keyword_bias_weight"]), 0.0)
 
 
 if __name__ == "__main__":

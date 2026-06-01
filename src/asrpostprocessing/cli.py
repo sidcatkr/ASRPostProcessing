@@ -52,7 +52,11 @@ def main(argv: Optional[list] = None) -> int:
     auto_parser.add_argument("--reference")
     auto_parser.add_argument("--reference-text")
     auto_parser.add_argument("--config")
-    auto_parser.add_argument("--mode", choices=["core_ablation", "full_valid"], default="full_valid")
+    auto_parser.add_argument(
+        "--mode",
+        choices=["core_ablation", "full_valid", "full_strength_sweep"],
+        default="full_valid",
+    )
     _add_backend_overrides(auto_parser)
 
     asr_quality_parser = subcommands.add_parser("asr-quality", help="Compare ASR-only quality across chunk/preprocess settings")

@@ -282,21 +282,45 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
     config.enable_llm_postprocess = condition.enable_llm_postprocess
     config.enable_rag = condition.enable_rag
     config.enable_search = condition.enable_search
-    if config.enable_keyword_bias and config.keyword_bias_weight <= 0:
+    if config.enable_keyword_bias and condition.keyword_bias_weight is not None:
+        config.keyword_bias_weight = condition.keyword_bias_weight
+    elif config.enable_keyword_bias and config.keyword_bias_weight <= 0:
         config.keyword_bias_weight = 0.5
+    elif not config.enable_keyword_bias:
+        config.keyword_bias_weight = 0.0
     if config.enable_noise_reduction:
         if (config.noise_reduction_model or "none").lower() == "none":
             config.noise_reduction_model = "deepfilternet2"
-        if config.noise_reduction_strength <= 0:
+        if condition.noise_reduction_strength is not None:
+            config.noise_reduction_strength = condition.noise_reduction_strength
+        elif config.noise_reduction_strength <= 0:
             config.noise_reduction_strength = 0.5
-    if config.enable_volume_normalization and config.volume_normalization_strength <= 0:
+    else:
+        config.noise_reduction_strength = 0.0
+    if config.enable_volume_normalization and condition.volume_normalization_strength is not None:
+        config.volume_normalization_strength = condition.volume_normalization_strength
+    elif config.enable_volume_normalization and config.volume_normalization_strength <= 0:
         config.volume_normalization_strength = 1.0
-    if config.enable_llm_postprocess and config.postprocess_strength <= 0:
+    elif not config.enable_volume_normalization:
+        config.volume_normalization_strength = 0.0
+    if config.enable_llm_postprocess and condition.postprocess_strength is not None:
+        config.postprocess_strength = condition.postprocess_strength
+    elif config.enable_llm_postprocess and config.postprocess_strength <= 0:
         config.postprocess_strength = 0.5
-    if config.enable_rag and config.rag_strength <= 0:
+    elif not config.enable_llm_postprocess:
+        config.postprocess_strength = 0.0
+    if config.enable_rag and condition.rag_strength is not None:
+        config.rag_strength = condition.rag_strength
+    elif config.enable_rag and config.rag_strength <= 0:
         config.rag_strength = 0.5
-    if config.enable_search and config.search_strength <= 0:
+    elif not config.enable_rag:
+        config.rag_strength = 0.0
+    if config.enable_search and condition.search_strength is not None:
+        config.search_strength = condition.search_strength
+    elif config.enable_search and config.search_strength <= 0:
         config.search_strength = 0.5
+    elif not config.enable_search:
+        config.search_strength = 0.0
     lanes = _matching_lanes(config.pipeline_lanes or [], config.asr_model, config.post_model)
     if lanes:
         lane = lanes[index % len(lanes)]

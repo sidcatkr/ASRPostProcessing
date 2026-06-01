@@ -252,7 +252,7 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - total: 8 x 5 = 40 conditions
 - optional model axis: ASR model list x post model list. Post model axis는 LLM post-processing이 켜진 condition에만 적용한다.
 
-`core_ablation` coverage는 빠른 확인용 subset이다.
+`core_ablation` coverage는 빠른 확인용 subset이다. `full_strength_sweep`은 full valid condition에 active 축별 strength grid를 추가한다. 기본 grid는 keyword bias `0.25/0.5/0.75/1.0`, noise/volume/post/RAG/Search `0.25/0.5/0.75`이며, strength 값은 condition id, summary CSV, ASR cache group key에 반영된다.
 
 결과 artifact:
 

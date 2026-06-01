@@ -169,6 +169,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         [
                             ("Core ablation", "core_ablation"),
                             ("Full valid combination", "full_valid"),
+                            ("Full + strength sweep", "full_strength_sweep"),
                         ],
                         value="full_valid",
                         label="Coverage",
