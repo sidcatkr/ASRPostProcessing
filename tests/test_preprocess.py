@@ -173,6 +173,32 @@ class PreprocessTest(unittest.TestCase):
             self.assertEqual(_read_wav_info(Path(first.audio_path))["sample_width"], 2)
             self.assertEqual(_read_wav_info(Path(second.audio_path))["sample_width"], 2)
 
+    def test_custom_noise_reduction_receives_preprocess_gpu_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.wav"
+            env_path = Path(tmp) / "cuda_visible_devices.txt"
+            _write_pcm16_wav(source, [40, -40, 1400, -1400] * 4000)
+            command = (
+                "python3 -c \"import os, shutil, sys; "
+                f"open({str(env_path)!r}, 'w').write(os.environ.get('CUDA_VISIBLE_DEVICES', '')); "
+                "shutil.copyfile(sys.argv[1], sys.argv[2])\" {input} {output}"
+            )
+            config = ExperimentConfig(
+                enable_noise_reduction=True,
+                noise_reduction_model="external",
+                noise_reduction_command=command,
+                noise_reduction_strength=0.5,
+                preprocess_gpu="3",
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+
+            result = preprocess_audio(str(source), config)
+
+            self.assertTrue(result.applied)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "3")
+            self.assertEqual(result.steps[0]["metadata"]["preprocess_gpu"], "3")
+            self.assertEqual(result.steps[0]["metadata"]["cuda_visible_devices"], "3")
+
 
 def _write_pcm16_wav(path: Path, samples):
     with wave.open(str(path), "wb") as handle:

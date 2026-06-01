@@ -438,6 +438,8 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
             config.asr_base_url = str(lane["asr_base_url"])
         if lane.get("post_base_url"):
             config.post_base_url = str(lane["post_base_url"])
+        if lane.get("preprocess_gpu"):
+            config.preprocess_gpu = str(lane["preprocess_gpu"])
     return config
 
 

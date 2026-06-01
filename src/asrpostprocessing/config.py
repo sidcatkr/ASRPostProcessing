@@ -72,6 +72,7 @@ class ExperimentConfig:
     enable_preprocess: bool = False
     preprocess_model: str = "none"
     preprocess_strength: float = 0.0
+    preprocess_gpu: str = ""
     enable_noise_reduction: bool = False
     noise_reduction_model: str = "none"
     noise_reduction_command: str = ""
@@ -118,6 +119,7 @@ class ExperimentConfig:
         filtered = {key: value for key, value in mapping.items() if key in known}
         config = cls(**filtered)
         config.preprocess_strength = clamp01(config.preprocess_strength)
+        config.preprocess_gpu = str(config.preprocess_gpu or "").strip()
         config.noise_reduction_strength = clamp01(config.noise_reduction_strength)
         config.volume_normalization_strength = clamp01(config.volume_normalization_strength)
         config.keyword_bias_weight = clamp01(config.keyword_bias_weight)

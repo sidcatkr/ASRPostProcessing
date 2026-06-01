@@ -961,6 +961,7 @@ def _pipeline_lane_summary(config: ExperimentConfig) -> Dict[str, Any]:
                 "post_base_url": lane.get("post_base_url", ""),
                 "asr_server_gpu": lane.get("asr_server_gpu", lane.get("asr_gpu", "")),
                 "post_server_gpu": lane.get("post_server_gpu", lane.get("post_gpu", "")),
+                "preprocess_gpu": lane.get("preprocess_gpu", ""),
             }
         )
     return {
@@ -969,6 +970,7 @@ def _pipeline_lane_summary(config: ExperimentConfig) -> Dict[str, Any]:
             "post_base_url": config.post_base_url,
             "asr_server_gpu": config.asr_server_gpu,
             "post_server_gpu": config.post_server_gpu,
+            "preprocess_gpu": config.preprocess_gpu,
         },
         "asr_base_urls": list(config.asr_base_urls),
         "post_base_urls": list(config.post_base_urls),
@@ -985,9 +987,12 @@ def _format_pipeline_lanes(config: ExperimentConfig) -> str:
         name = lane.get("name") or "lane"
         asr_gpu = lane.get("asr_server_gpu") or "?"
         post_gpu = lane.get("post_server_gpu") or "?"
+        preprocess_gpu = lane.get("preprocess_gpu") or "?"
         asr_url = lane.get("asr_base_url") or "primary ASR"
         post_url = lane.get("post_base_url") or "primary post"
-        parts.append(f"{name}: ASR GPU {asr_gpu} {asr_url} -> POST GPU {post_gpu} {post_url}")
+        parts.append(
+            f"{name}: PRE GPU {preprocess_gpu} -> ASR GPU {asr_gpu} {asr_url} -> POST GPU {post_gpu} {post_url}"
+        )
     return "Pipeline lanes: " + "; ".join(parts) + "\n"
 
 

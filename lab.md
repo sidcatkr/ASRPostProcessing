@@ -115,6 +115,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 전처리 모델 표기를 정리해 `afftdn`은 기존 ffmpeg spectral denoise baseline, `rnnoise`는 실제 RNNoise backend, `deepfilternet2/3`는 실제 DeepFilterNet backend로 분리했다.
 - DeepFilterNet/RNNoise backend가 설치되지 않은 경우 해당 모델을 가짜 afftdn으로 실행하지 않고 warning과 함께 original audio fallback을 남긴다.
 - DeepFilterNet/RNNoise enhanced output은 `noise_reduction_strength`에 따라 original/enhanced alpha mix를 적용할 수 있어 denoise artifact로 ASR이 악화되는지 실험할 수 있다.
+- `preprocess_gpu`를 lane config에 지정하면 DeepFilterNet/custom/RNNoise subprocess가 해당 GPU를 `CUDA_VISIBLE_DEVICES`로 사용하므로 전처리 stage도 L4 lane에 묶어 실행할 수 있다.
 - 외부 전처리 backend는 `noise_reduction_command`로 연결할 수 있어 ClearVoice, FRCRN, MossFormer 같은 후보를 production code hardcoding 없이 실험에 붙일 수 있다.
 - `scripts/serve_l4x4.sh`는 `LANES=asr_gpu:post_gpu:asr_port:post_port,...` 형식으로 lane 수를 늘릴 수 있는 scalable serving script이다.
 
@@ -187,10 +188,12 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 권장 기본 실행은 `configs/l4x4.yaml`이다.
 
     Lane A
+      GPU 1: DeepFilterNet/RNNoise/custom preprocess
       GPU 0: Qwen3-ASR-1.7B, http://127.0.0.1:18000/v1
       GPU 1: Qwen3.5-9B post LLM, http://127.0.0.1:18001/v1
 
     Lane B
+      GPU 3: DeepFilterNet/RNNoise/custom preprocess
       GPU 2: Qwen3-ASR-1.7B, http://127.0.0.1:18002/v1
       GPU 3: Qwen3.5-9B post LLM, http://127.0.0.1:18003/v1
 
@@ -299,8 +302,8 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 
     Gradio의 `Configured pipeline lanes`에 다음 lane이 보이는지 확인한다.
 
-        lane_a: GPU 0 ASR 18000 -> GPU 1 post 18001
-        lane_b: GPU 2 ASR 18002 -> GPU 3 post 18003
+        lane_a: GPU 1 preprocess -> GPU 0 ASR 18000 -> GPU 1 post 18001
+        lane_b: GPU 3 preprocess -> GPU 2 ASR 18002 -> GPU 3 post 18003
 
     UI의 primary ASR/POST GPU와 URL 입력은 단일 서버 fallback이다. L4 x4 병렬 실행 기준은 `configs/l4x4.yaml`의 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이다.
 
@@ -330,11 +333,11 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 
 8. GPU 사용률 해석
 
-    Auto Experiment는 pre/ASR/model group별 raw transcript를 cache에 넣어 40개 이상의 조건에서 ASR을 반복 호출하지 않게 한다. 동시에 cache-first 전체 대기 방식이 아니라, ASR group 하나가 준비되는 즉시 같은 group의 condition들을 condition worker에 제출한다. 이 producer/consumer 구조 때문에 ASR priming과 후처리가 겹쳐서 실행되고, post GPU 1/3의 대기 시간이 줄어든다.
+    Auto Experiment는 pre/ASR/model group별 raw transcript를 cache에 넣어 40개 이상의 조건에서 ASR을 반복 호출하지 않게 한다. 동시에 cache-first 전체 대기 방식이 아니라, ASR group 하나가 준비되는 즉시 같은 group의 condition들을 condition worker에 제출한다. 이 producer/consumer 구조 때문에 ASR priming과 후처리가 겹쳐서 실행되고, post GPU 1/3의 대기 시간이 줄어든다. DeepFilterNet/custom/RNNoise 전처리는 lane의 `preprocess_gpu`를 `CUDA_VISIBLE_DEVICES`로 받아 GPU 1/3에 붙는다.
 
     그래도 모든 순간에 네 GPU utilization이 100%로 고정되지는 않는다. 첫 ASR group이 아직 끝나지 않은 시작 구간, 후처리가 꺼진 condition, 매우 짧은 postprocess chunk, 마지막 tail 구간에서는 해당 stage의 작업량이 부족해 일부 GPU가 낮게 보일 수 있다. 중요한 확인 기준은 run 전체에서 18000/18002 ASR endpoint와 18001/18003 post endpoint의 request/token delta가 모두 증가하고, summary의 lane/endpoint 기록이 두 lane에 분산되는지이다.
 
-    추가 개선 후보는 DeepFilterNet/RNNoise 같은 GPU 전처리 backend를 별도 GPU worker pool에 올리는 preprocess scheduling이다. 이 작업은 ASR/post scheduler와 분리된 전처리 단계 최적화이다.
+    전처리 결과가 cache hit이면 GPU 작업 없이 즉시 재사용되므로 utilization이 낮게 보일 수 있다. 이 경우 summary의 `preprocess_cache_hit`와 preprocess artifact metadata의 `preprocess_gpu`를 같이 확인한다.
 
 ## 실험 비교 축
 

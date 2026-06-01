@@ -14,11 +14,13 @@ pipeline_lanes:
   - name: lane_a
     asr_base_url: http://127.0.0.1:18000/v1
     post_base_url: http://127.0.0.1:18001/v1
+    preprocess_gpu: "1"
     asr_server_gpu: "0"
     post_server_gpu: "1"
   - name: lane_b
     asr_base_url: http://127.0.0.1:18002/v1
     post_base_url: http://127.0.0.1:18003/v1
+    preprocess_gpu: "3"
     asr_server_gpu: "2"
     post_server_gpu: "3"
 request_timeout_s: 180

@@ -169,8 +169,9 @@ def _denoise_with_custom_command(audio_path: str, config: ExperimentConfig, mode
         strength=clamp01(config.noise_reduction_strength),
         model=model_name,
     )
+    env = _preprocess_subprocess_env(config)
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, shell=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, shell=True, env=env)
     except Exception as exc:
         return PreprocessResult(
             audio_path=str(input_path),
@@ -186,6 +187,7 @@ def _denoise_with_custom_command(audio_path: str, config: ExperimentConfig, mode
             metadata={"model": model_name, "processor": "external_command", "fallback": "original_audio"},
         )
     metadata = {"model": model_name, "processor": "external_command", "strength": clamp01(config.noise_reduction_strength)}
+    metadata.update(_preprocess_gpu_metadata(config))
     metadata.update(_wav_metadata(output_path))
     return PreprocessResult(audio_path=str(output_path), applied=True, metadata=metadata)
 
@@ -219,7 +221,13 @@ def _denoise_with_rnnoise(audio_path: str, config: ExperimentConfig, model_name:
     enhanced_path = _preprocessed_output_path(config, input_path, "rnnoise", "enhanced")
     output_path = _preprocessed_output_path(config, input_path, "rnnoise", "denoised")
     try:
-        subprocess.run([denoise, str(prepared_path), str(enhanced_path)], check=True, capture_output=True, text=True)
+        subprocess.run(
+            [denoise, str(prepared_path), str(enhanced_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_preprocess_subprocess_env(config),
+        )
     except Exception as exc:
         return PreprocessResult(
             audio_path=str(input_path),
@@ -277,7 +285,7 @@ def _denoise_with_deepfilternet(
     enhanced_path: Path | None = None
     for command in command_candidates:
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(command, check=True, capture_output=True, text=True, env=_preprocess_subprocess_env(config))
             enhanced_path = _latest_wav(out_dir)
             if enhanced_path is not None:
                 break
@@ -412,6 +420,7 @@ def _mix_or_copy_enhanced(
         "prepared_input_path": str(original_path),
         "output_format": "wav_pcm_s16le",
     }
+    metadata.update(_preprocess_gpu_metadata(config))
     metadata.update(_wav_metadata(output_path))
     return PreprocessResult(audio_path=str(output_path), applied=output_path.exists(), metadata=metadata)
 
@@ -665,6 +674,23 @@ def _preprocess_cache_path(audio_path: str, config: ExperimentConfig, plan: List
         "volume_target_dbfs": float(config.volume_target_dbfs),
     }
     return cache_json_path(config.cache_dir, "preprocess", stable_json_hash(payload))
+
+
+def _preprocess_subprocess_env(config: ExperimentConfig) -> Dict[str, str] | None:
+    gpu = str(getattr(config, "preprocess_gpu", "") or "").strip()
+    if not gpu:
+        return None
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = gpu
+    env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    return env
+
+
+def _preprocess_gpu_metadata(config: ExperimentConfig) -> Dict[str, str]:
+    gpu = str(getattr(config, "preprocess_gpu", "") or "").strip()
+    if not gpu:
+        return {}
+    return {"preprocess_gpu": gpu, "cuda_visible_devices": gpu}
 
 
 def _preprocess_result_from_dict(payload: Dict[str, Any]) -> PreprocessResult:

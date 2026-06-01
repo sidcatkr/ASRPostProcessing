@@ -71,11 +71,11 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 기본 L4 x4 실행 설정은 `configs/l4x4.yaml`과 `scripts/serve_l4x4.sh`를 사용한다. 기본 lane 구성은 다음과 같다.
 
     GPU 0: ASR  endpoint 18000
-    GPU 1: POST endpoint 18001
+    GPU 1: PRE  + POST endpoint 18001
     GPU 2: ASR  endpoint 18002
-    GPU 3: POST endpoint 18003
+    GPU 3: PRE  + POST endpoint 18003
 
-Gradio UI의 primary ASR/POST GPU와 URL 입력값은 단일 서버 fallback이다. `configs/l4x4.yaml`로 UI를 띄우면 실제 병렬 실행 기준은 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이며, UI의 `Configured pipeline lanes`에서 현재 0-3 GPU lane 구성을 확인한다.
+Gradio UI의 primary ASR/POST GPU와 URL 입력값은 단일 서버 fallback이다. `configs/l4x4.yaml`로 UI를 띄우면 실제 병렬 실행 기준은 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이며, UI의 `Configured pipeline lanes`에서 현재 0-3 GPU lane 구성을 확인한다. `preprocess_gpu`는 DeepFilterNet/custom/RNNoise subprocess에 `CUDA_VISIBLE_DEVICES`로 전달되어 전처리 stage도 lane별 GPU를 사용한다.
 
 ### 서버 띄우기
 

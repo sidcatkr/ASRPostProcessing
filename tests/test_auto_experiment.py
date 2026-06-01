@@ -136,6 +136,7 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertTrue(config.auto_experiment_saturate_lanes)
         self.assertEqual(len(config.pipeline_lanes), 2)
         self.assertEqual(config.pipeline_lanes[1]["asr_base_url"], "http://127.0.0.1:18002/v1")
+        self.assertEqual(config.pipeline_lanes[1]["preprocess_gpu"], "3")
         self.assertTrue(config.asr_cache_enabled)
 
     def test_auto_experiment_runs_mock_core_with_cache(self):
@@ -196,11 +197,20 @@ class AutoExperimentTest(unittest.TestCase):
                 asr_cache_enabled=True,
                 preprocess_cache_enabled=True,
                 pipeline_lanes=[
-                    {"asr_base_url": "http://lane-a/v1", "post_base_url": "http://lane-a-post/v1"},
-                    {"asr_base_url": "http://lane-b/v1", "post_base_url": "http://lane-b-post/v1"},
+                    {
+                        "asr_base_url": "http://lane-a/v1",
+                        "post_base_url": "http://lane-a-post/v1",
+                        "preprocess_gpu": "1",
+                    },
+                    {
+                        "asr_base_url": "http://lane-b/v1",
+                        "post_base_url": "http://lane-b-post/v1",
+                        "preprocess_gpu": "3",
+                    },
                 ],
             )
             events = []
+            preprocess_gpus = []
             event_lock = threading.Lock()
             first_prime_done = threading.Event()
             allow_second_prime_done = threading.Event()
@@ -226,6 +236,7 @@ class AutoExperimentTest(unittest.TestCase):
             def fake_run_condition(audio_path, config, case, reference_text, rag_inline_text):
                 with event_lock:
                     events.append(("condition", case.condition.asr_group_key))
+                    preprocess_gpus.append(config.preprocess_gpu)
                 allow_second_prime_done.set()
                 return {
                     "case_id": case.case_id,
@@ -259,6 +270,8 @@ class AutoExperimentTest(unittest.TestCase):
             )
             first_condition_index = next(index for index, event in enumerate(events) if event[0] == "condition")
             self.assertLess(first_condition_index, second_prime_done_index)
+            self.assertIn("1", preprocess_gpus)
+            self.assertIn("3", preprocess_gpus)
 
     def test_auto_experiment_can_expand_model_axis(self):
         with tempfile.TemporaryDirectory() as tmp:
