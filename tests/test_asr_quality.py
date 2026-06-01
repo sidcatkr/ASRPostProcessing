@@ -100,6 +100,16 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertEqual(report["chunks"][0]["filtered_reason"], "inline_cjk_drift_removed")
         self.assertTrue(any("language drift" in warning for warning in report["warnings"]))
 
+    def test_report_flags_raw_text_artifacts_without_metadata(self):
+        raw = TranscriptResult(language="ko", text="앞 문장 language None<asr_text> 如果测试新闻，然后示例文本。 다음 문장")
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
+
+        self.assertEqual(report["text_artifacts"]["asr_text_tag_count"], 1)
+        self.assertEqual(report["text_artifacts"]["language_label_count"], 1)
+        self.assertTrue(report["text_artifacts"]["non_korean_cjk_drift_candidate"])
+        self.assertTrue(any("artifact marker" in warning for warning in report["warnings"]))
+
     def test_correction_quality_counts_resolved_keyword_near_misses(self):
         raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다.")
         correction = CorrectionResult(

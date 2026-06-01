@@ -21,6 +21,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     chunk_reports = _chunk_reports(raw)
     keyword_near_misses = _keyword_near_misses(raw.text or "", config)
     language_drift_reasons = _language_drift_reasons(raw)
+    text_artifacts = _text_artifact_summary(raw.text or "")
     warnings: List[str] = []
     action_items: List[str] = []
 
@@ -54,6 +55,9 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     if language_drift_reasons:
         warnings.append("ASR language drift artifact(s) were filtered before post-processing.")
         action_items.append("Inspect filtered ASR chunks if transcript context is missing near those timestamps.")
+    if _has_artifact_risk(text_artifacts):
+        warnings.append("ASR transcript contains artifact marker or non-Korean CJK drift candidate(s).")
+        action_items.append("Inspect ASR parsing, language cleanup, and the affected raw transcript span before post-processing.")
     if keyword_near_misses:
         warnings.append("ASR contains keyword near-miss candidate(s).")
         action_items.append("Enable keyword-guided post-processing or inspect the listed near-miss terms.")
@@ -74,6 +78,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
         },
         "preprocess": _preprocess_summary(preprocess),
         "language_drift": {"filtered_reasons": language_drift_reasons},
+        "text_artifacts": text_artifacts,
         "keyword_near_misses": keyword_near_misses,
         "chunks": chunk_reports,
         "warnings": _dedupe(warnings),
