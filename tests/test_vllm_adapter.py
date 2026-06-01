@@ -38,14 +38,21 @@ class VLLMAdapterTest(unittest.TestCase):
                 }
             ]
         }
-        config = ExperimentConfig(post_backend="vllm_openai", post_base_url="http://127.0.0.1:18001/v1")
+        config = ExperimentConfig(
+            post_backend="vllm_openai",
+            post_base_url="http://127.0.0.1:18001/v1",
+            keywords=["선행 연구"],
+        )
         with patch("requests.post", return_value=response) as post:
             result = VLLMOpenAIPostProcessAdapter().correct("원문 문장", config, [], [])
 
         payload = post.call_args.kwargs["json"]
+        prompt = payload["messages"][1]["content"]
         self.assertEqual(payload["max_tokens"], 512)
         self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
-        self.assertIn("Do not include reasoning", payload["messages"][1]["content"])
+        self.assertIn("Do not include reasoning", prompt)
+        self.assertIn("Keyword correction guidance", prompt)
+        self.assertIn("서론 연구", prompt)
         self.assertEqual(result.corrected_text, "교정된 문장")
 
     def test_asr_request_splits_long_audio_into_chunks(self):

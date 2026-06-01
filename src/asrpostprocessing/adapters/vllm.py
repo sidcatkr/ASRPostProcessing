@@ -216,6 +216,7 @@ def _postprocess_prompt(
     context_block = "\n\n".join(f"[{ctx.context_id}] {ctx.text}" for ctx in contexts) or "(none)"
     search_block = "\n".join(f"- {item.title}: {item.snippet} ({item.url})" for item in search_results) or "(none)"
     keywords = ", ".join(config.keywords) or "(none)"
+    keyword_guidance = _keyword_correction_guidance(config.keywords)
     strength_policy = _postprocess_strength_policy(config.postprocess_strength)
     return f"""
 Raw transcript chunk:
@@ -223,6 +224,9 @@ Raw transcript chunk:
 
 Keywords:
 {keywords}
+
+Keyword correction guidance:
+{keyword_guidance}
 
 Retrieved context:
 {context_block}
@@ -243,6 +247,18 @@ Rules:
 - Return compact JSON with keys: corrected_text, edits, risk, used_context_ids.
 - Each edit item must include before, after, reason, confidence.
 """.strip()
+
+
+def _keyword_correction_guidance(keywords: List[str]) -> str:
+    if not keywords:
+        return "(none)"
+    return (
+        "Treat the keyword list as correction candidates, not content to insert. "
+        "When the raw transcript contains a close Korean ASR near-miss for a listed keyword and the surrounding sentence supports it, "
+        "prefer the listed keyword. For example, if `선행 연구` is listed and the transcript says `서론 연구` near verbs like "
+        "`찾아보다`, `읽어보다`, or academic writing context, correct it to `선행 연구`. "
+        "If the match is not close or the context does not support it, keep the raw phrase."
+    )
 
 
 def _temperature_for_strength(strength: float) -> float:

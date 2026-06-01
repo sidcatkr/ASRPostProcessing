@@ -165,6 +165,7 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keyword", action="append", dest="keywords")
     parser.add_argument("--enable-keyword-bias", action="store_true")
     parser.add_argument("--keyword-bias-weight", type=float)
+    parser.add_argument("--postprocess-strength", type=float)
     parser.add_argument("--enable-rag", action="store_true")
     parser.add_argument(
         "--rag-file",
@@ -207,6 +208,7 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "asr_base_url": args.asr_base_url,
         "post_base_url": args.post_base_url,
         "keyword_bias_weight": args.keyword_bias_weight,
+        "postprocess_strength": args.postprocess_strength,
         "rag_strength": args.rag_strength,
         "search_provider": args.search_provider,
         "search_endpoint": args.search_endpoint,
