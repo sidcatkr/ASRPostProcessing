@@ -55,7 +55,13 @@ post_server_command: >-
   --max-num-seqs 8
   --max-num-batched-tokens 16384
 postprocess_parallelism: 8
-auto_experiment_parallelism: 2
+auto_experiment_parallelism: 8
+auto_experiment_saturate_lanes: true
+auto_experiment_include_models: false
+auto_experiment_asr_models:
+  - Qwen/Qwen3-ASR-1.7B
+auto_experiment_post_models:
+  - Qwen/Qwen3.5-9B
 asr_cache_enabled: true
 preprocess_cache_enabled: true
 cache_dir: outputs/cache

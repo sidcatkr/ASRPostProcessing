@@ -5,15 +5,30 @@ import csv
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .cache import stable_json_hash
 from .config import ExperimentConfig
 from .experiment_matrix import ConditionSpec, generate_auto_conditions
 from .logging import make_run_id
 from .pipeline import PipelineRunner
 
 StatusCallback = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class ExperimentCase:
+    case_id: str
+    condition: ConditionSpec
+    asr_model: str
+    post_model: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["condition"] = self.condition.to_dict()
+        return payload
 
 
 def run_auto_experiment(
@@ -33,30 +48,31 @@ def run_auto_experiment(
         include_search=base_config.enable_search,
         mode=mode,
     )
+    cases = _expand_model_cases(conditions, base_config)
     run_id = make_run_id("auto-experiment")
     output_dir = Path(base_config.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    _emit(status_callback, f"Auto experiment {run_id} generated {len(conditions)} condition(s).")
-    _prime_asr_cache(audio_path, base_config, conditions, reference_text, rag_inline_text, status_callback)
+    _emit(status_callback, f"Auto experiment {run_id} generated {len(cases)} case(s) from {len(conditions)} condition(s).")
+    _prime_asr_cache(audio_path, base_config, cases, reference_text, rag_inline_text, status_callback)
     started = time.time()
     rows: List[Dict[str, Any]] = []
-    max_workers = max(1, int(base_config.auto_experiment_parallelism or 1))
+    max_workers = _effective_worker_count(base_config)
     _emit(status_callback, f"Running auto experiment with {max_workers} parallel condition worker(s).")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
-        for index, condition in enumerate(conditions):
-            config = _config_for_condition(base_config, condition, index)
-            futures[executor.submit(_run_condition, audio_path, config, condition, reference_text, rag_inline_text)] = condition
+        for index, case in enumerate(cases):
+            config = _config_for_case(base_config, case, index)
+            futures[executor.submit(_run_condition, audio_path, config, case, reference_text, rag_inline_text)] = case
         for future in as_completed(futures):
-            condition = futures[future]
+            case = futures[future]
             try:
                 row = future.result()
-                _emit(status_callback, f"Auto condition complete: {condition.condition_id}.")
+                _emit(status_callback, f"Auto case complete: {case.case_id}.")
             except Exception as exc:
-                row = _error_row(condition, exc)
-                _emit(status_callback, f"Auto condition failed: {condition.condition_id}: {exc}")
+                row = _error_row(case, exc)
+                _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
             rows.append(row)
-    rows.sort(key=lambda row: str(row.get("condition_id", "")))
+    rows.sort(key=lambda row: str(row.get("case_id") or row.get("condition_id", "")))
     summary_path = output_dir / "auto_experiment_summary.csv"
     analysis = analyze_auto_experiment(rows)
     analysis_path = output_dir / "auto_experiment_analysis.json"
@@ -64,7 +80,7 @@ def run_auto_experiment(
     _write_summary_csv(summary_path, rows)
     analysis_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest_path.write_text(
-        json.dumps([condition.to_dict() for condition in conditions], ensure_ascii=False, indent=2),
+        json.dumps([case.to_dict() for case in cases], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return {
@@ -72,6 +88,7 @@ def run_auto_experiment(
         "output_dir": str(output_dir),
         "mode": mode,
         "condition_count": len(conditions),
+        "case_count": len(cases),
         "elapsed_s": time.time() - started,
         "summary_csv": str(summary_path),
         "analysis_json": str(analysis_path),
@@ -111,34 +128,66 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _prime_asr_cache(
     audio_path: str,
     base_config: ExperimentConfig,
-    conditions: List[ConditionSpec],
+    cases: List[ExperimentCase],
     reference_text: Optional[str],
     rag_inline_text: str,
     status_callback: Optional[StatusCallback],
 ) -> None:
     if not base_config.asr_cache_enabled:
         return
-    grouped: Dict[str, ConditionSpec] = {}
-    for condition in conditions:
-        grouped.setdefault(condition.asr_group_key, condition)
-    _emit(status_callback, f"Priming ASR cache for {len(grouped)} pre/ASR group(s).")
-    for index, condition in enumerate(grouped.values()):
-        config = _config_for_condition(base_config, condition, index)
-        config.enable_llm_postprocess = False
-        try:
-            PipelineRunner(config, status_callback=status_callback).run(
-                audio_path=audio_path,
-                reference_text=reference_text,
-                rag_inline_text=rag_inline_text,
-            )
-        except Exception as exc:
-            _emit(status_callback, f"ASR cache priming failed for {condition.asr_group_key}: {exc}")
+    grouped: Dict[str, ExperimentCase] = {}
+    for case in cases:
+        grouped.setdefault(f"{case.condition.asr_group_key}|asr={case.asr_model}", case)
+    workers = min(len(grouped), _effective_asr_worker_count(base_config))
+    _emit(status_callback, f"Priming ASR cache for {len(grouped)} pre/ASR model group(s) with {workers} worker(s).")
+    if workers <= 1:
+        for index, case in enumerate(grouped.values()):
+            _prime_one_asr_group(audio_path, base_config, case, index, reference_text, rag_inline_text, status_callback)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                _prime_one_asr_group,
+                audio_path,
+                base_config,
+                case,
+                index,
+                reference_text,
+                rag_inline_text,
+                status_callback,
+            ): case
+            for index, case in enumerate(grouped.values())
+        }
+        for future in as_completed(futures):
+            case = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                _emit(status_callback, f"ASR cache priming failed for {case.case_id}: {exc}")
+
+
+def _prime_one_asr_group(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    case: ExperimentCase,
+    index: int,
+    reference_text: Optional[str],
+    rag_inline_text: str,
+    status_callback: Optional[StatusCallback],
+) -> None:
+    config = _config_for_case(base_config, case, index)
+    config.enable_llm_postprocess = False
+    PipelineRunner(config, status_callback=status_callback).run(
+        audio_path=audio_path,
+        reference_text=reference_text,
+        rag_inline_text=rag_inline_text,
+    )
 
 
 def _run_condition(
     audio_path: str,
     config: ExperimentConfig,
-    condition: ConditionSpec,
+    case: ExperimentCase,
     reference_text: Optional[str],
     rag_inline_text: str,
 ) -> Dict[str, Any]:
@@ -146,17 +195,20 @@ def _run_condition(
     metrics = output.metrics.to_dict()
     asr_cache = output.raw.metadata.get("asr_cache") if isinstance(output.raw.metadata, dict) else {}
     return {
-        "condition_id": condition.condition_id,
-        "label": condition.label,
-        "group": condition.group,
+        "case_id": case.case_id,
+        "condition_id": case.condition.condition_id,
+        "label": case.condition.label,
+        "group": case.condition.group,
+        "asr_model": config.asr_model,
+        "post_model": config.post_model,
         "run_id": output.run_id,
         "output_dir": output.output_dir,
-        "keyword_bias_enabled": condition.enable_keyword_bias,
-        "noise_reduction_enabled": condition.enable_noise_reduction,
-        "volume_normalization_enabled": condition.enable_volume_normalization,
-        "llm_postprocess_enabled": condition.enable_llm_postprocess,
-        "rag_enabled": condition.enable_rag,
-        "search_enabled": condition.enable_search,
+        "keyword_bias_enabled": case.condition.enable_keyword_bias,
+        "noise_reduction_enabled": case.condition.enable_noise_reduction,
+        "volume_normalization_enabled": case.condition.enable_volume_normalization,
+        "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+        "rag_enabled": case.condition.enable_rag,
+        "search_enabled": case.condition.enable_search,
         "keyword_bias_weight": config.keyword_bias_weight,
         "noise_reduction_model": config.noise_reduction_model,
         "noise_reduction_strength": config.noise_reduction_strength,
@@ -179,8 +231,11 @@ def _run_condition(
     }
 
 
-def _config_for_condition(base_config: ExperimentConfig, condition: ConditionSpec, index: int) -> ExperimentConfig:
+def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index: int) -> ExperimentConfig:
     config = copy.deepcopy(base_config)
+    condition = case.condition
+    config.asr_model = case.asr_model
+    config.post_model = case.post_model
     config.asr_cache_enabled = True
     config.preprocess_cache_enabled = True
     config.enable_keyword_bias = condition.enable_keyword_bias
@@ -204,7 +259,7 @@ def _config_for_condition(base_config: ExperimentConfig, condition: ConditionSpe
         config.rag_strength = 0.5
     if config.enable_search and config.search_strength <= 0:
         config.search_strength = 0.5
-    lanes = [lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]
+    lanes = _matching_lanes(config.pipeline_lanes or [], config.asr_model, config.post_model)
     if lanes:
         lane = lanes[index % len(lanes)]
         if lane.get("asr_base_url"):
@@ -216,9 +271,12 @@ def _config_for_condition(base_config: ExperimentConfig, condition: ConditionSpe
 
 def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     fieldnames = [
+        "case_id",
         "condition_id",
         "label",
         "group",
+        "asr_model",
+        "post_model",
         "run_id",
         "output_dir",
         "keyword_bias_enabled",
@@ -254,19 +312,96 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
-def _error_row(condition: ConditionSpec, exc: Exception) -> Dict[str, Any]:
+def _error_row(case: ExperimentCase, exc: Exception) -> Dict[str, Any]:
     return {
-        "condition_id": condition.condition_id,
-        "label": condition.label,
-        "group": condition.group,
-        "keyword_bias_enabled": condition.enable_keyword_bias,
-        "noise_reduction_enabled": condition.enable_noise_reduction,
-        "volume_normalization_enabled": condition.enable_volume_normalization,
-        "llm_postprocess_enabled": condition.enable_llm_postprocess,
-        "rag_enabled": condition.enable_rag,
-        "search_enabled": condition.enable_search,
+        "case_id": case.case_id,
+        "condition_id": case.condition.condition_id,
+        "label": case.condition.label,
+        "group": case.condition.group,
+        "asr_model": case.asr_model,
+        "post_model": case.post_model,
+        "keyword_bias_enabled": case.condition.enable_keyword_bias,
+        "noise_reduction_enabled": case.condition.enable_noise_reduction,
+        "volume_normalization_enabled": case.condition.enable_volume_normalization,
+        "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+        "rag_enabled": case.condition.enable_rag,
+        "search_enabled": case.condition.enable_search,
         "error": str(exc),
     }
+
+
+def _expand_model_cases(conditions: List[ConditionSpec], config: ExperimentConfig) -> List[ExperimentCase]:
+    asr_models = _model_values(config.auto_experiment_asr_models, config.asr_model)
+    post_models = _model_values(config.auto_experiment_post_models, config.post_model)
+    if not config.auto_experiment_include_models:
+        asr_models = [config.asr_model]
+        post_models = [config.post_model]
+    cases: List[ExperimentCase] = []
+    for condition in conditions:
+        for asr_model in asr_models:
+            active_post_models = post_models if condition.enable_llm_postprocess else [config.post_model]
+            for post_model in active_post_models:
+                suffix = stable_json_hash(
+                    {
+                        "condition": condition.condition_id,
+                        "asr_model": asr_model,
+                        "post_model": post_model if condition.enable_llm_postprocess else "",
+                    }
+                )[:8]
+                case_id = condition.condition_id
+                if config.auto_experiment_include_models:
+                    case_id = f"{condition.condition_id}__model_{suffix}"
+                cases.append(
+                    ExperimentCase(
+                        case_id=case_id,
+                        condition=condition,
+                        asr_model=asr_model,
+                        post_model=post_model,
+                    )
+                )
+    return cases
+
+
+def _model_values(values: List[str], fallback: str) -> List[str]:
+    models = [str(value).strip() for value in values if str(value).strip()]
+    if not models:
+        models = [fallback]
+    deduped: List[str] = []
+    for model in models:
+        if model not in deduped:
+            deduped.append(model)
+    return deduped
+
+
+def _effective_worker_count(config: ExperimentConfig) -> int:
+    requested = max(1, int(config.auto_experiment_parallelism or 1))
+    if not config.auto_experiment_saturate_lanes:
+        return requested
+    lane_count = max(1, len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]))
+    chunk_workers = max(1, int(config.postprocess_parallelism or 1))
+    return max(requested, lane_count * min(4, chunk_workers))
+
+
+def _effective_asr_worker_count(config: ExperimentConfig) -> int:
+    lane_count = len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict) and lane.get("asr_base_url")])
+    if lane_count <= 0:
+        lane_count = max(1, len(config.asr_base_urls or []))
+    if not config.auto_experiment_saturate_lanes:
+        return max(1, min(int(config.auto_experiment_parallelism or 1), lane_count))
+    return max(1, lane_count)
+
+
+def _matching_lanes(lanes: List[Dict[str, Any]], asr_model: str, post_model: str) -> List[Dict[str, Any]]:
+    dict_lanes = [lane for lane in lanes if isinstance(lane, dict)]
+    if not dict_lanes:
+        return []
+    matching = [
+        lane
+        for lane in dict_lanes
+        if (not lane.get("asr_model") or str(lane.get("asr_model")) == asr_model)
+        and (not lane.get("post_model") or str(lane.get("post_model")) == post_model)
+    ]
+    return matching or dict_lanes
 
 
 def _metric(row: Dict[str, Any], key: str) -> Optional[float]:

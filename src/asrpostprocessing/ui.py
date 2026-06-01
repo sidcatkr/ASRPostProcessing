@@ -169,7 +169,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 with gr.Row():
                     auto_experiment_parallelism = gr.Slider(
                         1,
-                        16,
+                        32,
                         value=initial_config.auto_experiment_parallelism,
                         step=1,
                         label="Condition workers",
@@ -182,6 +182,26 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         label="Postprocess chunk workers",
                     )
                     enable_cache = gr.Checkbox(label="Use preprocess/ASR cache", value=True)
+                    auto_experiment_saturate_lanes = gr.Checkbox(
+                        label="Saturate available lanes",
+                        value=initial_config.auto_experiment_saturate_lanes,
+                    )
+                with gr.Row():
+                    auto_experiment_include_models = gr.Checkbox(
+                        label="Include model combinations",
+                        value=initial_config.auto_experiment_include_models,
+                    )
+                with gr.Row():
+                    auto_experiment_asr_models = gr.Textbox(
+                        label="ASR models for Auto Experiment",
+                        value=", ".join(initial_config.auto_experiment_asr_models),
+                        placeholder="Qwen/Qwen3-ASR-1.7B, ...",
+                    )
+                    auto_experiment_post_models = gr.Textbox(
+                        label="Post models for Auto Experiment",
+                        value=", ".join(initial_config.auto_experiment_post_models),
+                        placeholder="Qwen/Qwen3.5-9B, ...",
+                    )
             with gr.Accordion("Model server startup", open=True):
                 with gr.Row():
                     auto_start_model_servers = gr.Checkbox(
@@ -328,6 +348,10 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 auto_experiment_parallelism,
                 postprocess_parallelism,
                 enable_cache,
+                auto_experiment_saturate_lanes,
+                auto_experiment_include_models,
+                auto_experiment_asr_models,
+                auto_experiment_post_models,
             ],
             outputs=[
                 raw_output,
@@ -569,6 +593,10 @@ def run_from_ui(
     auto_experiment_parallelism: int = 1,
     postprocess_parallelism: int = 1,
     enable_cache: bool = True,
+    auto_experiment_saturate_lanes: bool = True,
+    auto_experiment_include_models: bool = False,
+    auto_experiment_asr_models: str = "",
+    auto_experiment_post_models: str = "",
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
@@ -606,6 +634,10 @@ def run_from_ui(
         preprocess_strength=0.0,
         postprocess_parallelism=int(postprocess_parallelism or 1),
         auto_experiment_parallelism=int(auto_experiment_parallelism or 1),
+        auto_experiment_saturate_lanes=bool(auto_experiment_saturate_lanes),
+        auto_experiment_include_models=bool(auto_experiment_include_models),
+        auto_experiment_asr_models=_split_keywords(auto_experiment_asr_models),
+        auto_experiment_post_models=_split_keywords(auto_experiment_post_models),
         asr_cache_enabled=bool(enable_cache),
         preprocess_cache_enabled=bool(enable_cache),
         enable_noise_reduction=bool(enable_noise_reduction),

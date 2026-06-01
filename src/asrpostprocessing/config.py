@@ -40,6 +40,10 @@ class ExperimentConfig:
     pipeline_lanes: List[Dict[str, Any]] = field(default_factory=list)
     postprocess_parallelism: int = 1
     auto_experiment_parallelism: int = 1
+    auto_experiment_saturate_lanes: bool = True
+    auto_experiment_include_models: bool = False
+    auto_experiment_asr_models: List[str] = field(default_factory=list)
+    auto_experiment_post_models: List[str] = field(default_factory=list)
     asr_cache_enabled: bool = False
     preprocess_cache_enabled: bool = False
     cache_dir: str = "outputs/cache"
@@ -117,6 +121,8 @@ class ExperimentConfig:
         config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)
         config.asr_base_urls = normalize_url_list(config.asr_base_urls)
         config.post_base_urls = normalize_url_list(config.post_base_urls)
+        config.auto_experiment_asr_models = normalize_url_list(config.auto_experiment_asr_models)
+        config.auto_experiment_post_models = normalize_url_list(config.auto_experiment_post_models)
         return config
 
 

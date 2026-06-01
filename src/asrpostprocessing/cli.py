@@ -269,6 +269,10 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--server-shutdown-timeout-s", type=float)
     parser.add_argument("--postprocess-parallelism", type=int)
     parser.add_argument("--auto-experiment-parallelism", type=int)
+    parser.add_argument("--auto-experiment-include-models", action="store_true")
+    parser.add_argument("--auto-experiment-asr-model", action="append", dest="auto_experiment_asr_models")
+    parser.add_argument("--auto-experiment-post-model", action="append", dest="auto_experiment_post_models")
+    parser.add_argument("--no-auto-experiment-saturate-lanes", action="store_true")
     cache_group = parser.add_mutually_exclusive_group()
     cache_group.add_argument("--enable-cache", action="store_true")
     cache_group.add_argument("--disable-cache", action="store_true")
@@ -304,8 +308,14 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "server_shutdown_timeout_s": args.server_shutdown_timeout_s,
         "postprocess_parallelism": args.postprocess_parallelism,
         "auto_experiment_parallelism": args.auto_experiment_parallelism,
+        "auto_experiment_asr_models": args.auto_experiment_asr_models,
+        "auto_experiment_post_models": args.auto_experiment_post_models,
         "cache_dir": args.cache_dir,
     }
+    if args.auto_experiment_include_models:
+        overrides["auto_experiment_include_models"] = True
+    if args.no_auto_experiment_saturate_lanes:
+        overrides["auto_experiment_saturate_lanes"] = False
     if args.enable_cache:
         overrides["asr_cache_enabled"] = True
         overrides["preprocess_cache_enabled"] = True

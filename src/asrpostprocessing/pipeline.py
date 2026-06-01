@@ -276,11 +276,14 @@ class PipelineRunner:
 
     def _post_endpoint_pool(self) -> List[str]:
         lanes = getattr(self.config, "pipeline_lanes", []) or []
-        endpoints = [
-            str(lane.get("post_base_url")).strip()
+        lane_candidates = [
+            lane
             for lane in lanes
-            if isinstance(lane, dict) and str(lane.get("post_base_url") or "").strip()
+            if isinstance(lane, dict)
+            and str(lane.get("post_base_url") or "").strip()
+            and (not lane.get("post_model") or str(lane.get("post_model")) == self.config.post_model)
         ]
+        endpoints = [str(lane.get("post_base_url")).strip() for lane in lane_candidates]
         endpoints.extend(str(item).strip() for item in (getattr(self.config, "post_base_urls", []) or []) if str(item).strip())
         if not endpoints:
             endpoints = [self.config.post_base_url]

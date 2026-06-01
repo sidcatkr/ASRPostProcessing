@@ -32,7 +32,9 @@ post_server_command: >-
   --max-num-seqs 8
   --max-num-batched-tokens 16384
 postprocess_parallelism: 4
-auto_experiment_parallelism: 1
+auto_experiment_parallelism: 4
+auto_experiment_saturate_lanes: true
+auto_experiment_include_models: false
 asr_cache_enabled: true
 preprocess_cache_enabled: true
 cache_dir: outputs/cache

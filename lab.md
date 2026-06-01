@@ -97,8 +97,10 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - `asr_cache_enabled`와 `preprocess_cache_enabled`를 추가해 같은 audio/preprocess/ASR/keyword 조건의 raw transcript를 재사용한다.
 - CLI `asrpp auto-experiment`와 UI `Auto Experiment Mode`를 추가해 수동 토글 방식은 유지하면서도 유효한 실험 조합을 자동 실행할 수 있다.
 - Auto Experiment의 full valid matrix는 Keyword Bias, Noise Reduction, Volume Normalization의 8개 pre/ASR mode와 no post, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search의 5개 post mode를 곱해 40개 조건을 만든다.
+- Auto Experiment에서 `Include model combinations`를 켜면 사용자가 지정한 ASR model list와 post model list도 condition matrix에 포함한다.
 - RAG/Search는 단독 correction module로 취급하지 않고 LLM post-processing에 종속된 valid condition으로만 실행한다.
-- Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄인다.
+- Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄이며, model axis가 켜져 있으면 ASR model별 cache group을 분리한다.
+- `auto_experiment_saturate_lanes`가 켜져 있으면 condition worker와 ASR cache priming worker를 pipeline lane 수 기준으로 자동 확장해 endpoint가 놀지 않도록 한다.
 - 전처리 모델 표기를 정리해 `afftdn`은 기존 ffmpeg spectral denoise baseline, `rnnoise`는 실제 RNNoise backend, `deepfilternet2/3`는 실제 DeepFilterNet backend로 분리했다.
 - DeepFilterNet/RNNoise backend가 설치되지 않은 경우 해당 모델을 가짜 afftdn으로 실행하지 않고 warning과 함께 original audio fallback을 남긴다.
 - DeepFilterNet/RNNoise enhanced output은 `noise_reduction_strength`에 따라 original/enhanced alpha mix를 적용할 수 있어 denoise artifact로 ASR이 악화되는지 실험할 수 있다.
@@ -158,6 +160,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
 - preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
 - Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
+- 모델 비교 토글이 꺼져 있으면 현재 선택된 ASR/post model만 사용하고, 켜져 있으면 사용자가 입력한 ASR/post model list를 matrix에 포함한다. 후처리가 꺼진 조건에서는 post model을 중복 축으로 세지 않는다.
 - 이전에는 RNNoise/BS-RoFormer 이름을 선택해도 실제로는 ffmpeg afftdn이 실행될 수 있었지만, 이제는 실제 backend가 없으면 fallback으로 명시되어 연구 결과에 잘못된 모델명이 기록되지 않는다.
 
 ## L4 x4 실행 구조
@@ -205,12 +208,13 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - pre/ASR modes: none, K, N, V, K+N, K+V, N+V, K+N+V
 - post modes: none, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search
 - total: 8 x 5 = 40 conditions
+- optional model axis: ASR model list x post model list. Post model axis는 LLM post-processing이 켜진 condition에만 적용한다.
 
 `core_ablation` coverage는 빠른 확인용 subset이다.
 
 결과 artifact:
 
-- `auto_experiment_summary.csv`: condition별 metric, cache hit, risk, output path
+- `auto_experiment_summary.csv`: case별 condition, ASR/post model, metric, cache hit, risk, output path
 - `auto_experiment_analysis.json`: best/worst, baseline 대비 악화 case
 - `auto_experiment_conditions.json`: 생성된 condition matrix
 

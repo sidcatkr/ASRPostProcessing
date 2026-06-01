@@ -34,6 +34,8 @@ class AutoExperimentTest(unittest.TestCase):
         config = load_config("configs/l4x4.yaml")
         self.assertEqual(config.model_residency, "parallel")
         self.assertEqual(config.postprocess_parallelism, 8)
+        self.assertEqual(config.auto_experiment_parallelism, 8)
+        self.assertTrue(config.auto_experiment_saturate_lanes)
         self.assertEqual(len(config.pipeline_lanes), 2)
         self.assertEqual(config.pipeline_lanes[1]["asr_base_url"], "http://127.0.0.1:18002/v1")
         self.assertTrue(config.asr_cache_enabled)
@@ -67,6 +69,40 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertTrue(Path(report["analysis_json"]).exists())
             self.assertGreaterEqual(report["condition_count"], 3)
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
+
+    def test_auto_experiment_can_expand_model_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=False,
+                enable_search=False,
+                auto_experiment_include_models=True,
+                auto_experiment_asr_models=["asr-a", "asr-b"],
+                auto_experiment_post_models=["post-a", "post-b"],
+                auto_experiment_parallelism=4,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+            )
+            report = run_auto_experiment(
+                str(audio),
+                config,
+                reference_text="테스트 전사 문장입니다.",
+                mode="full_valid",
+            )
+            self.assertEqual(report["condition_count"], 2)
+            self.assertEqual(report["case_count"], 6)
+            self.assertEqual(report["analysis"]["num_failed_rows"], 0)
+            models = {(row["asr_model"], row["post_model"]) for row in report["rows"] if row["llm_postprocess_enabled"]}
+            self.assertEqual(models, {("asr-a", "post-a"), ("asr-a", "post-b"), ("asr-b", "post-a"), ("asr-b", "post-b")})
 
 
 if __name__ == "__main__":
