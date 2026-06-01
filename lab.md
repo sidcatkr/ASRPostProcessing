@@ -93,7 +93,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - chunked ASR에서는 이전 chunk transcript의 최근 일부를 다음 요청에 rolling context로 넣어 긴 발화의 문맥 단절을 줄인다.
 - `asr_chunk_parallelism`을 추가해 `asr_context_chars=0` fast mode에서는 ASR audio chunk를 여러 ASR endpoint에 병렬 요청할 수 있다.
 - rolling context가 켜진 기본 accurate mode에서는 chunk 순서를 보존하기 위해 ASR chunk 병렬화를 자동으로 비활성화한다.
-- L4 x4 서버용 scalable profile(`configs/l4x4.yaml`)을 추가해 GPU 0/1과 GPU 2/3을 각각 ASR→post-processing lane으로 동시에 사용할 수 있다.
+- L4 x4 서버용 scalable profile(`configs/l4x4.yaml`)을 추가해 `stage_replicas` 모드에서는 ASR stage와 post-processing stage가 각각 GPU 0/1/2/3 전체를 replica pool로 사용할 수 있다.
 - `pipeline_lanes`, `asr_base_urls`, `post_base_urls`를 config에서 정의할 수 있어 endpoint pool을 2개 이상으로 확장할 수 있다.
 - model server auto-start가 lane-aware로 동작해 하나의 config에서 `asr_lane_a`, `post_lane_a`, `asr_lane_b`, `post_lane_b`를 한 번에 준비한다.
 - 후처리 text chunk는 `postprocess_parallelism`으로 병렬 요청할 수 있고, post endpoint pool에 round-robin으로 분산된다.
@@ -115,7 +115,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 전처리 모델 표기를 정리해 `afftdn`은 기존 ffmpeg spectral denoise baseline, `rnnoise`는 실제 RNNoise backend, `deepfilternet2/3`는 실제 DeepFilterNet backend로 분리했다.
 - DeepFilterNet/RNNoise backend가 설치되지 않은 경우 해당 모델을 가짜 afftdn으로 실행하지 않고 warning과 함께 original audio fallback을 남긴다.
 - DeepFilterNet/RNNoise enhanced output은 `noise_reduction_strength`에 따라 original/enhanced alpha mix를 적용할 수 있어 denoise artifact로 ASR이 악화되는지 실험할 수 있다.
-- `preprocess_gpu`를 lane config에 지정하면 DeepFilterNet/custom/RNNoise subprocess가 해당 GPU를 `CUDA_VISIBLE_DEVICES`로 사용하므로 전처리 stage도 L4 lane에 묶어 실행할 수 있다.
+- `preprocess_gpus`를 지정하면 DeepFilterNet/custom/RNNoise subprocess가 condition별로 GPU 0/1/2/3에 분산되며, 각 subprocess는 `CUDA_VISIBLE_DEVICES`로 지정된 GPU만 사용한다.
 - 외부 전처리 backend는 `noise_reduction_command`로 연결할 수 있어 ClearVoice, FRCRN, MossFormer 같은 후보를 production code hardcoding 없이 실험에 붙일 수 있다.
 - `scripts/serve_l4x4.sh`는 `LANES=asr_gpu:post_gpu:asr_port:post_port,...` 형식으로 lane 수를 늘릴 수 있는 scalable serving script이다.
 
@@ -187,15 +187,14 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 
 권장 기본 실행은 `configs/l4x4.yaml`이다.
 
-    Lane A
-      GPU 1: DeepFilterNet/RNNoise/custom preprocess
-      GPU 0: Qwen3-ASR-1.7B, http://127.0.0.1:18000/v1
-      GPU 1: Qwen3.5-9B post LLM, http://127.0.0.1:18001/v1
+    ASR stage
+      GPU 0/1/2/3: Qwen3-ASR-1.7B replicas, ports 18000/18001/18002/18003
 
-    Lane B
-      GPU 3: DeepFilterNet/RNNoise/custom preprocess
-      GPU 2: Qwen3-ASR-1.7B, http://127.0.0.1:18002/v1
-      GPU 3: Qwen3.5-9B post LLM, http://127.0.0.1:18003/v1
+    Post-processing stage
+      GPU 0/1/2/3: Qwen3.5-9B post LLM replicas, ports 18000/18001/18002/18003
+
+    Preprocess stage
+      GPU 0/1/2/3: DeepFilterNet/RNNoise/custom preprocess worker pool
 
 수동 실행:
 
@@ -205,13 +204,15 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 
     asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid
 
-서버만 직접 띄우는 경우:
+서버만 직접 띄워 확인하는 경우:
 
-    scripts/serve_l4x4.sh all
+    scripts/serve_l4x4.sh asr-stage
+    scripts/serve_l4x4.sh post-stage
 
 GPU나 port를 더 늘리는 경우:
 
-    LANES=0:1:18000:18001,2:3:18002:18003 scripts/serve_l4x4.sh all
+    STAGE_GPUS=0,1,2,3 STAGE_PORTS=18000,18001,18002,18003 scripts/serve_l4x4.sh asr-stage
+    STAGE_GPUS=0,1,2,3 STAGE_PORTS=18000,18001,18002,18003 scripts/serve_l4x4.sh post-stage
 
 큰 manifest를 lane별로 나눠 독립 sweep을 돌리는 경우:
 
@@ -223,11 +224,11 @@ GPU나 port를 더 늘리는 경우:
 
     asrpp sweep --config configs/l4x4.yaml --manifest data/manifest.csv --jobs 2
 
-이 구조는 서버 자원을 절약하기 위한 설정이 아니라, ASR endpoint와 post-processing endpoint를 동시에 resident 상태로 두고 condition-level 병렬 실행과 chunk-level 병렬 후처리를 통해 처리량을 극대화하기 위한 설정이다.
+이 구조는 서버 자원을 절약하기 위한 설정이 아니라, stage별로 가능한 모든 GPU를 같은 모델 replica pool로 재사용해 ASR, 전처리, 후처리 stage 각각의 처리량을 극대화하기 위한 설정이다.
 
 ## Automatic Scalable GPU 정책
 
-L4 x4 profile은 GPU를 아끼기 위한 profile이 아니다. 모델 서버는 가능한 모든 lane을 동시에 resident 상태로 두고, Auto Experiment와 postprocess chunk 병렬화를 통해 endpoint pool을 계속 사용하도록 설계되어 있다.
+L4 x4 profile은 GPU를 아끼기 위한 profile이 아니다. `stage_replicas` 모드에서는 ASR stage에 4개 ASR replica를 올리고, ASR cache priming이 끝난 뒤 post-processing stage에 4개 post replica를 올린다. 같은 GPU에 ASR과 post 모델을 동시에 resident시키는 대신, stage마다 전체 GPU를 같은 작업에 집중시킨다.
 
 GPU memory allocation은 다음 설정으로 제어한다:
 
@@ -265,79 +266,45 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - `auto_experiment_analysis.json`: best/worst, latency-quality tradeoff, baseline 대비 악화 case, 주요 ablation effect
 - `auto_experiment_conditions.json`: 생성된 condition matrix
 
-## L4 x4 실험 진행 개요서
+## L4 x4 실험 목적
 
-목표는 README의 연구 질문을 그대로 검증하는 것이다. 즉, 전처리, Keyword Bias, LLM 후처리, RAG, Search, 모델 선택, 강도 값을 조합해 CER/WER이 실제로 낮아지는 조건과 오히려 악화되는 조건을 분리한다. L4 x4 서버에서는 GPU를 절약하지 않고 ASR replica와 post-processing replica를 동시에 resident 상태로 둔 뒤, cache, condition worker, postprocess chunk worker를 사용해 전체 실험 처리량을 높인다.
+목표는 한국어 대화 ASR 결과에서 CER/WER을 실제로 낮추는 조합을 찾는 것이다. 비교 대상은 전처리, Keyword Bias, LLM 후처리, RAG, Search, 모델 선택, 강도 값이며, 각 요소가 단독으로 효과가 있는지와 서로 결합했을 때 개선 또는 악화를 만드는지를 분리해 본다.
 
-1. 서버 준비
+두 번째 목표는 정확도 개선과 처리 속도를 함께 보는 것이다. L4 x4 서버에서는 VRAM 절약보다 성능을 우선해, ASR 단계와 후처리 단계가 각각 가능한 모든 GPU를 사용하도록 실험을 진행한다. 따라서 결과 판단은 정확도 지표를 1차 기준으로 두고, 동률에 가까운 조건에서 latency와 GPU 처리량을 함께 본다.
 
-    원격 서버의 `csgpu2` tmux session에서 repository로 이동한다.
+## L4 x4 실험 방법
 
-        cd ~/hcilabs/ASRPostProcessing
-        git pull --ff-only
+1. 동일한 audio와 reference를 고정한다.
 
-    모델 서버를 모두 띄운다.
+    모든 조건은 같은 입력으로 실행한다. 입력이 바뀌면 전처리와 후처리의 효과를 분리할 수 없으므로, 비교 단위는 항상 같은 audio/reference 쌍이다.
 
-        scripts/serve_l4x4.sh all
+2. baseline을 먼저 만든다.
 
-    Gradio UI는 같은 config로 띄운다.
+    전처리, Keyword Bias, LLM 후처리, RAG, Search를 모두 끈 상태로 raw ASR 결과와 CER/WER을 기록한다. 이후 모든 개선/악화 판단은 이 baseline 대비 delta로 본다.
 
-        PYTHONPATH=src asrpp ui --config configs/l4x4.yaml --host 127.0.0.1 --port 7860
+3. 핵심 기능을 하나씩 켜서 단독 효과를 확인한다.
 
-    로컬에서 SSH tunnel 또는 Termius port forwarding으로 `http://127.0.0.1:7860`에 접속한다. 7860은 UI이고, 18000/18002는 ASR, 18001/18003은 post-processing vLLM endpoint이다.
+    Keyword Bias만 켠 경우, Noise Reduction만 켠 경우, Volume Normalization만 켠 경우, LLM 후처리만 켠 경우, RAG만 추가한 경우, Search만 추가한 경우를 순서대로 비교한다. 이 단계의 목적은 어떤 축이 baseline보다 좋아지는지, 어떤 축이 바로 악화되는지를 빠르게 거르는 것이다.
 
-2. 서버 상태 확인
+4. 유효한 조합 전체를 자동 실험으로 돌린다.
 
-    먼저 endpoint가 모두 살아 있는지 확인한다.
+    단독 효과가 확인되면 Auto Experiment로 Keyword Bias, Noise Reduction, Volume Normalization, LLM, RAG, Search의 유효 조합을 모두 실행한다. 이때 서로 의미가 겹치거나 불가능한 조합은 제외하고, baseline부터 복합 조합까지 같은 기준으로 평가한다.
 
-        curl -s http://127.0.0.1:18000/v1/models
-        curl -s http://127.0.0.1:18001/v1/models
-        curl -s http://127.0.0.1:18002/v1/models
-        curl -s http://127.0.0.1:18003/v1/models
-        curl -s http://127.0.0.1:7860/
+5. 모델 비교는 별도 축으로 켜서 확인한다.
 
-    `nvidia-smi`에서 네 GPU에 vLLM process가 모두 resident 상태로 올라와 있어야 한다. GPU utilization은 stage에 따라 달라진다. ASR cache group이 아직 하나도 준비되지 않은 시작 구간이나 ASR-only condition에서는 GPU 0/2가 바쁘고 GPU 1/3 post LLM은 대기할 수 있다. ASR group 하나가 준비되면 해당 group의 후처리 condition이 바로 시작되어 GPU 1/3으로 분산된다. 따라서 "모델이 떠 있는지"는 memory/process로, "현재 stage에서 일하는지"는 utilization과 vLLM metrics delta로 판단한다.
+    모델 선택 토글을 켠 경우에는 ASR 모델 후보와 후처리 모델 후보도 실험 조합에 포함한다. 기본 실험에서는 현재 선택된 모델로 기능 조합의 효과를 먼저 보고, 모델 비교는 후보를 좁힌 뒤 실행한다.
 
-3. UI 설정 확인
+6. 강도 sweep은 마지막에 실행한다.
 
-    Gradio의 `Configured pipeline lanes`에 다음 lane이 보이는지 확인한다.
+    full valid 결과에서 좋아 보이는 조합만 골라 Keyword Bias strength, noise reduction strength, volume normalization strength, postprocess strength, RAG/Search strength, RAG top-k를 세부 조정한다. 모든 조합에 대해 강도 sweep을 먼저 돌리면 비용이 커지므로, 명백히 나쁜 축은 제거한 뒤 실행한다.
 
-        lane_a: GPU 1 preprocess -> GPU 0 ASR 18000 -> GPU 1 post 18001
-        lane_b: GPU 3 preprocess -> GPU 2 ASR 18002 -> GPU 3 post 18003
+7. 결과는 정확도, 안정성, 속도 순서로 판정한다.
 
-    UI의 primary ASR/POST GPU와 URL 입력은 단일 서버 fallback이다. L4 x4 병렬 실행 기준은 `configs/l4x4.yaml`의 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이다.
+    1차 기준은 `cer_normalized_no_space`와 `wer_eojeol`이다. 동률에 가까우면 latency, fallback 여부, keyword over-correction, RAG/Search hallucination risk, vLLM preemption 여부를 함께 본다. 최종 후보는 baseline보다 일관되게 좋아야 하며, 특정 샘플에서만 우연히 좋아진 조건은 제외한다.
 
-4. 빠른 baseline
+8. GPU 사용률은 실험 처리량 검증으로만 본다.
 
-    Auto Experiment Mode를 끄고 단일 Run으로 기준 성능을 만든다. 먼저 같은 audio/reference에서 전처리와 후처리를 모두 끈 baseline을 남기고, 그 다음 README의 핵심 조건인 Keyword Bias, LLM, RAG, Search를 수동으로 하나씩 켜서 raw/corrected, CER/WER, latency, `asr_quality.json`, `correction_quality.json`, `vllm_metrics.json`을 확인한다.
-
-5. 자동 실험 preview
-
-    본 실행 전에 case 수와 ASR cache group 수를 확인한다.
-
-        asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid --preview
-
-    모델 비교까지 포함할 때만 `Include model combinations`를 켠다. 이 토글이 꺼져 있으면 현재 선택된 ASR/post/noise/RAG embedding model만 사용한다.
-
-6. 자동 실험 본 실행
-
-    UI에서는 `Auto Experiment Mode`를 켜고 coverage를 먼저 `full_valid`로 둔다. 기본 축은 Keyword Bias, Noise Reduction, Volume Normalization, LLM, RAG, Search이다. `Saturate available lanes`는 켠다. L4 x4 profile에서는 condition worker와 ASR cache priming worker가 lane 수 기준으로 확장되고, postprocess text chunk는 post endpoint pool에 round-robin으로 분산된다.
-
-        asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid
-
-    `full_valid` 결과에서 개선/악화 조건을 확인한 뒤, 최종 후보에 대해서만 `full_strength_sweep`을 돌린다. 강도 sweep은 비용이 크므로 baseline과 full_valid로 명백히 나쁜 축을 먼저 제거한다.
-
-7. 결과 판정
-
-    1차 기준은 `cer_normalized_no_space`와 `wer_eojeol`이다. 동률에 가까우면 latency, fallback 여부, keyword over-correction, RAG/Search hallucination risk, vLLM preemption delta를 같이 본다. 최종 후보는 `auto_experiment_summary.csv`에서 baseline 대비 delta가 일관되게 낮고, `auto_experiment_analysis.json`에서 worse-than-baseline bucket에 들어가지 않는 조건이다.
-
-8. GPU 사용률 해석
-
-    Auto Experiment는 pre/ASR/model group별 raw transcript를 cache에 넣어 40개 이상의 조건에서 ASR을 반복 호출하지 않게 한다. 동시에 cache-first 전체 대기 방식이 아니라, ASR group 하나가 준비되는 즉시 같은 group의 condition들을 condition worker에 제출한다. 이 producer/consumer 구조 때문에 ASR priming과 후처리가 겹쳐서 실행되고, post GPU 1/3의 대기 시간이 줄어든다. DeepFilterNet/custom/RNNoise 전처리는 lane의 `preprocess_gpu`를 `CUDA_VISIBLE_DEVICES`로 받아 GPU 1/3에 붙는다.
-
-    그래도 모든 순간에 네 GPU utilization이 100%로 고정되지는 않는다. 첫 ASR group이 아직 끝나지 않은 시작 구간, 후처리가 꺼진 condition, 매우 짧은 postprocess chunk, 마지막 tail 구간에서는 해당 stage의 작업량이 부족해 일부 GPU가 낮게 보일 수 있다. 중요한 확인 기준은 run 전체에서 18000/18002 ASR endpoint와 18001/18003 post endpoint의 request/token delta가 모두 증가하고, summary의 lane/endpoint 기록이 두 lane에 분산되는지이다.
-
-    전처리 결과가 cache hit이면 GPU 작업 없이 즉시 재사용되므로 utilization이 낮게 보일 수 있다. 이 경우 summary의 `preprocess_cache_hit`와 preprocess artifact metadata의 `preprocess_gpu`를 같이 확인한다.
+    GPU 사용률 자체가 정확도 지표는 아니다. 다만 대량 조합 실험에서 ASR, 전처리, 후처리 단계가 놀고 있는 GPU 없이 분산 실행되는지 확인해 전체 실험 시간을 줄인다. 짧은 입력, cache hit, 후처리가 꺼진 조건, 마지막 tail 구간에서는 순간적으로 GPU 사용률이 낮을 수 있으므로, 전체 stage 처리량과 결과 artifact를 함께 본다.
 
 ## 실험 비교 축
 

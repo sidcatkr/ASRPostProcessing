@@ -106,15 +106,19 @@ def _check_output_dirs(config: ExperimentConfig) -> DoctorCheck:
 
 def _check_model_residency(config: ExperimentConfig) -> DoctorCheck:
     mode = (config.model_residency or "parallel").lower()
-    if mode not in {"parallel", "sequential"}:
+    if mode not in {"parallel", "sequential", "stage_replicas"}:
         return DoctorCheck("model_residency", "fail", f"unsupported mode: {config.model_residency}")
-    if mode == "sequential" and not config.auto_start_model_servers:
+    if mode in {"sequential", "stage_replicas"} and not config.auto_start_model_servers:
         return DoctorCheck(
             "model_residency",
             "warn",
-            "sequential mode only unloads model servers that this app auto-starts",
+            f"{mode} mode only unloads model servers that this app auto-starts",
         )
-    detail = "all required servers stay loaded" if mode == "parallel" else "one stage server is loaded at a time"
+    detail = {
+        "parallel": "all required servers stay loaded",
+        "sequential": "one stage server is loaded at a time",
+        "stage_replicas": "all configured GPUs are reused by each model stage",
+    }[mode]
     return DoctorCheck("model_residency", "ok", detail)
 
 

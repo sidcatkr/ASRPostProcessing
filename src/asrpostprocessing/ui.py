@@ -271,6 +271,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     model_residency = gr.Dropdown(
                         [
                             ("All required models stay loaded (fast, high VRAM)", "parallel"),
+                            ("All GPUs per stage (reload ASR/POST between stages)", "stage_replicas"),
                             ("One model at a time (slow, low VRAM)", "sequential"),
                         ],
                         value=initial_config.model_residency,
@@ -974,12 +975,22 @@ def _pipeline_lane_summary(config: ExperimentConfig) -> Dict[str, Any]:
         },
         "asr_base_urls": list(config.asr_base_urls),
         "post_base_urls": list(config.post_base_urls),
+        "stage_server_base_urls": list(config.stage_server_base_urls),
+        "stage_server_gpus": list(config.stage_server_gpus),
+        "preprocess_gpus": list(config.preprocess_gpus),
         "pipeline_lanes": lanes,
     }
 
 
 def _format_pipeline_lanes(config: ExperimentConfig) -> str:
     lanes = _pipeline_lane_summary(config)["pipeline_lanes"]
+    if config.model_residency == "stage_replicas" and config.stage_server_base_urls:
+        pairs = []
+        for index, base_url in enumerate(config.stage_server_base_urls):
+            gpu = config.stage_server_gpus[index] if index < len(config.stage_server_gpus) else "?"
+            preprocess_gpu = config.preprocess_gpus[index] if index < len(config.preprocess_gpus) else gpu
+            pairs.append(f"stage_{index}: PRE GPU {preprocess_gpu} -> ASR/POST GPU {gpu} {base_url}")
+        return "Stage replicas: " + "; ".join(pairs) + "\n"
     if not lanes:
         return ""
     parts = []

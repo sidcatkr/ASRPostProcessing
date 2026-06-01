@@ -46,6 +46,8 @@ class ExperimentConfig:
     server_gpu_memory_utilization_max: float = 0.90
     server_gpu_memory_reserved_mb: int = 256
     pipeline_lanes: List[Dict[str, Any]] = field(default_factory=list)
+    stage_server_base_urls: List[str] = field(default_factory=list)
+    stage_server_gpus: List[str] = field(default_factory=list)
     postprocess_parallelism: int = 1
     sweep_parallelism: int = 1
     sweep_saturate_lanes: bool = True
@@ -73,6 +75,7 @@ class ExperimentConfig:
     preprocess_model: str = "none"
     preprocess_strength: float = 0.0
     preprocess_gpu: str = ""
+    preprocess_gpus: List[str] = field(default_factory=list)
     enable_noise_reduction: bool = False
     noise_reduction_model: str = "none"
     noise_reduction_command: str = ""
@@ -151,6 +154,9 @@ class ExperimentConfig:
         config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)
         config.asr_base_urls = normalize_url_list(config.asr_base_urls)
         config.post_base_urls = normalize_url_list(config.post_base_urls)
+        config.stage_server_base_urls = normalize_url_list(config.stage_server_base_urls)
+        config.stage_server_gpus = normalize_url_list(config.stage_server_gpus)
+        config.preprocess_gpus = normalize_url_list(config.preprocess_gpus)
         config.auto_experiment_asr_models = normalize_url_list(config.auto_experiment_asr_models)
         config.auto_experiment_post_models = normalize_url_list(config.auto_experiment_post_models)
         config.auto_experiment_noise_models = normalize_url_list(config.auto_experiment_noise_models)
@@ -205,6 +211,11 @@ def normalize_model_residency(value: Any) -> str:
         "fast": "parallel",
         "parallel": "parallel",
         "resident": "parallel",
+        "all_gpus_per_stage": "stage_replicas",
+        "stage": "stage_replicas",
+        "stage_parallel": "stage_replicas",
+        "stage_replicas": "stage_replicas",
+        "stage_replicas_all_gpus": "stage_replicas",
         "single": "sequential",
         "single_model": "sequential",
         "low_vram": "sequential",

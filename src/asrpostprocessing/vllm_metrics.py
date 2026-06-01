@@ -14,6 +14,9 @@ PROMETHEUS_SAMPLE_RE = re.compile(
 
 def vllm_metrics_endpoint_pool(config: ExperimentConfig) -> List[str]:
     endpoints: List[str] = []
+    if str(getattr(config, "model_residency", "") or "").lower() == "stage_replicas":
+        endpoints.extend(str(item).strip() for item in (getattr(config, "stage_server_base_urls", []) or []) if str(item).strip())
+        return _dedupe(endpoints)
     if str(config.asr_backend or "").lower() in {"vllm", "vllm_chat", "openai_audio"}:
         endpoints.extend(_lane_urls(config, "asr_base_url", "asr_model"))
         endpoints.extend(str(item).strip() for item in (config.asr_base_urls or []) if str(item).strip())

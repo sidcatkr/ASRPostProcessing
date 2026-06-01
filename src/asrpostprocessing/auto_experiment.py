@@ -13,6 +13,7 @@ from .cache import stable_json_hash
 from .config import ExperimentConfig
 from .experiment_matrix import ConditionSpec, generate_auto_conditions
 from .logging import make_run_id
+from .model_server import ensure_model_servers, stop_model_servers
 from .pipeline import PipelineRunner
 
 StatusCallback = Callable[[str], None]
@@ -47,7 +48,16 @@ def run_auto_experiment(
     output_dir.mkdir(parents=True, exist_ok=True)
     _emit(status_callback, f"Auto experiment {run_id} generated {len(cases)} case(s) from {len(conditions)} condition(s).")
     started = time.time()
-    if base_config.asr_cache_enabled:
+    if base_config.model_residency == "stage_replicas" and base_config.auto_start_model_servers:
+        rows = _run_stage_replicas_auto_experiment(
+            audio_path,
+            base_config,
+            cases,
+            reference_text,
+            rag_inline_text,
+            status_callback,
+        )
+    elif base_config.asr_cache_enabled:
         rows = _run_conditions_after_asr_cache_ready(
             audio_path,
             base_config,
@@ -178,6 +188,88 @@ def _run_conditions_after_asr_cache_ready(
                 case = pending_conditions.pop(future)
                 rows.append(_condition_row_from_future(future, case, status_callback))
     return rows
+
+
+def _run_stage_replicas_auto_experiment(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    cases: List[ExperimentCase],
+    reference_text: Optional[str],
+    rag_inline_text: str,
+    status_callback: Optional[StatusCallback],
+) -> List[Dict[str, Any]]:
+    managed_config = copy.deepcopy(base_config)
+    managed_config.asr_cache_enabled = True
+    managed_config.preprocess_cache_enabled = True
+    worker_config = copy.deepcopy(managed_config)
+    worker_config.auto_start_model_servers = False
+
+    _emit(status_callback, "Starting ASR replicas on all stage GPUs.")
+    ensure_model_servers(managed_config, status_callback=status_callback, names=["asr"])
+    try:
+        _prime_asr_groups(audio_path, worker_config, cases, reference_text, rag_inline_text, status_callback)
+    finally:
+        _emit(status_callback, "Stopping ASR replicas before post-processing stage.")
+        stop_model_servers(managed_config, status_callback=status_callback, names=["asr"])
+
+    if _has_postprocess_cases(cases):
+        _emit(status_callback, "Starting post-processing replicas on all stage GPUs.")
+        ensure_model_servers(managed_config, status_callback=status_callback, names=["post"])
+    try:
+        return _run_conditions_parallel(
+            audio_path,
+            worker_config,
+            list(enumerate(cases)),
+            reference_text,
+            rag_inline_text,
+            status_callback,
+        )
+    finally:
+        if _has_postprocess_cases(cases):
+            _emit(status_callback, "Stopping post-processing replicas.")
+            stop_model_servers(managed_config, status_callback=status_callback, names=["post"])
+
+
+def _prime_asr_groups(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    cases: List[ExperimentCase],
+    reference_text: Optional[str],
+    rag_inline_text: str,
+    status_callback: Optional[StatusCallback],
+) -> None:
+    grouped = _group_indexed_cases_by_asr_cache_key(cases)
+    if not grouped:
+        return
+    workers = min(len(grouped), _effective_asr_worker_count(base_config))
+    _emit(status_callback, f"Priming ASR cache for {len(grouped)} group(s) with {workers} all-GPU ASR worker(s).")
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        for group_index, indexed_cases in enumerate(grouped.values()):
+            case = indexed_cases[0][1]
+            futures[
+                executor.submit(
+                    _prime_one_asr_group,
+                    audio_path,
+                    base_config,
+                    case,
+                    group_index,
+                    reference_text,
+                    rag_inline_text,
+                    status_callback,
+                )
+            ] = case
+        for future in as_completed(futures):
+            case = futures[future]
+            try:
+                future.result()
+                _emit(status_callback, f"ASR cache ready for group {case.condition.asr_group_key}.")
+            except Exception as exc:
+                _emit(status_callback, f"ASR cache priming failed for {case.case_id}: {exc}")
+
+
+def _has_postprocess_cases(cases: List[ExperimentCase]) -> bool:
+    return any(case.condition.enable_llm_postprocess for case in cases)
 
 
 def _condition_row_from_future(future, case: ExperimentCase, status_callback: Optional[StatusCallback]) -> Dict[str, Any]:
@@ -431,6 +523,16 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
         config.search_strength = 0.5
     elif not config.enable_search:
         config.search_strength = 0.0
+    if config.model_residency == "stage_replicas":
+        endpoints = _stage_server_base_urls(config)
+        if endpoints:
+            endpoint = endpoints[index % len(endpoints)]
+            config.asr_base_url = endpoint
+            config.post_base_url = endpoint
+        preprocess_gpus = _preprocess_gpus(config)
+        if preprocess_gpus:
+            config.preprocess_gpu = preprocess_gpus[index % len(preprocess_gpus)]
+        return config
     lanes = _matching_lanes(config.pipeline_lanes or [], config.asr_model, config.post_model)
     if lanes:
         lane = lanes[index % len(lanes)]
@@ -682,18 +784,42 @@ def _effective_worker_count(config: ExperimentConfig) -> int:
     requested = max(1, int(config.auto_experiment_parallelism or 1))
     if not config.auto_experiment_saturate_lanes:
         return requested
-    lane_count = max(1, len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]))
+    lane_count = _available_lane_count(config)
     chunk_workers = max(1, int(config.postprocess_parallelism or 1))
     return max(requested, lane_count * min(4, chunk_workers))
 
 
 def _effective_asr_worker_count(config: ExperimentConfig) -> int:
+    if config.model_residency == "stage_replicas":
+        return max(1, _available_lane_count(config))
     lane_count = len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict) and lane.get("asr_base_url")])
     if lane_count <= 0:
         lane_count = max(1, len(config.asr_base_urls or []))
     if not config.auto_experiment_saturate_lanes:
         return max(1, min(int(config.auto_experiment_parallelism or 1), lane_count))
     return max(1, lane_count)
+
+
+def _available_lane_count(config: ExperimentConfig) -> int:
+    if config.model_residency == "stage_replicas":
+        return max(1, len(_stage_server_base_urls(config)), len(_preprocess_gpus(config)))
+    return max(1, len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]))
+
+
+def _stage_server_base_urls(config: ExperimentConfig) -> List[str]:
+    return [
+        str(item).strip()
+        for item in (getattr(config, "stage_server_base_urls", []) or [])
+        if str(item).strip()
+    ]
+
+
+def _preprocess_gpus(config: ExperimentConfig) -> List[str]:
+    return [
+        str(item).strip()
+        for item in (getattr(config, "preprocess_gpus", []) or [])
+        if str(item).strip()
+    ]
 
 
 def _matching_lanes(lanes: List[Dict[str, Any]], asr_model: str, post_model: str) -> List[Dict[str, Any]]:

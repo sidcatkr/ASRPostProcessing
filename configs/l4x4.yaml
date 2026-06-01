@@ -10,6 +10,21 @@ asr_base_urls:
 post_base_urls:
   - http://127.0.0.1:18001/v1
   - http://127.0.0.1:18003/v1
+stage_server_base_urls:
+  - http://127.0.0.1:18000/v1
+  - http://127.0.0.1:18001/v1
+  - http://127.0.0.1:18002/v1
+  - http://127.0.0.1:18003/v1
+stage_server_gpus:
+  - "0"
+  - "1"
+  - "2"
+  - "3"
+preprocess_gpus:
+  - "0"
+  - "1"
+  - "2"
+  - "3"
 pipeline_lanes:
   - name: lane_a
     asr_base_url: http://127.0.0.1:18000/v1
@@ -30,10 +45,10 @@ asr_chunk_seconds: 120
 asr_chunk_padding_seconds: 0.5
 asr_silence_threshold_db: -35
 asr_min_silence_seconds: 0.6
-asr_context_chars: 360
-asr_chunk_parallelism: 2
+asr_context_chars: 0
+asr_chunk_parallelism: 4
 auto_start_model_servers: true
-model_residency: parallel
+model_residency: stage_replicas
 server_start_timeout_s: 1200
 server_shutdown_timeout_s: 45
 server_log_dir: outputs/model_servers_l4x4
@@ -108,6 +123,7 @@ cache_dir: outputs/cache
 enable_preprocess: false
 preprocess_model: none
 preprocess_strength: 0.0
+preprocess_gpu: "0"
 enable_noise_reduction: true
 noise_reduction_model: deepfilternet2
 noise_reduction_command: ""

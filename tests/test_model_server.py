@@ -8,6 +8,7 @@ from asrpostprocessing.model_server import (
     _PROCESSES,
     _default_command,
     _gpu_memory_utilization_for_spec,
+    _models_payload_contains,
     _server_specs,
     ensure_model_servers,
     stop_model_servers,
@@ -89,6 +90,43 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual([spec.stage for spec in specs], ["asr", "post", "asr", "post"])
         self.assertEqual([spec.gpu for spec in specs], ["0", "1", "2", "3"])
         self.assertEqual(specs[2].port, 18002)
+
+    def test_stage_replicas_create_asr_and_post_specs_on_each_gpu(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            model_residency="stage_replicas",
+            asr_backend="vllm_chat",
+            post_backend="vllm_openai",
+            stage_server_base_urls=[
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                "http://127.0.0.1:18002/v1",
+                "http://127.0.0.1:18003/v1",
+            ],
+            stage_server_gpus=["0", "1", "2", "3"],
+        )
+
+        specs = _server_specs(config)
+
+        self.assertEqual([spec.name for spec in specs], [
+            "asr_stage_0",
+            "post_stage_0",
+            "asr_stage_1",
+            "post_stage_1",
+            "asr_stage_2",
+            "post_stage_2",
+            "asr_stage_3",
+            "post_stage_3",
+        ])
+        self.assertEqual([spec.stage for spec in specs], ["asr", "post"] * 4)
+        self.assertEqual([spec.gpu for spec in specs], ["0", "0", "1", "1", "2", "2", "3", "3"])
+        self.assertEqual([spec.port for spec in specs if spec.stage == "asr"], [18000, 18001, 18002, 18003])
+
+    def test_models_payload_must_match_expected_model(self):
+        payload = {"data": [{"id": "Qwen/Qwen3-ASR-1.7B"}]}
+
+        self.assertTrue(_models_payload_contains(payload, "Qwen/Qwen3-ASR-1.7B"))
+        self.assertFalse(_models_payload_contains(payload, "Qwen/Qwen3.5-9B"))
 
     def test_adaptive_gpu_memory_utilization_uses_free_vram_without_overclaiming(self):
         config = ExperimentConfig(

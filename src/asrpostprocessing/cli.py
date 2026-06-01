@@ -300,7 +300,7 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auto-start-model-servers", action="store_true")
     parser.add_argument("--no-auto-start-model-servers", action="store_true")
     residency_group = parser.add_mutually_exclusive_group()
-    residency_group.add_argument("--model-residency", choices=["parallel", "sequential"])
+    residency_group.add_argument("--model-residency", choices=["parallel", "sequential", "stage_replicas"])
     residency_group.add_argument("--sequential-model-loading", action="store_true")
     residency_group.add_argument("--parallel-model-loading", action="store_true")
     parser.add_argument("--server-shutdown-timeout-s", type=float)

@@ -104,7 +104,7 @@ class PipelineRunner:
             self._emit("Building ASR keyword bias instruction.")
             keyword_instruction = build_keyword_bias_instruction(self.config.keywords, self.config.keyword_bias_weight)
 
-        if self._sequential_model_residency():
+        if self._stage_scoped_model_residency():
             self._emit("Starting ASR model server.")
             server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["asr"]))
         try:
@@ -115,7 +115,7 @@ class PipelineRunner:
             _append_gpu_sample(hardware_samples, "after_asr")
             self._emit(f"ASR complete: {len(raw.text)} transcript characters.")
         finally:
-            if self._sequential_model_residency():
+            if self._stage_scoped_model_residency():
                 server_statuses.extend(self._release_stage_model("asr"))
 
         stage_started = time.time()
@@ -196,13 +196,13 @@ class PipelineRunner:
         chunks = chunk_segments(raw.segments) if raw.segments else chunk_text(raw.text, self.config.chunk_max_chars, self.config.chunk_overlap)
         self._emit(f"Preparing LLM post-processing for {len(chunks)} chunk(s).")
         rag_index = build_rag_index(self.config) if self.config.enable_rag else None
-        if self._sequential_model_residency():
+        if self._stage_scoped_model_residency():
             self._emit("Starting post-processing model server.")
             server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["post"]))
         try:
             corrected_chunks, all_edits, all_context_ids, chunk_metadata = self._postprocess_chunks(chunks, rag_index)
         finally:
-            if self._sequential_model_residency():
+            if self._stage_scoped_model_residency():
                 server_statuses.extend(self._release_stage_model("post"))
 
         corrected_text = merge_overlapping_texts(corrected_chunks, max_overlap=self.config.chunk_overlap + 40)
@@ -326,6 +326,19 @@ class PipelineRunner:
         return config
 
     def _post_endpoint_pool(self) -> List[str]:
+        if self.config.model_residency == "stage_replicas":
+            endpoints = [
+                str(item).strip()
+                for item in (getattr(self.config, "stage_server_base_urls", []) or [])
+                if str(item).strip()
+            ]
+            if not endpoints:
+                endpoints = [self.config.post_base_url]
+            deduped: List[str] = []
+            for endpoint in endpoints:
+                if endpoint and endpoint not in deduped:
+                    deduped.append(endpoint)
+            return deduped
         lanes = getattr(self.config, "pipeline_lanes", []) or []
         lane_candidates = [
             lane
@@ -345,12 +358,15 @@ class PipelineRunner:
         return deduped
 
     def _initial_server_statuses(self) -> List[Dict[str, Any]]:
-        if self._sequential_model_residency():
+        if self._stage_scoped_model_residency():
             return []
         return [status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit)]
 
     def _sequential_model_residency(self) -> bool:
         return self.config.model_residency == "sequential"
+
+    def _stage_scoped_model_residency(self) -> bool:
+        return self.config.model_residency in {"sequential", "stage_replicas"}
 
     def _release_stage_model(self, name: str) -> List[Dict[str, Any]]:
         statuses: List[Dict[str, Any]] = []

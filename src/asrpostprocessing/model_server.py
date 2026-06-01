@@ -129,6 +129,44 @@ def stop_model_servers(
 def _server_specs(config: ExperimentConfig) -> List[ModelServerSpec]:
     specs: List[ModelServerSpec] = []
     log_dir = Path(config.server_log_dir)
+    if _stage_replicas(config):
+        for index, item in enumerate(_stage_server_pairs(config)):
+            base_url, gpu = item
+            if _uses_external_asr_server(config):
+                specs.append(
+                    _make_spec(
+                        f"asr_stage_{index}",
+                        "asr",
+                        config.asr_model,
+                        config.asr_backend,
+                        base_url,
+                        config.asr_server_host,
+                        gpu,
+                        config.asr_server_command,
+                        log_dir,
+                        config.server_gpu_memory_utilization,
+                        config.server_gpu_memory_utilization_max,
+                        config.server_gpu_memory_reserved_mb,
+                    )
+                )
+            if _uses_external_post_server(config):
+                specs.append(
+                    _make_spec(
+                        f"post_stage_{index}",
+                        "post",
+                        config.post_model,
+                        config.post_backend,
+                        base_url,
+                        config.post_server_host,
+                        gpu,
+                        config.post_server_command,
+                        log_dir,
+                        config.server_gpu_memory_utilization,
+                        config.server_gpu_memory_utilization_max,
+                        config.server_gpu_memory_reserved_mb,
+                    )
+                )
+        return specs
     lanes = _pipeline_lanes(config)
     if lanes:
         for lane in lanes:
@@ -284,6 +322,17 @@ def _pipeline_lanes(config: ExperimentConfig) -> List[Dict[str, object]]:
     return generated
 
 
+def _stage_replicas(config: ExperimentConfig) -> bool:
+    return str(getattr(config, "model_residency", "") or "").strip().lower() == "stage_replicas"
+
+
+def _stage_server_pairs(config: ExperimentConfig) -> List[Tuple[str, str]]:
+    base_urls = [str(url).strip() for url in (getattr(config, "stage_server_base_urls", []) or []) if str(url).strip()]
+    gpus = [str(gpu).strip() for gpu in (getattr(config, "stage_server_gpus", []) or []) if str(gpu).strip()]
+    count = min(len(base_urls), len(gpus))
+    return [(base_urls[index], gpus[index]) for index in range(count)]
+
+
 def _safe_name(value: str) -> str:
     normalized = (value or "lane").strip().lower().replace("-", "_")
     safe = "".join(char if char.isalnum() or char == "_" else "_" for char in normalized)
@@ -292,7 +341,7 @@ def _safe_name(value: str) -> str:
 
 def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallback]) -> ModelServerStatus | _PendingServer:
     key = _process_key(spec)
-    if _endpoint_ready(spec.base_url):
+    if _endpoint_ready(spec.base_url, spec.model):
         return ModelServerStatus(spec.name, spec.base_url, "ready", "endpoint already ready", log_path=spec.log_path)
 
     process = _PROCESSES.get(key)
@@ -494,7 +543,7 @@ def _with_nvidia_library_paths(current: str) -> str:
 def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional[subprocess.Popen]) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if _endpoint_ready(spec.base_url):
+        if _endpoint_ready(spec.base_url, spec.model):
             return
         if process is not None and process.poll() is not None:
             tail = _tail_log(spec.log_path)
@@ -549,14 +598,40 @@ def _stop_process(
         )
 
 
-def _endpoint_ready(base_url: str) -> bool:
+def _endpoint_ready(base_url: str, expected_model: str = "") -> bool:
     try:
         import requests  # type: ignore
 
         response = requests.get(base_url.rstrip("/") + "/models", timeout=3)
-        return 200 <= response.status_code < 300
+        if not 200 <= response.status_code < 300:
+            return False
+        if not expected_model:
+            return True
+        try:
+            payload = response.json()
+        except Exception:
+            return False
+        return _models_payload_contains(payload, expected_model)
     except Exception:
         return False
+
+
+def _models_payload_contains(payload: object, expected_model: str) -> bool:
+    expected = str(expected_model or "").strip()
+    if not expected:
+        return True
+    if not isinstance(payload, dict):
+        return False
+    items = payload.get("data")
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        values = [item.get("id"), item.get("root"), item.get("model")]
+        if any(str(value or "").strip() == expected for value in values):
+            return True
+    return False
 
 
 def _tcp_port_open(base_url: str) -> bool:

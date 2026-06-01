@@ -4,6 +4,8 @@ set -euo pipefail
 ASR_MODEL="${ASR_MODEL:-Qwen/Qwen3-ASR-1.7B}"
 POST_MODEL="${POST_MODEL:-Qwen/Qwen3.5-9B}"
 LANES="${LANES:-0:1:18000:18001,2:3:18002:18003}"
+STAGE_GPUS="${STAGE_GPUS:-0,1,2,3}"
+STAGE_PORTS="${STAGE_PORTS:-18000,18001,18002,18003}"
 ASR_MAX_MODEL_LEN="${ASR_MAX_MODEL_LEN:-65536}"
 POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-8192}"
 POST_MAX_NUM_SEQS="${POST_MAX_NUM_SEQS:-8}"
@@ -119,15 +121,39 @@ start_all() {
   wait "${pids[@]}"
 }
 
+start_stage() {
+  local stage="$1"
+  local pids=()
+  IFS=',' read -ra gpus <<< "$STAGE_GPUS"
+  IFS=',' read -ra ports <<< "$STAGE_PORTS"
+  if [[ "${#gpus[@]}" -ne "${#ports[@]}" ]]; then
+    echo "STAGE_GPUS and STAGE_PORTS must have the same length" >&2
+    exit 2
+  fi
+  for index in "${!gpus[@]}"; do
+    if [[ "$stage" == "asr" ]]; then
+      start_asr "${gpus[$index]}" "${ports[$index]}" &
+    else
+      start_post "${gpus[$index]}" "${ports[$index]}" &
+    fi
+    pids+=("$!")
+  done
+  trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM EXIT
+  wait "${pids[@]}"
+}
+
 case "${1:-all}" in
   asr-a) start_asr "${ASR_GPU:-0}" "${ASR_PORT:-18000}" ;;
   post-a) start_post "${POST_GPU:-1}" "${POST_PORT:-18001}" ;;
   asr-b) start_asr "${ASR_GPU:-2}" "${ASR_PORT:-18002}" ;;
   post-b) start_post "${POST_GPU:-3}" "${POST_PORT:-18003}" ;;
+  asr-stage|asr-all-gpus) start_stage asr ;;
+  post-stage|post-all-gpus) start_stage post ;;
   all|parallel) start_all ;;
   *)
-    echo "Usage: $0 {all|parallel|asr-a|post-a|asr-b|post-b}" >&2
+    echo "Usage: $0 {all|parallel|asr-a|post-a|asr-b|post-b|asr-stage|post-stage}" >&2
     echo "LANES format: asr_gpu:post_gpu:asr_port:post_port[,..]" >&2
+    echo "STAGE_GPUS/STAGE_PORTS format: gpu,gpu,... and port,port,..." >&2
     exit 2
     ;;
 esac

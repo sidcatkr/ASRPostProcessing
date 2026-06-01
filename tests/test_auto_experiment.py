@@ -130,13 +130,16 @@ class AutoExperimentTest(unittest.TestCase):
 
     def test_l4x4_config_loads_pipeline_lanes(self):
         config = load_config("configs/l4x4.yaml")
-        self.assertEqual(config.model_residency, "parallel")
+        self.assertEqual(config.model_residency, "stage_replicas")
         self.assertEqual(config.postprocess_parallelism, 8)
         self.assertEqual(config.auto_experiment_parallelism, 8)
         self.assertTrue(config.auto_experiment_saturate_lanes)
         self.assertEqual(len(config.pipeline_lanes), 2)
         self.assertEqual(config.pipeline_lanes[1]["asr_base_url"], "http://127.0.0.1:18002/v1")
         self.assertEqual(config.pipeline_lanes[1]["preprocess_gpu"], "3")
+        self.assertEqual(len(config.stage_server_base_urls), 4)
+        self.assertEqual(config.stage_server_gpus, ["0", "1", "2", "3"])
+        self.assertEqual(config.preprocess_gpus, ["0", "1", "2", "3"])
         self.assertTrue(config.asr_cache_enabled)
 
     def test_auto_experiment_runs_mock_core_with_cache(self):
@@ -150,7 +153,7 @@ class AutoExperimentTest(unittest.TestCase):
                 runs_dir=str(Path(tmp) / "runs"),
                 enable_keyword_bias=True,
                 enable_noise_reduction=False,
-                enable_volume_normalization=False,
+                enable_volume_normalization=True,
                 enable_llm_postprocess=True,
                 enable_rag=False,
                 enable_search=False,
@@ -272,6 +275,135 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertLess(first_condition_index, second_prime_done_index)
             self.assertIn("1", preprocess_gpus)
             self.assertIn("3", preprocess_gpus)
+
+    def test_stage_replicas_route_cases_across_all_stage_gpus(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                model_residency="stage_replicas",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=True,
+                enable_noise_reduction=False,
+                enable_volume_normalization=True,
+                enable_llm_postprocess=False,
+                auto_experiment_parallelism=4,
+                auto_experiment_saturate_lanes=True,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+                stage_server_base_urls=[
+                    "http://stage-0/v1",
+                    "http://stage-1/v1",
+                    "http://stage-2/v1",
+                    "http://stage-3/v1",
+                ],
+                stage_server_gpus=["0", "1", "2", "3"],
+                preprocess_gpus=["0", "1", "2", "3"],
+            )
+            seen = []
+
+            def fake_run_condition(audio_path, condition_config, case, reference_text, rag_inline_text):
+                seen.append((condition_config.asr_base_url, condition_config.post_base_url, condition_config.preprocess_gpu))
+                return {
+                    "case_id": case.case_id,
+                    "condition_id": case.condition.condition_id,
+                    "label": case.condition.label,
+                    "group": case.condition.group,
+                    "asr_model": case.asr_model,
+                    "post_model": case.post_model,
+                    "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+                    "cer_normalized_no_space": 0.0,
+                    "wer_eojeol": 0.0,
+                    "error": "",
+                }
+
+            with patch("asrpostprocessing.auto_experiment._prime_one_asr_group"), patch(
+                "asrpostprocessing.auto_experiment._run_condition", side_effect=fake_run_condition
+            ):
+                run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
+
+            self.assertEqual({item[0] for item in seen}, {"http://stage-0/v1", "http://stage-1/v1", "http://stage-2/v1", "http://stage-3/v1"})
+            self.assertEqual({item[0] for item in seen}, {item[1] for item in seen})
+            self.assertEqual({item[2] for item in seen}, {"0", "1", "2", "3"})
+
+    def test_stage_replicas_auto_experiment_reloads_all_gpu_stage_servers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                post_backend="vllm_openai",
+                model_residency="stage_replicas",
+                auto_start_model_servers=True,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=False,
+                enable_search=False,
+                stage_server_base_urls=[
+                    "http://stage-0/v1",
+                    "http://stage-1/v1",
+                    "http://stage-2/v1",
+                    "http://stage-3/v1",
+                ],
+                stage_server_gpus=["0", "1", "2", "3"],
+                preprocess_gpus=["0", "1", "2", "3"],
+            )
+            events = []
+
+            def fake_ensure(config, status_callback=None, names=None):
+                events.append(("ensure", tuple(names or ()), config.auto_start_model_servers))
+                return []
+
+            def fake_stop(config, status_callback=None, names=None):
+                events.append(("stop", tuple(names or ()), config.auto_start_model_servers))
+                return []
+
+            def fake_prime(audio_path, base_config, cases, reference_text, rag_inline_text, status_callback):
+                events.append(("prime", len(cases), base_config.auto_start_model_servers))
+
+            def fake_run(audio_path, base_config, indexed_cases, reference_text, rag_inline_text, status_callback):
+                events.append(("run", len(indexed_cases), base_config.auto_start_model_servers))
+                return [
+                    {
+                        "case_id": case.case_id,
+                        "condition_id": case.condition.condition_id,
+                        "label": case.condition.label,
+                        "group": case.condition.group,
+                        "asr_model": case.asr_model,
+                        "post_model": case.post_model,
+                        "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+                        "cer_normalized_no_space": 0.0,
+                        "wer_eojeol": 0.0,
+                        "error": "",
+                    }
+                    for _, case in indexed_cases
+                ]
+
+            with patch("asrpostprocessing.auto_experiment.ensure_model_servers", side_effect=fake_ensure), patch(
+                "asrpostprocessing.auto_experiment.stop_model_servers", side_effect=fake_stop
+            ), patch("asrpostprocessing.auto_experiment._prime_asr_groups", side_effect=fake_prime), patch(
+                "asrpostprocessing.auto_experiment._run_conditions_parallel", side_effect=fake_run
+            ):
+                run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
+
+            self.assertEqual(
+                events,
+                [
+                    ("ensure", ("asr",), True),
+                    ("prime", 2, False),
+                    ("stop", ("asr",), True),
+                    ("ensure", ("post",), True),
+                    ("run", 2, False),
+                    ("stop", ("post",), True),
+                ],
+            )
 
     def test_auto_experiment_can_expand_model_axis(self):
         with tempfile.TemporaryDirectory() as tmp:
