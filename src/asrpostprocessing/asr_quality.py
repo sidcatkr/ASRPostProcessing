@@ -342,7 +342,14 @@ def _phrase_instability(text: str, max_candidates: int = 900, max_clusters: int 
 def _near_phrase_score(left: Tuple[str, ...], right: Tuple[str, ...]) -> Optional[float]:
     if len(left) != len(right) or left == right:
         return None
-    if not any(left_token.lower() == right_token.lower() for left_token, right_token in zip(left, right)):
+    differing_tokens = [
+        (left_token.lower(), right_token.lower())
+        for left_token, right_token in zip(left, right)
+        if left_token.lower() != right_token.lower()
+    ]
+    if len(differing_tokens) != 1:
+        return None
+    if _is_affix_variant(*differing_tokens[0]):
         return None
     left_key = "".join(left).lower()
     right_key = "".join(right).lower()
@@ -353,6 +360,15 @@ def _near_phrase_score(left: Tuple[str, ...], right: Tuple[str, ...]) -> Optiona
     if 0 < distance <= 3 and ratio <= 0.35:
         return ratio
     return None
+
+
+def _is_affix_variant(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if len(longer) - len(shorter) > 2:
+        return False
+    return longer.startswith(shorter) or longer.endswith(shorter)
 
 
 def _levenshtein_distance(left: str, right: str) -> int:
