@@ -65,3 +65,61 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 모델 가중치: 전처리, 후처리에서 적용 가중치를 개별로 세밀하게 조절할 수 있어야 한다. 가중치 정도에 따라 변화하는 정확도를 측정하는 것도 실험 목적의 일부이기 때문이다.
 - RAG 입력: RAG를 사용하기 위한 데이터를 입력 및 업로드할 수 있는 창과 기능을 마련해야 한다.
 - Transcription Viewer: 진행 상황 및 RAW, Processed Transcript를 볼 수 있는 창을 마련해야 한다.
+
+## L4 x4 서버 운영
+
+기본 L4 x4 실행 설정은 `configs/l4x4.yaml`과 `scripts/serve_l4x4.sh`를 사용한다. 기본 lane 구성은 다음과 같다.
+
+    GPU 0: ASR  endpoint 18000
+    GPU 1: POST endpoint 18001
+    GPU 2: ASR  endpoint 18002
+    GPU 3: POST endpoint 18003
+
+Gradio UI의 primary ASR/POST GPU와 URL 입력값은 단일 서버 fallback이다. `configs/l4x4.yaml`로 UI를 띄우면 실제 병렬 실행 기준은 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이며, UI의 `Configured pipeline lanes`에서 현재 0-3 GPU lane 구성을 확인한다.
+
+### 서버 띄우기
+
+이미 열려 있는 tmux session을 사용한다.
+
+    tmux attach -t csgpu2
+
+repo root에서 conda/env를 활성화한 뒤 서버를 실행한다.
+
+    cd ~/hcilabs/ASRPostProcessing
+    conda activate asrpp
+    export ASRPP_PREPROCESS_VENV="$PWD/.venv-preprocess"
+    export PATH="$HOME/.local/bin:$PATH"
+    scripts/serve_l4x4.sh all
+
+`scripts/serve_l4x4.sh all`은 `LANES`에 정의된 모든 ASR/POST 서버를 한 번에 띄운다. 기본값은 `0:1:18000:18001,2:3:18002:18003`이고, 다른 GPU/port 구성이 필요하면 환경변수로 지정한다.
+
+    LANES=0:1:18000:18001,2:3:18002:18003 scripts/serve_l4x4.sh all
+
+서버가 이미 떠 있는지 확인하려면 다음을 사용한다.
+
+    PYTHONPATH=src python -m asrpostprocessing doctor --config configs/l4x4.yaml --check-endpoints
+
+    for port in 18000 18001 18002 18003; do
+      printf "metrics_%s=" "$port"
+      curl -fsS --max-time 3 "http://127.0.0.1:${port}/metrics" | wc -l
+    done
+
+    nvidia-smi --query-compute-apps=gpu_bus_id,pid,process_name,used_memory --format=csv,noheader,nounits
+
+### 서버 내리기
+
+가장 안전한 방법은 `scripts/serve_l4x4.sh all`을 실행한 tmux pane에서 `Ctrl-C`를 보내는 것이다. script가 자신이 띄운 ASR/POST child process에 종료 signal을 전달한다.
+
+tmux 밖에서 내릴 때는 다음을 사용한다.
+
+    tmux send-keys -t csgpu2 C-c
+
+내린 뒤 endpoint와 GPU process를 다시 확인한다.
+
+    for port in 18000 18001 18002 18003; do
+      curl -fsS --max-time 3 "http://127.0.0.1:${port}/models" || echo "port ${port} stopped"
+    done
+
+    nvidia-smi --query-compute-apps=gpu_bus_id,pid,process_name,used_memory --format=csv,noheader,nounits
+
+다른 사용자의 GPU process나 이 script가 띄우지 않은 process는 종료하지 않는다. 수동으로 띄운 model server를 정리해야 할 때도 먼저 `nvidia-smi`와 command line을 확인하고, 본인이 시작한 PID만 종료한다.

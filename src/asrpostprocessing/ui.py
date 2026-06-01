@@ -36,6 +36,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         initial_config = load_config(config_path)
 
     with gr.Blocks(title="ASR Post-Processing Lab") as demo:
+        initial_config_state = gr.State(value=initial_config.to_dict())
         gr.Markdown("# ASR Post-Processing Lab")
         with gr.Row():
             audio = gr.Audio(label="Audio", type="filepath", sources=["upload", "microphone"])
@@ -105,8 +106,8 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_model = gr.Textbox(value=initial_config.asr_model, label="ASR model")
                 post_model = gr.Textbox(value=initial_config.post_model, label="Post-processing LLM model")
             with gr.Row():
-                asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="ASR base URL")
-                post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Post-processing LLM API URL")
+                asr_base_url = gr.Textbox(value=initial_config.asr_base_url, label="Primary ASR base URL")
+                post_base_url = gr.Textbox(value=initial_config.post_base_url, label="Primary post-processing LLM API URL")
             with gr.Accordion("ASR request chunking", open=True):
                 with gr.Row():
                     asr_chunking_strategy = gr.Dropdown(
@@ -267,8 +268,8 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         label="Model residency",
                     )
                 with gr.Row():
-                    asr_server_gpu = gr.Textbox(value=initial_config.asr_server_gpu, label="ASR server GPU")
-                    post_server_gpu = gr.Textbox(value=initial_config.post_server_gpu, label="Post-processing server GPU")
+                    asr_server_gpu = gr.Textbox(value=initial_config.asr_server_gpu, label="Primary ASR server GPU")
+                    post_server_gpu = gr.Textbox(value=initial_config.post_server_gpu, label="Primary post-processing server GPU")
                     server_start_timeout_s = gr.Slider(
                         60,
                         1800,
@@ -287,6 +288,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     server_log_dir = gr.Textbox(value=initial_config.server_log_dir, label="Server log directory")
                     asr_server_host = gr.Textbox(value=initial_config.asr_server_host, label="ASR server bind host")
                     post_server_host = gr.Textbox(value=initial_config.post_server_host, label="Post-processing server bind host")
+                gr.JSON(label="Configured pipeline lanes", value=_pipeline_lane_summary(initial_config))
                 asr_server_command = gr.Textbox(
                     value=initial_config.asr_server_command,
                     label="Custom ASR server command",
@@ -412,6 +414,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 auto_experiment_rag_strengths,
                 auto_experiment_rag_top_ks,
                 auto_experiment_search_strengths,
+                initial_config_state,
             ],
             outputs=[
                 raw_output,
@@ -667,6 +670,7 @@ def run_from_ui(
     auto_experiment_rag_strengths: str = "",
     auto_experiment_rag_top_ks: str = "",
     auto_experiment_search_strengths: str = "",
+    base_config_state: Optional[Dict[str, Any]] = None,
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
@@ -674,73 +678,77 @@ def run_from_ui(
     if not audio_path:
         return "", "", "", {}, [], {}, [], "No audio input provided.", None, "", query_gpu_status()
     reference = _read_reference_from_ui(reference_text, reference_file)
-    config = ExperimentConfig(
-        asr_model=asr_model or "Qwen/Qwen3-ASR-1.7B",
-        post_model=post_model or "Qwen/Qwen3.5-9B",
-        asr_backend=asr_backend,
-        post_backend=post_backend,
-        asr_base_url=asr_base_url or "http://127.0.0.1:18000/v1",
-        post_base_url=post_base_url or "http://127.0.0.1:18001/v1",
-        asr_request_timeout_s=float(asr_request_timeout_s or 300.0),
-        asr_chunking_strategy=asr_chunking_strategy or "silence",
-        asr_chunk_seconds=float(asr_chunk_seconds or 120.0),
-        asr_chunk_padding_seconds=float(asr_chunk_padding_seconds or 0.0),
-        asr_silence_threshold_db=float(asr_silence_threshold_db or -35.0),
-        asr_min_silence_seconds=float(asr_min_silence_seconds or 0.6),
-        asr_context_chars=int(asr_context_chars or 0),
-        asr_chunk_parallelism=int(asr_chunk_parallelism or 1),
-        auto_start_model_servers=bool(auto_start_model_servers),
-        model_residency=model_residency or "parallel",
-        server_start_timeout_s=float(server_start_timeout_s),
-        server_shutdown_timeout_s=float(server_shutdown_timeout_s),
-        server_log_dir=server_log_dir or "outputs/model_servers",
-        asr_server_gpu=asr_server_gpu or "0",
-        post_server_gpu=post_server_gpu or "1",
-        asr_server_host=asr_server_host or "0.0.0.0",
-        post_server_host=post_server_host or "0.0.0.0",
-        asr_server_command=asr_server_command or "",
-        post_server_command=post_server_command or "",
-        enable_preprocess=False,
-        preprocess_model="none",
-        preprocess_strength=0.0,
-        postprocess_parallelism=int(postprocess_parallelism or 1),
-        auto_experiment_parallelism=int(auto_experiment_parallelism or 1),
-        auto_experiment_saturate_lanes=bool(auto_experiment_saturate_lanes),
-        auto_experiment_include_models=bool(auto_experiment_include_models),
-        auto_experiment_asr_models=_split_keywords(auto_experiment_asr_models),
-        auto_experiment_post_models=_split_keywords(auto_experiment_post_models),
-        auto_experiment_noise_models=_split_keywords(auto_experiment_noise_models),
-        auto_experiment_rag_embedding_models=_split_keywords(auto_experiment_rag_embedding_models),
-        auto_experiment_keyword_weights=_split_float_grid(auto_experiment_keyword_weights),
-        auto_experiment_noise_strengths=_split_float_grid(auto_experiment_noise_strengths),
-        auto_experiment_volume_strengths=_split_float_grid(auto_experiment_volume_strengths),
-        auto_experiment_postprocess_strengths=_split_float_grid(auto_experiment_postprocess_strengths),
-        auto_experiment_rag_strengths=_split_float_grid(auto_experiment_rag_strengths),
-        auto_experiment_rag_top_ks=_split_int_grid(auto_experiment_rag_top_ks),
-        auto_experiment_search_strengths=_split_float_grid(auto_experiment_search_strengths),
-        asr_cache_enabled=bool(enable_cache),
-        preprocess_cache_enabled=bool(enable_cache),
-        enable_noise_reduction=bool(enable_noise_reduction),
-        noise_reduction_model=noise_reduction_model or "none",
-        noise_reduction_strength=float(noise_reduction_strength),
-        enable_volume_normalization=bool(enable_volume_normalization),
-        volume_normalization_strength=float(volume_normalization_strength),
-        volume_target_dbfs=float(volume_target_dbfs),
-        enable_keyword_bias=bool(enable_keyword_bias),
-        keyword_bias_weight=float(keyword_bias_weight),
-        keywords=_split_keywords(keywords),
-        enable_llm_postprocess=bool(enable_llm),
-        postprocess_strength=float(postprocess_strength),
-        enable_rag=bool(enable_rag),
-        rag_strength=float(rag_strength),
-        rag_top_k=int(rag_top_k),
-        rag_inline_text=rag_text or "",
-        rag_files=_file_paths(rag_files),
-        enable_search=bool(enable_search),
-        search_strength=float(search_strength),
-        search_provider=search_provider or "duckduckgo",
-        search_endpoint=search_endpoint or "",
+    config_values = _config_from_ui_state(base_config_state).to_dict()
+    config_values.update(
+        {
+            "asr_model": asr_model or "Qwen/Qwen3-ASR-1.7B",
+            "post_model": post_model or "Qwen/Qwen3.5-9B",
+            "asr_backend": asr_backend,
+            "post_backend": post_backend,
+            "asr_base_url": asr_base_url or "http://127.0.0.1:18000/v1",
+            "post_base_url": post_base_url or "http://127.0.0.1:18001/v1",
+            "asr_request_timeout_s": float(asr_request_timeout_s or 300.0),
+            "asr_chunking_strategy": asr_chunking_strategy or "silence",
+            "asr_chunk_seconds": float(asr_chunk_seconds or 120.0),
+            "asr_chunk_padding_seconds": float(asr_chunk_padding_seconds or 0.0),
+            "asr_silence_threshold_db": float(asr_silence_threshold_db or -35.0),
+            "asr_min_silence_seconds": float(asr_min_silence_seconds or 0.6),
+            "asr_context_chars": int(asr_context_chars or 0),
+            "asr_chunk_parallelism": int(asr_chunk_parallelism or 1),
+            "auto_start_model_servers": bool(auto_start_model_servers),
+            "model_residency": model_residency or "parallel",
+            "server_start_timeout_s": float(server_start_timeout_s),
+            "server_shutdown_timeout_s": float(server_shutdown_timeout_s),
+            "server_log_dir": server_log_dir or "outputs/model_servers",
+            "asr_server_gpu": asr_server_gpu or "0",
+            "post_server_gpu": post_server_gpu or "1",
+            "asr_server_host": asr_server_host or "0.0.0.0",
+            "post_server_host": post_server_host or "0.0.0.0",
+            "asr_server_command": asr_server_command or "",
+            "post_server_command": post_server_command or "",
+            "enable_preprocess": False,
+            "preprocess_model": "none",
+            "preprocess_strength": 0.0,
+            "postprocess_parallelism": int(postprocess_parallelism or 1),
+            "auto_experiment_parallelism": int(auto_experiment_parallelism or 1),
+            "auto_experiment_saturate_lanes": bool(auto_experiment_saturate_lanes),
+            "auto_experiment_include_models": bool(auto_experiment_include_models),
+            "auto_experiment_asr_models": _split_keywords(auto_experiment_asr_models),
+            "auto_experiment_post_models": _split_keywords(auto_experiment_post_models),
+            "auto_experiment_noise_models": _split_keywords(auto_experiment_noise_models),
+            "auto_experiment_rag_embedding_models": _split_keywords(auto_experiment_rag_embedding_models),
+            "auto_experiment_keyword_weights": _split_float_grid(auto_experiment_keyword_weights),
+            "auto_experiment_noise_strengths": _split_float_grid(auto_experiment_noise_strengths),
+            "auto_experiment_volume_strengths": _split_float_grid(auto_experiment_volume_strengths),
+            "auto_experiment_postprocess_strengths": _split_float_grid(auto_experiment_postprocess_strengths),
+            "auto_experiment_rag_strengths": _split_float_grid(auto_experiment_rag_strengths),
+            "auto_experiment_rag_top_ks": _split_int_grid(auto_experiment_rag_top_ks),
+            "auto_experiment_search_strengths": _split_float_grid(auto_experiment_search_strengths),
+            "asr_cache_enabled": bool(enable_cache),
+            "preprocess_cache_enabled": bool(enable_cache),
+            "enable_noise_reduction": bool(enable_noise_reduction),
+            "noise_reduction_model": noise_reduction_model or "none",
+            "noise_reduction_strength": float(noise_reduction_strength),
+            "enable_volume_normalization": bool(enable_volume_normalization),
+            "volume_normalization_strength": float(volume_normalization_strength),
+            "volume_target_dbfs": float(volume_target_dbfs),
+            "enable_keyword_bias": bool(enable_keyword_bias),
+            "keyword_bias_weight": float(keyword_bias_weight),
+            "keywords": _split_keywords(keywords),
+            "enable_llm_postprocess": bool(enable_llm),
+            "postprocess_strength": float(postprocess_strength),
+            "enable_rag": bool(enable_rag),
+            "rag_strength": float(rag_strength),
+            "rag_top_k": int(rag_top_k),
+            "rag_inline_text": rag_text or "",
+            "rag_files": _file_paths(rag_files),
+            "enable_search": bool(enable_search),
+            "search_strength": float(search_strength),
+            "search_provider": search_provider or "duckduckgo",
+            "search_endpoint": search_endpoint or "",
+        }
     )
+    config = ExperimentConfig.from_mapping(config_values)
     if auto_experiment_mode:
         try:
             report = run_auto_experiment(
@@ -799,6 +807,7 @@ def run_from_ui(
         (
             f"Run ID: {output.run_id}\n"
             f"Model residency: {config.model_residency}\n"
+            f"{_format_pipeline_lanes(config)}"
             f"ASR chunking: {config.asr_chunking_strategy} "
             f"({config.asr_chunk_seconds:g}s, timeout {config.asr_request_timeout_s:g}s, "
             f"context {config.asr_context_chars} chars, workers {config.asr_chunk_parallelism})\n"
@@ -916,6 +925,61 @@ def _launch_kwargs(host: str, port: int, share: bool) -> dict:
     except Exception:
         pass
     return kwargs
+
+
+def _config_from_ui_state(value: Any) -> ExperimentConfig:
+    if isinstance(value, ExperimentConfig):
+        return ExperimentConfig.from_mapping(value.to_dict())
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return ExperimentConfig()
+    if isinstance(value, dict):
+        return ExperimentConfig.from_mapping(value)
+    return ExperimentConfig()
+
+
+def _pipeline_lane_summary(config: ExperimentConfig) -> Dict[str, Any]:
+    lanes = []
+    for lane in config.pipeline_lanes:
+        if not isinstance(lane, dict):
+            continue
+        lanes.append(
+            {
+                "name": lane.get("name", ""),
+                "asr_base_url": lane.get("asr_base_url", ""),
+                "post_base_url": lane.get("post_base_url", ""),
+                "asr_server_gpu": lane.get("asr_server_gpu", lane.get("asr_gpu", "")),
+                "post_server_gpu": lane.get("post_server_gpu", lane.get("post_gpu", "")),
+            }
+        )
+    return {
+        "primary": {
+            "asr_base_url": config.asr_base_url,
+            "post_base_url": config.post_base_url,
+            "asr_server_gpu": config.asr_server_gpu,
+            "post_server_gpu": config.post_server_gpu,
+        },
+        "asr_base_urls": list(config.asr_base_urls),
+        "post_base_urls": list(config.post_base_urls),
+        "pipeline_lanes": lanes,
+    }
+
+
+def _format_pipeline_lanes(config: ExperimentConfig) -> str:
+    lanes = _pipeline_lane_summary(config)["pipeline_lanes"]
+    if not lanes:
+        return ""
+    parts = []
+    for lane in lanes:
+        name = lane.get("name") or "lane"
+        asr_gpu = lane.get("asr_server_gpu") or "?"
+        post_gpu = lane.get("post_server_gpu") or "?"
+        asr_url = lane.get("asr_base_url") or "primary ASR"
+        post_url = lane.get("post_base_url") or "primary post"
+        parts.append(f"{name}: ASR GPU {asr_gpu} {asr_url} -> POST GPU {post_gpu} {post_url}")
+    return "Pipeline lanes: " + "; ".join(parts) + "\n"
 
 
 def _split_keywords(value: str) -> List[str]:

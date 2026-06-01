@@ -224,6 +224,82 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("diff", diff.lower())
             self.assertIn("available", gpu_status)
 
+    def test_ui_preserves_configured_pipeline_lanes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                asr_base_urls=["http://127.0.0.1:18000/v1", "http://127.0.0.1:18002/v1"],
+                post_base_urls=["http://127.0.0.1:18001/v1", "http://127.0.0.1:18003/v1"],
+                pipeline_lanes=[
+                    {
+                        "name": "lane_a",
+                        "asr_base_url": "http://127.0.0.1:18000/v1",
+                        "post_base_url": "http://127.0.0.1:18001/v1",
+                        "asr_server_gpu": "0",
+                        "post_server_gpu": "1",
+                    },
+                    {
+                        "name": "lane_b",
+                        "asr_base_url": "http://127.0.0.1:18002/v1",
+                        "post_base_url": "http://127.0.0.1:18003/v1",
+                        "asr_server_gpu": "2",
+                        "post_server_gpu": "3",
+                    },
+                ],
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+            raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
+                str(audio),
+                None,
+                "테스트 전사 문장입니다.",
+                None,
+                True,
+                0.5,
+                "",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+                base_config_state=base_config.to_dict(),
+            )
+            self.assertEqual(raw, "테스트 전사 문장입니다.")
+            self.assertIn("Pipeline lanes:", status)
+            self.assertIn("lane_b", status)
+            self.assertIn("GPU 2", status)
+            self.assertIn("http://127.0.0.1:18003/v1", status)
+
     def test_ui_stream_reports_progress_before_final_result(self):
         final_output = (
             "raw",
