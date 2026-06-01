@@ -135,7 +135,7 @@ class VLLMChatASRAdapter:
                 "backend": "vllm_chat",
                 "chunked": True,
                 "chunking_strategy": normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence")),
-                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0),
+                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0),
                 "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
                 "context_chars": context_chars,
                 "chunks": chunk_metadata,
@@ -345,7 +345,7 @@ def _asr_request_timeout_s(config: ExperimentConfig) -> float:
 def _asr_audio_chunks(audio_path: str, config: ExperimentConfig) -> List[ASRAudioChunk]:
     path = Path(audio_path)
     duration = _audio_duration_seconds(path)
-    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0))
+    chunk_seconds = max(5.0, float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0))
     strategy = normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence"))
     if strategy == "none":
         return [ASRAudioChunk(path=path, index=0, start_s=0.0, end_s=duration, method="none")]

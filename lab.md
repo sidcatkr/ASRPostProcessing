@@ -89,13 +89,13 @@ ASR audio chunking은 RAW transcript 후처리 chunking과 다른 단계이다. 
 지원하는 전략은 다음과 같다:
 
 - `asr_chunking_strategy: none`: 긴 오디오도 하나의 ASR 요청으로 보낸다. baseline 비교용이다.
-- `asr_chunking_strategy: fixed`: `asr_chunk_seconds` 단위로 ffmpeg segment를 만든다. 15초, 30초 fixed chunk 실험에 사용한다.
+- `asr_chunking_strategy: fixed`: `asr_chunk_seconds` 단위로 ffmpeg segment를 만든다. 30초, 60초, 120초 fixed chunk 실험에 사용한다.
 - `asr_chunking_strategy: silence`: ffmpeg `silencedetect`로 무음 구간을 찾고 speech boundary를 우선 보존해서 chunk를 만든다. 실패하거나 무음 구간을 찾지 못하면 fixed chunking으로 fallback한다.
 
 주요 설정값은 다음과 같다:
 
 - `asr_request_timeout_s`: ASR endpoint 전용 timeout. 기본값은 300초이다.
-- `asr_chunk_seconds`: ASR chunk 최대 길이. 기본값은 30초이다.
+- `asr_chunk_seconds`: ASR chunk 최대 길이. 기본값은 120초이다. `/tmp` 문제 샘플의 첫 120초 비교에서 30초 chunk보다 120초 요청이 오인식 후보와 지연 시간이 모두 적었다.
 - `asr_chunk_padding_seconds`: silence-aware chunk 양끝에 붙일 padding. 기본값은 0.5초이다.
 - `asr_silence_threshold_db`: 무음 판정 dB threshold. 기본값은 -35dB이다.
 - `asr_min_silence_seconds`: 무음으로 인정할 최소 길이. 기본값은 0.6초이다.
@@ -114,7 +114,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 
 현재 방식은 다음 점이 개선되었다:
 
-- baseline(`none`), fixed 15초, fixed 30초, silence-aware/VAD-style 30초를 같은 코드 경로에서 비교할 수 있다.
+- baseline(`none`), fixed 30초, fixed 60초, fixed 120초, silence-aware/VAD-style 120초를 같은 코드 경로에서 비교할 수 있다.
 - OpenAI-compatible vLLM endpoint와 direct qwen-asr package backend 모두에서 같은 chunk/context 조건을 비교할 수 있다.
 - silence-aware 전략은 가능한 한 무음 지점에서 chunk를 나누므로 말 중간 절단 위험을 줄인다.
 - padding을 추가해 chunk boundary 근처 음성이 잘리는 문제를 완화한다.
@@ -130,9 +130,10 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 권장 비교 조건은 다음과 같다:
 
 - No audio chunk: `asr_chunking_strategy=none`
-- Fixed 15s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=15`
 - Fixed 30s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=30`
-- Silence-aware 30s: `asr_chunking_strategy=silence`, `asr_chunk_seconds=30`
+- Fixed 60s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=60`
+- Fixed 120s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=120`
+- Silence-aware 120s: `asr_chunking_strategy=silence`, `asr_chunk_seconds=120`
 - Rolling context off/on: `asr_context_chars=0`과 기본값 `asr_context_chars=240`
 
 이 조건들을 같은 audio, 같은 keyword/RAG/post-process 설정에서 비교하면 audio chunking과 rolling context가 CER/WER과 timeout 안정성에 주는 영향을 분리해서 볼 수 있다.

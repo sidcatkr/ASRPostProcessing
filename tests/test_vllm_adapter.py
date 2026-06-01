@@ -62,7 +62,12 @@ class VLLMAdapterTest(unittest.TestCase):
                 payloads.append(payload)
                 return {"choices": [{"message": {"content": f"chunk {len(payloads)} text"}}]}
 
-            config = ExperimentConfig(asr_backend="vllm_chat", asr_base_url="http://127.0.0.1:18000/v1", asr_chunking_strategy="fixed")
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                asr_base_url="http://127.0.0.1:18000/v1",
+                asr_chunking_strategy="fixed",
+                asr_chunk_seconds=30.0,
+            )
             with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=75.0), patch(
                 "asrpostprocessing.adapters.vllm._split_audio_for_asr", return_value=chunks
             ), patch("asrpostprocessing.adapters.vllm._post_chat", side_effect=fake_post):
@@ -121,10 +126,10 @@ class VLLMAdapterTest(unittest.TestCase):
         output = "Duration: 01:02:03.45, start: 0.000000, bitrate: 192 kb/s"
         self.assertEqual(_duration_from_ffmpeg_output(output), 3723.45)
 
-    def test_default_asr_chunking_and_timeout_are_conservative_for_rtx5000(self):
+    def test_default_asr_chunking_prefers_longer_context_for_quality(self):
         config = ExperimentConfig()
         self.assertEqual(config.asr_chunking_strategy, "silence")
-        self.assertEqual(config.asr_chunk_seconds, 30.0)
+        self.assertEqual(config.asr_chunk_seconds, 120.0)
         self.assertEqual(config.asr_chunk_padding_seconds, 0.5)
         self.assertEqual(config.asr_request_timeout_s, 300.0)
         self.assertEqual(config.asr_context_chars, 240)

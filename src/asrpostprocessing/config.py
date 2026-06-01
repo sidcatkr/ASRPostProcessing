@@ -18,7 +18,7 @@ class ExperimentConfig:
     request_timeout_s: float = 120.0
     asr_request_timeout_s: float = 300.0
     asr_chunking_strategy: str = "silence"
-    asr_chunk_seconds: float = 30.0
+    asr_chunk_seconds: float = 120.0
     asr_chunk_padding_seconds: float = 0.5
     asr_silence_threshold_db: float = -35.0
     asr_min_silence_seconds: float = 0.6

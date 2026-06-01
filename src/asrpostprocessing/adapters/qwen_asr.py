@@ -118,7 +118,7 @@ class QwenASRPackageAdapter:
                 "backend": f"qwen_asr_{self.backend}",
                 "chunked": True,
                 "chunking_strategy": normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence")),
-                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0),
+                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0),
                 "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
                 "context_chars": context_chars,
                 "chunks": chunk_metadata,
