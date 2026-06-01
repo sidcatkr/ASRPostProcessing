@@ -119,7 +119,7 @@ class ASRQualityReportTest(unittest.TestCase):
         phrases = {item["text"] for item in report["phrase_instability"][0]["phrases"]}
         self.assertTrue(any(phrase.startswith("모표 용어를") for phrase in phrases))
         self.assertTrue(any(phrase.startswith("목표 용어를") for phrase in phrases))
-        self.assertTrue(any("near-duplicate phrase" in warning for warning in report["warnings"]))
+        self.assertFalse(any("near-duplicate phrase" in warning for warning in report["warnings"]))
 
     def test_report_ignores_common_suffix_phrase_variants(self):
         raw = TranscriptResult(language="ko", text="오늘은 우리가 이제 시작합니다. 내일은 우리는 이제 정리합니다.")

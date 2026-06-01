@@ -65,10 +65,6 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     if keyword_near_misses:
         warnings.append("ASR contains keyword near-miss candidate(s).")
         action_items.append("Enable keyword-guided post-processing or inspect the listed near-miss terms.")
-    if phrase_instability:
-        warnings.append("ASR transcript contains near-duplicate phrase variant candidate(s).")
-        action_items.append("Inspect repeated phrase variants and provide keywords or reference text for supported correction.")
-
     if not action_items:
         action_items.append("If quality is still poor, compare no-preprocess, fixed 120s, and silence-aware 120s ASR runs.")
 
@@ -131,9 +127,6 @@ def build_correction_quality_report(
         action_items.append("Check post-processing backend health, request timeout, and text chunk size.")
     if correction.risk in {"medium", "high"}:
         warnings.append(f"Post-processing returned {correction.risk} risk.")
-    if corrected_phrase_instability:
-        warnings.append("Corrected transcript still contains near-duplicate phrase variant candidate(s).")
-        action_items.append("Inspect repeated phrase variants and add supported keywords or reference text for evaluation.")
 
     if not action_items:
         action_items.append("Use reference text with CER/WER evaluation for final quality judgment.")
