@@ -2,7 +2,8 @@ import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
 
-from asrpostprocessing.sweep import _condition_grid, analyze_sweep, shard_manifest
+from asrpostprocessing.config import ExperimentConfig
+from asrpostprocessing.sweep import _condition_grid, _sweep_work_items, analyze_sweep, shard_manifest
 
 
 class SweepAnalysisTest(unittest.TestCase):
@@ -90,6 +91,86 @@ class SweepAnalysisTest(unittest.TestCase):
             self.assertIn("a.wav", paths[0].read_text(encoding="utf-8"))
             self.assertIn("c.wav", paths[0].read_text(encoding="utf-8"))
             self.assertIn("b.wav", paths[1].read_text(encoding="utf-8"))
+
+    def test_analysis_groups_results_by_subset_and_tags(self):
+        rows = [
+            {
+                "audio": "clean.wav",
+                "subset": "clean_speech",
+                "condition": "A_raw_asr",
+                "cer_normalized_no_space": 0.2,
+                "wer_eojeol": 0.2,
+                "semantic_similarity": 1.0,
+                "latency_ms": 1.0,
+            },
+            {
+                "audio": "clean.wav",
+                "subset": "clean_speech",
+                "condition": "B1_noise_reduction_raw_asr",
+                "noise_reduction_strength": 0.5,
+                "cer_normalized_no_space": 0.3,
+                "wer_eojeol": 0.3,
+                "semantic_similarity": 1.0,
+                "latency_ms": 1.0,
+            },
+            {
+                "audio": "tech.wav",
+                "tags": "technical_terms,code_switching_ko_en",
+                "condition": "A_raw_asr",
+                "cer_normalized_no_space": 0.4,
+                "wer_eojeol": 0.4,
+                "semantic_similarity": 1.0,
+                "latency_ms": 1.0,
+            },
+        ]
+
+        analysis = analyze_sweep(rows)
+
+        self.assertIn("clean_speech", analysis["by_subset"])
+        self.assertIn("technical_terms", analysis["by_subset"])
+        self.assertIn("code_switching_ko_en", analysis["by_subset"])
+        self.assertEqual(
+            analysis["by_subset"]["clean_speech"]["over_preprocess_cases"][0]["over_preprocess_reason"],
+            "worse_than_raw_asr",
+        )
+        self.assertEqual(analysis["by_subset"]["technical_terms"]["num_rows"], 1)
+
+    def test_sweep_lane_metadata_applies_gpu_ids(self):
+        config = ExperimentConfig(
+            pipeline_lanes=[
+                {
+                    "name": "lane_a",
+                    "asr_base_url": "http://127.0.0.1:18000/v1",
+                    "post_base_url": "http://127.0.0.1:18001/v1",
+                    "asr_server_gpu": "0",
+                    "post_server_gpu": "1",
+                },
+                {
+                    "name": "lane_b",
+                    "asr_base_url": "http://127.0.0.1:18002/v1",
+                    "post_base_url": "http://127.0.0.1:18003/v1",
+                    "asr_server_gpu": "2",
+                    "post_server_gpu": "3",
+                },
+            ]
+        )
+
+        items = _sweep_work_items(
+            [{"audio": "a.wav", "subset": "clean_speech"}],
+            config,
+            keyword_weights=[0.0],
+            rag_strengths=[0.0],
+            post_strengths=[0.25],
+            noise_strengths=[0.25],
+            volume_strengths=[0.25],
+        )
+
+        self.assertEqual(items[0]["lane"]["lane_id"], "lane_a")
+        self.assertEqual(items[0]["config"].asr_server_gpu, "0")
+        self.assertEqual(items[0]["config"].post_server_gpu, "1")
+        self.assertEqual(items[1]["lane"]["lane_id"], "lane_b")
+        self.assertEqual(items[1]["config"].asr_server_gpu, "2")
+        self.assertEqual(items[1]["config"].post_server_gpu, "3")
 
     def test_notes_conditions_are_generated(self):
         rows = list(_condition_grid([0.0, 0.5], [0.0, 0.5], [0.25], [0.5], [0.5]))

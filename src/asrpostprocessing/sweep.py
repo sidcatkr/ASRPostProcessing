@@ -66,7 +66,12 @@ def run_sweep(
             "run_id",
             "condition",
             "audio",
+            "subset",
+            "tags",
             "lane_id",
+            "gpu_id",
+            "asr_gpu_id",
+            "post_gpu_id",
             "asr_endpoint",
             "post_endpoint",
             "post_endpoint_pool",
@@ -233,7 +238,12 @@ def _run_sweep_item(item: Dict[str, Any]) -> Dict[str, object]:
         "run_id": output.run_id,
         "condition": item["condition"],
         "audio": row["audio"],
+        "subset": row.get("subset", ""),
+        "tags": row.get("tags", ""),
         "lane_id": (item.get("lane") or {}).get("lane_id", ""),
+        "gpu_id": _gpu_pair(config),
+        "asr_gpu_id": config.asr_server_gpu,
+        "post_gpu_id": config.post_server_gpu,
         "asr_endpoint": config.asr_base_url,
         "post_endpoint": config.post_base_url,
         "post_endpoint_pool": ",".join(_post_endpoint_pool(config)),
@@ -308,6 +318,8 @@ def _lane_for_case(config: ExperimentConfig, case_index: int) -> Dict[str, str]:
             "lane_id": str(lane.get("name") or lane.get("id") or f"lane_{index}"),
             "asr_base_url": str(lane.get("asr_base_url") or ""),
             "post_base_url": str(lane.get("post_base_url") or ""),
+            "asr_server_gpu": str(lane.get("asr_server_gpu") or ""),
+            "post_server_gpu": str(lane.get("post_server_gpu") or ""),
         }
     asr_urls = [str(url).strip() for url in (config.asr_base_urls or []) if str(url).strip()]
     post_urls = [str(url).strip() for url in (config.post_base_urls or []) if str(url).strip()]
@@ -319,6 +331,8 @@ def _lane_for_case(config: ExperimentConfig, case_index: int) -> Dict[str, str]:
         "lane_id": f"endpoint_{index}",
         "asr_base_url": asr_urls[index % len(asr_urls)] if asr_urls else "",
         "post_base_url": post_urls[index % len(post_urls)] if post_urls else "",
+        "asr_server_gpu": config.asr_server_gpu,
+        "post_server_gpu": config.post_server_gpu,
     }
 
 
@@ -327,6 +341,15 @@ def _apply_lane_to_config(config: ExperimentConfig, lane: Dict[str, str]) -> Non
         config.asr_base_url = lane["asr_base_url"]
     if lane.get("post_base_url"):
         config.post_base_url = lane["post_base_url"]
+    if lane.get("asr_server_gpu"):
+        config.asr_server_gpu = lane["asr_server_gpu"]
+    if lane.get("post_server_gpu"):
+        config.post_server_gpu = lane["post_server_gpu"]
+
+
+def _gpu_pair(config: ExperimentConfig) -> str:
+    values = [str(config.asr_server_gpu or "").strip(), str(config.post_server_gpu or "").strip()]
+    return ",".join(value for value in values if value)
 
 
 def _post_endpoint_pool(config: ExperimentConfig) -> List[str]:
@@ -445,6 +468,12 @@ def _config_for_condition(
 
 
 def analyze_sweep(rows: List[Dict[str, object]]) -> Dict[str, object]:
+    analysis = _analyze_sweep_core(rows)
+    analysis["by_subset"] = _analyze_sweep_by_subset(rows)
+    return analysis
+
+
+def _analyze_sweep_core(rows: List[Dict[str, object]]) -> Dict[str, object]:
     comparable = [row for row in rows if _metric(row, "cer_normalized_no_space") is not None]
     best = _best_by(comparable, "cer_normalized_no_space")
     best_by_wer = _best_by(comparable, "wer_eojeol")
@@ -517,6 +546,31 @@ def analyze_sweep(rows: List[Dict[str, object]]) -> Dict[str, object]:
         "num_rows": len(rows),
         "num_comparable_rows": len(comparable),
     }
+
+
+def _analyze_sweep_by_subset(rows: List[Dict[str, object]]) -> Dict[str, object]:
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for row in rows:
+        for subset in _subset_values(row):
+            grouped.setdefault(subset, []).append(row)
+    return {subset: _analyze_sweep_core(group_rows) for subset, group_rows in sorted(grouped.items())}
+
+
+def _subset_values(row: Dict[str, object]) -> List[str]:
+    values: List[str] = []
+    for key in ("subset", "split", "tags"):
+        raw_value = row.get(key)
+        if raw_value in {"", None}:
+            continue
+        for value in _split_subset_value(str(raw_value)):
+            if value and value not in values:
+                values.append(value)
+    return values or ["unspecified"]
+
+
+def _split_subset_value(value: str) -> List[str]:
+    normalized = value.replace(";", ",").replace("|", ",")
+    return [part.strip() for part in normalized.split(",") if part.strip()]
 
 
 def _metric(row: Dict[str, object], key: str):
