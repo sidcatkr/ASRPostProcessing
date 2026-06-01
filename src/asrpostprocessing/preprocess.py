@@ -227,23 +227,37 @@ def _normalize_wav(audio_path: str, config: ExperimentConfig) -> PreprocessResul
                 metadata={"rms": rms},
             )
         target_rms = max(1, int(32767 * (10 ** (float(config.volume_target_dbfs) / 20.0))))
-        factor = 1.0 + ((target_rms / float(rms)) - 1.0) * strength
+        requested_factor = 1.0 + ((target_rms / float(rms)) - 1.0) * strength
+        peak_abs = _pcm16_peak_abs(frames)
+        peak_limit = int(32767 * 0.98)
+        peak_limited = False
+        factor = requested_factor
+        if peak_abs > 0:
+            max_factor_without_clipping = peak_limit / float(peak_abs)
+            if factor > max_factor_without_clipping:
+                factor = max_factor_without_clipping
+                peak_limited = True
         normalized, clipped_samples = _pcm16_mul(frames, factor)
         with wave.open(str(output_path), "wb") as writer:
             writer.setparams(params)
             writer.writeframes(normalized)
+        warnings = ["Volume normalization gain was peak-limited to avoid clipping."] if peak_limited else []
         metadata = {
             "model": "volume_normalization",
             "input_rms": rms,
+            "input_peak": peak_abs,
             "target_rms": target_rms,
             "target_dbfs": float(config.volume_target_dbfs),
             "strength": strength,
+            "requested_gain_factor": requested_factor,
             "gain_factor": factor,
+            "peak_limited": peak_limited,
+            "peak_limit": peak_limit,
             "clipped_samples": clipped_samples,
             "converted_input_path": str(input_path) if str(input_path) != audio_path else "",
         }
         metadata.update(_wav_metadata(output_path))
-        return PreprocessResult(audio_path=str(output_path), applied=True, metadata=metadata)
+        return PreprocessResult(audio_path=str(output_path), applied=True, warnings=warnings, metadata=metadata)
     except Exception as exc:
         return PreprocessResult(
             audio_path=audio_path,
@@ -353,6 +367,13 @@ def _pcm16_mul(frames: bytes, factor: float) -> tuple[bytes, int]:
             clipped += 1
         samples[index] = clipped_value
     return samples.tobytes(), clipped
+
+
+def _pcm16_peak_abs(frames: bytes) -> int:
+    samples = _pcm16_samples(frames)
+    if not samples:
+        return 0
+    return max(abs(sample) for sample in samples)
 
 
 def _pcm16_samples(frames: bytes) -> array:

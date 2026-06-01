@@ -84,6 +84,25 @@ class PreprocessTest(unittest.TestCase):
             self.assertEqual(result.steps[0]["step"], "volume_normalization")
             self.assertGreater(result.steps[0]["metadata"]["target_rms"], 0)
 
+    def test_volume_normalization_peak_limits_gain_to_avoid_clipping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.wav"
+            _write_pcm16_wav(source, ([100, -100] * 1000) + [30000])
+            config = ExperimentConfig(
+                enable_volume_normalization=True,
+                volume_normalization_strength=1.0,
+                volume_target_dbfs=-20,
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+            result = preprocess_audio(str(source), config)
+
+            metadata = result.steps[0]["metadata"]
+            self.assertTrue(result.applied)
+            self.assertTrue(metadata["peak_limited"])
+            self.assertLess(metadata["gain_factor"], metadata["requested_gain_factor"])
+            self.assertEqual(metadata["clipped_samples"], 0)
+            self.assertLessEqual(_read_wav_peak(Path(result.audio_path)), metadata["peak_limit"])
+
     @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for compressed audio conversion")
     def test_volume_normalization_converts_non_wav_without_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -157,6 +176,15 @@ def _read_wav_info(path: Path):
             "frames": frames,
             "duration_seconds": frames / float(rate) if rate else 0.0,
         }
+
+
+def _read_wav_peak(path: Path):
+    with wave.open(str(path), "rb") as handle:
+        frames = handle.readframes(handle.getnframes())
+    if not frames:
+        return 0
+    samples = [int.from_bytes(frames[index : index + 2], "little", signed=True) for index in range(0, len(frames), 2)]
+    return max(abs(sample) for sample in samples)
 
 
 if __name__ == "__main__":

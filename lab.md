@@ -73,6 +73,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - Qwen3-ASR-1.7B ASR 서버와 Qwen3.5-9B 후처리 서버를 자동 시작하거나, 이미 떠 있는 서버에 연결할 수 있다.
 - 서버 구동 방식은 parallel residency와 sequential residency를 지원한다.
 - 전처리 preview에서 volume normalization과 noise reduction 선택 상태를 확인할 수 있다.
+- Volume normalization은 peak를 기준으로 gain을 제한해 ASR 입력 전에 clipping이 새로 생기지 않도록 한다.
 - Keyword Bias, LLM 후처리, RAG, Search를 각각 독립적으로 켜고 끌 수 있다.
 - RAW transcript, corrected transcript, diff, CER/WER 계열 metric, edit list, preprocess 결과, server status를 UI에서 확인할 수 있다.
 - 실행 중 GPU/VRAM snapshot과 최근 진행 이벤트를 표시한다.
@@ -116,6 +117,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - silence-aware 전략은 가능한 한 무음 지점에서 chunk를 나누므로 말 중간 절단 위험을 줄인다.
 - padding을 추가해 chunk boundary 근처 음성이 잘리는 문제를 완화한다.
 - 이전 chunk transcript를 bounded rolling context로 전달해 강의식 장문 오디오에서 주제와 문장 흐름이 끊기는 문제를 완화한다.
+- 전처리에서 볼륨을 키울 때 peak-limited gain을 사용해 clipped sample이 ASR 품질을 망치는 위험을 줄인다.
 - silence detection이 실패해도 fixed chunking으로 fallback하므로 실험 실행이 중단되지 않는다.
 - ASR 전용 timeout을 둬서 후처리 LLM timeout과 ASR timeout을 별도로 조정할 수 있다.
 - UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.
