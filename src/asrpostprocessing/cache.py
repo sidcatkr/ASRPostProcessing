@@ -3,10 +3,26 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from .schemas import TranscriptResult, TranscriptSegment
+
+
+@dataclass(frozen=True)
+class CachedFile:
+    source_path: str
+    cached_path: str
+    sha256: str
+    size_bytes: int
+    cache_hit: bool
+    link_type: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 def file_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
@@ -31,6 +47,49 @@ def cache_json_path(cache_dir: str | Path, namespace: str, key: str) -> Path:
     return path
 
 
+def cache_file_by_sha256(source_path: str | Path, cache_dir: str | Path, namespace: str = "files") -> CachedFile:
+    source = Path(source_path)
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(str(source))
+    digest = file_sha256(source)
+    size_bytes = source.stat().st_size
+    suffix = _safe_suffix(source.suffix)
+    target_dir = Path(cache_dir) / namespace / digest[:2]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{digest}{suffix}"
+    if target.exists() and target.stat().st_size == size_bytes:
+        return CachedFile(
+            source_path=str(source),
+            cached_path=str(target),
+            sha256=digest,
+            size_bytes=size_bytes,
+            cache_hit=True,
+            link_type="existing",
+        )
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    if tmp.exists():
+        tmp.unlink()
+    link_type = "copy"
+    try:
+        os.link(source, tmp)
+        link_type = "hardlink"
+    except OSError:
+        shutil.copy2(source, tmp)
+    try:
+        tmp.replace(target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return CachedFile(
+        source_path=str(source),
+        cached_path=str(target),
+        sha256=digest,
+        size_bytes=size_bytes,
+        cache_hit=False,
+        link_type=link_type,
+    )
+
+
 def read_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -45,6 +104,14 @@ def write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _safe_suffix(value: str) -> str:
+    suffix = (value or "").strip().lower()
+    if not suffix.startswith("."):
+        return ".bin"
+    safe = "." + "".join(char for char in suffix[1:] if char.isalnum())
+    return safe if len(safe) > 1 else ".bin"
 
 
 def transcript_from_dict(payload: Dict[str, Any]) -> TranscriptResult:

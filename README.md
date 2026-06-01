@@ -77,6 +77,10 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 
 Gradio UI의 primary ASR/POST GPU와 URL 입력값은 단일 서버 fallback이다. `configs/l4x4.yaml`로 UI를 띄우면 실제 stage 실행 기준은 `stage_server_base_urls`, `stage_server_gpus`, `preprocess_gpus`이다. `preprocess_gpu`는 DeepFilterNet/custom/RNNoise subprocess에 `CUDA_VISIBLE_DEVICES`로 전달되어 전처리 stage도 GPU pool에 분산된다.
 
+`auto_experiment_saturate_lanes`가 켜져 있으면 Auto Experiment뿐 아니라 일반 Run에서도 stage/pipeline lane 수를 기준으로 ASR chunk worker, postprocess worker, condition worker를 자동 보정한다. ASR rolling context가 꺼져 있는 처리량 우선 설정에서는 audio chunk가 모든 ASR endpoint에 분산된다.
+
+Gradio로 업로드한 큰 오디오 파일은 `upload_cache_enabled: true`일 때 `upload_cache_dir` 아래 content-addressed cache로 고정된다. 같은 파일을 다시 실행하면 Gradio 임시 업로드 경로가 아니라 cache hit 경로를 사용하므로 큰 파일 재전송, 임시 파일 삭제, 반복 실행 I/O 낭비를 줄일 수 있다.
+
 ### 서버 띄우기
 
 이미 열려 있는 tmux session을 사용한다.

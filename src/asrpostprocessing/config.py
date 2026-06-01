@@ -70,6 +70,8 @@ class ExperimentConfig:
     asr_cache_enabled: bool = False
     preprocess_cache_enabled: bool = False
     cache_dir: str = "outputs/cache"
+    upload_cache_enabled: bool = True
+    upload_cache_dir: str = "outputs/upload_cache"
 
     enable_preprocess: bool = False
     preprocess_model: str = "none"
@@ -192,6 +194,8 @@ class ExperimentConfig:
             config.auto_experiment_search_strengths,
             DEFAULT_AUTO_EXPERIMENT_STRENGTHS,
         )
+        config.upload_cache_enabled = bool(config.upload_cache_enabled)
+        config.upload_cache_dir = str(config.upload_cache_dir or "outputs/upload_cache")
         return config
 
 

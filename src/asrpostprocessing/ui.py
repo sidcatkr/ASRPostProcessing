@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import shutil
 import time
 from html import escape
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from .auto_experiment import run_auto_experiment
+from .cache import cache_file_by_sha256
 from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
@@ -584,9 +586,6 @@ def preview_preprocessed_audio_from_ui(
     volume_normalization_strength: float,
     volume_target_dbfs: float,
 ) -> Tuple[Optional[str], str, dict, str]:
-    audio_path = _resolve_audio_path(audio_path, large_audio_file)
-    if not audio_path:
-        return None, "", {}, "No audio input provided."
     config = _preprocess_config_from_ui(
         enable_noise_reduction,
         noise_reduction_model,
@@ -595,6 +594,9 @@ def preview_preprocessed_audio_from_ui(
         volume_normalization_strength,
         volume_target_dbfs,
     )
+    audio_path, upload_cache = _resolve_audio_input(audio_path, large_audio_file, config)
+    if not audio_path:
+        return None, "", {}, "No audio input provided."
     try:
         result = preprocess_audio(audio_path, config)
     except Exception as exc:
@@ -607,6 +609,9 @@ def preview_preprocessed_audio_from_ui(
         status = "Preprocessing could not be applied; previewing the input audio."
     else:
         status = "No preprocessing selected; previewing the input audio."
+    upload_cache_status = _format_upload_cache_status(upload_cache)
+    if upload_cache_status:
+        status = f"{upload_cache_status}{status}"
     if result.warnings:
         status += "\n" + "\n".join(result.warnings)
     return preview_path, preview_html, result.to_dict(), status
@@ -684,10 +689,6 @@ def run_from_ui(
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
-    audio_path = _resolve_audio_path(audio_path, large_audio_file)
-    if not audio_path:
-        return "", "", "", {}, [], {}, [], "No audio input provided.", None, "", query_gpu_status()
-    reference = _read_reference_from_ui(reference_text, reference_file)
     config_values = _config_from_ui_state(base_config_state).to_dict()
     config_values.update(
         {
@@ -759,6 +760,16 @@ def run_from_ui(
         }
     )
     config = ExperimentConfig.from_mapping(config_values)
+    audio_path, upload_cache = _resolve_audio_input(audio_path, large_audio_file, config)
+    if not audio_path:
+        return "", "", "", {}, [], {}, [], "No audio input provided.", None, "", query_gpu_status()
+    reference = _read_reference_from_ui(reference_text, reference_file, audio_path, upload_cache)
+    upload_cache_status = _format_upload_cache_status(upload_cache)
+    if upload_cache_status and status_callback:
+        status_callback(upload_cache_status.strip())
+    for message in _apply_runtime_saturation(config):
+        if status_callback:
+            status_callback(message)
     if auto_experiment_mode:
         try:
             report = run_auto_experiment(
@@ -771,15 +782,19 @@ def run_from_ui(
             )
         except Exception as exc:
             return "", "", "", {}, [], {}, [], f"Auto experiment failed: {exc}", None, "", query_gpu_status()
+        metrics_payload = dict(report.get("analysis", {}))
+        if not reference:
+            metrics_payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
         return (
             "",
             "",
-            "",
-            report.get("analysis", {}),
+            _auto_experiment_diff_html(report, reference),
+            metrics_payload,
             [],
             {"auto_experiment": True, "condition_count": report.get("condition_count")},
             [],
             (
+                f"{upload_cache_status}"
                 f"Auto Experiment ID: {report['run_id']}\n"
                 f"Coverage: {report['mode']}\n"
                 f"Conditions: {report['condition_count']}\n"
@@ -806,15 +821,17 @@ def run_from_ui(
         return "", "", "", {}, [], {}, [], f"Run failed: {exc}{hint}", None, "", query_gpu_status()
     server_lines = _format_server_statuses(output.server_statuses)
     preview_path = _preview_audio_path(output.preprocess)
+    metrics_payload = _metrics_payload(output.metrics.to_dict(), reference)
     return (
         output.raw.text,
         output.correction.corrected_text,
-        output.diff_html or make_diff_html(output.raw.text, output.correction.corrected_text),
-        output.metrics.to_dict(),
+        _display_diff_html(reference, output.raw.text, output.correction.corrected_text),
+        metrics_payload,
         [edit.to_dict() for edit in output.correction.edits],
         output.preprocess,
         output.server_statuses,
         (
+            f"{upload_cache_status}"
             f"Run ID: {output.run_id}\n"
             f"Model residency: {config.model_residency}\n"
             f"{_format_pipeline_lanes(config)}"
@@ -902,6 +919,66 @@ def _preprocess_duration(preprocess: dict) -> Optional[float]:
     return None
 
 
+def _display_diff_html(reference_text: Optional[str], raw_text: str, corrected_text: str) -> str:
+    sections: List[str] = []
+    if reference_text:
+        sections.append(
+            _diff_section(
+                "Reference -> Corrected",
+                make_diff_html(reference_text, corrected_text, "Reference", "Corrected"),
+            )
+        )
+    if not reference_text or raw_text != corrected_text:
+        sections.append(_diff_section("Raw -> Corrected", make_diff_html(raw_text, corrected_text, "Raw", "Corrected")))
+    if not sections:
+        sections.append(_diff_section("Raw -> Corrected", make_diff_html(raw_text, corrected_text, "Raw", "Corrected")))
+    return '<div class="asrpp-diff-stack">' + "\n".join(sections) + "</div>"
+
+
+def _diff_section(title: str, body: str) -> str:
+    return (
+        '<section class="asrpp-diff-section">'
+        f'<h3 style="font-size:14px;margin:8px 0 6px 0;">{escape(title)}</h3>'
+        f"{body}"
+        "</section>"
+    )
+
+
+def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[str]) -> str:
+    analysis = report.get("analysis") if isinstance(report.get("analysis"), dict) else {}
+    best = analysis.get("best_by_cer") or analysis.get("best_by_wer") or analysis.get("baseline")
+    lines = [
+        '<div class="asrpp-auto-diff-summary">',
+        "<h3>Auto Experiment Diff</h3>",
+    ]
+    if not reference_text:
+        lines.append("<p>CER/WER and reference diff require a reference transcript or .txt reference file.</p>")
+    if isinstance(best, dict) and best:
+        lines.append(
+            "<p>"
+            f"Best/comparable case: {escape(str(best.get('case_id') or best.get('condition_id') or ''))} "
+            f"CER={escape(str(best.get('cer_normalized_no_space', '')))} "
+            f"WER={escape(str(best.get('wer_eojeol', '')))}"
+            "</p>"
+        )
+        output_dir = best.get("output_dir")
+        if output_dir:
+            lines.append(f"<p>Per-case diff artifact: {escape(str(Path(str(output_dir)) / 'diff.html'))}</p>")
+    else:
+        lines.append("<p>No comparable row is available yet. Check the summary CSV after the run completes.</p>")
+    lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
+    lines.append("</div>")
+    return "\n".join(lines)
+
+
+def _metrics_payload(metrics: Dict[str, Any], reference_text: Optional[str]) -> Dict[str, Any]:
+    payload = dict(metrics)
+    payload["reference_provided"] = bool(reference_text)
+    if not reference_text:
+        payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
+    return payload
+
+
 def _format_seconds(value: float) -> str:
     total_seconds = max(0, int(round(value)))
     minutes, seconds = divmod(total_seconds, 60)
@@ -912,10 +989,111 @@ def _format_seconds(value: float) -> str:
 
 
 def _resolve_audio_path(audio_path: Optional[str], large_audio_file: Any = None) -> Optional[str]:
+    resolved, _ = _resolve_audio_input(audio_path, large_audio_file, ExperimentConfig(upload_cache_enabled=False))
+    return resolved
+
+
+def _resolve_audio_input(
+    audio_path: Optional[str],
+    large_audio_file: Any = None,
+    config: Optional[ExperimentConfig] = None,
+) -> Tuple[Optional[str], Dict[str, Any]]:
     file_paths = _file_paths(large_audio_file)
-    if file_paths:
-        return file_paths[0]
-    return audio_path
+    resolved = file_paths[0] if file_paths else audio_path
+    if not resolved:
+        return None, {}
+    config = config or ExperimentConfig()
+    if not bool(getattr(config, "upload_cache_enabled", True)):
+        return resolved, {"enabled": False, "path": resolved}
+    path = Path(str(resolved))
+    if not path.exists() or not path.is_file():
+        return resolved, {}
+    try:
+        cached = cache_file_by_sha256(path, getattr(config, "upload_cache_dir", "outputs/upload_cache"), "audio")
+    except Exception as exc:
+        return resolved, {"enabled": True, "source_path": str(path), "error": str(exc)}
+    payload = cached.to_dict()
+    payload["enabled"] = True
+    sidecar_path = _mirror_reference_sidecar(path, Path(cached.cached_path))
+    if sidecar_path is not None:
+        payload["reference_sidecar_path"] = str(sidecar_path)
+    return cached.cached_path, payload
+
+
+def _format_upload_cache_status(cache: Dict[str, Any]) -> str:
+    if not cache or not cache.get("enabled"):
+        return ""
+    if cache.get("error"):
+        return f"Audio upload cache skipped: {cache['error']}\n"
+    path = str(cache.get("cached_path") or "")
+    action = "hit" if cache.get("cache_hit") else "stored"
+    size_mb = _format_mebibytes(cache.get("size_bytes"))
+    size_part = f" ({size_mb})" if size_mb else ""
+    return f"Audio upload cache {action}: {path}{size_part}\n"
+
+
+def _format_mebibytes(value: Any) -> str:
+    try:
+        size_bytes = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if size_bytes < 0:
+        return ""
+    return f"{size_bytes / (1024.0 * 1024.0):.1f} MiB"
+
+
+def _mirror_reference_sidecar(source_audio: Path, cached_audio: Path) -> Optional[Path]:
+    source_sidecar = source_audio.with_suffix(".txt")
+    if not source_sidecar.exists() or not source_sidecar.is_file():
+        return None
+    target_sidecar = cached_audio.with_suffix(".txt")
+    if target_sidecar.exists() and target_sidecar.stat().st_mtime_ns >= source_sidecar.stat().st_mtime_ns:
+        return target_sidecar
+    target_sidecar.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(source_sidecar, target_sidecar)
+    except Exception:
+        return None
+    return target_sidecar
+
+
+def _apply_runtime_saturation(config: ExperimentConfig) -> List[str]:
+    if not bool(getattr(config, "auto_experiment_saturate_lanes", True)):
+        return []
+    lane_count = _runtime_lane_count(config)
+    if lane_count <= 1:
+        return []
+    messages: List[str] = []
+    if int(getattr(config, "asr_context_chars", 0) or 0) <= 0 and int(getattr(config, "asr_chunk_parallelism", 1) or 1) < lane_count:
+        previous = int(config.asr_chunk_parallelism)
+        config.asr_chunk_parallelism = lane_count
+        messages.append(f"Runtime lane saturation: ASR chunk workers {previous} -> {config.asr_chunk_parallelism}.")
+    if int(getattr(config, "postprocess_parallelism", 1) or 1) < lane_count:
+        previous = int(config.postprocess_parallelism)
+        config.postprocess_parallelism = lane_count
+        messages.append(f"Runtime lane saturation: postprocess workers {previous} -> {config.postprocess_parallelism}.")
+    if int(getattr(config, "auto_experiment_parallelism", 1) or 1) < lane_count:
+        previous = int(config.auto_experiment_parallelism)
+        config.auto_experiment_parallelism = lane_count
+        messages.append(f"Runtime lane saturation: condition workers {previous} -> {config.auto_experiment_parallelism}.")
+    return messages
+
+
+def _runtime_lane_count(config: ExperimentConfig) -> int:
+    if config.model_residency == "stage_replicas":
+        return max(
+            1,
+            len([item for item in config.stage_server_base_urls if str(item).strip()]),
+            len([item for item in config.stage_server_gpus if str(item).strip()]),
+            len([item for item in config.preprocess_gpus if str(item).strip()]),
+        )
+    lane_count = len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)])
+    return max(
+        1,
+        lane_count,
+        len([item for item in config.asr_base_urls if str(item).strip()]),
+        len([item for item in config.post_base_urls if str(item).strip()]),
+    )
 
 
 def _launch_kwargs(host: str, port: int, share: bool) -> dict:
@@ -1059,13 +1237,41 @@ def _split_int_grid(value: str) -> List[int]:
     return values
 
 
-def _read_reference_from_ui(reference_text: str, reference_file: Any) -> Optional[str]:
+def _read_reference_from_ui(
+    reference_text: str,
+    reference_file: Any,
+    audio_path: Optional[str] = None,
+    upload_cache: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     if reference_text and reference_text.strip():
         return reference_text.strip()
     paths = _file_paths(reference_file)
     if paths:
         return Path(paths[0]).read_text(encoding="utf-8").strip()
+    for candidate in _reference_sidecar_candidates(audio_path, upload_cache or {}):
+        try:
+            text = candidate.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if text:
+            return text
     return None
+
+
+def _reference_sidecar_candidates(audio_path: Optional[str], upload_cache: Dict[str, Any]) -> List[Path]:
+    candidates: List[Path] = []
+    direct_sidecar = upload_cache.get("reference_sidecar_path")
+    if direct_sidecar:
+        path = Path(str(direct_sidecar))
+        if path.exists():
+            candidates.append(path)
+    for value in [upload_cache.get("source_path"), audio_path, upload_cache.get("cached_path")]:
+        if not value:
+            continue
+        path = Path(str(value)).with_suffix(".txt")
+        if path.exists() and path not in candidates:
+            candidates.append(path)
+    return candidates
 
 
 def _file_paths(files: Any) -> List[str]:

@@ -13,6 +13,7 @@ from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
 from asrpostprocessing.ui import (
     NOISE_REDUCTION_MODEL_CHOICES,
+    _apply_runtime_saturation,
     _canonical_noise_reduction_model,
     preview_preprocessed_audio_from_ui,
     run_from_ui,
@@ -107,6 +108,28 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("Sending audio to ASR backend mock", event_text)
         self.assertIn("Post-processing chunk 1/1", event_text)
         self.assertIn("Run progress-test complete", event_text)
+
+    def test_mock_asr_cache_tracks_sidecar_transcript_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"same audio bytes")
+            sidecar = audio.with_suffix(".txt")
+            sidecar.write_text("첫 번째 전사", encoding="utf-8")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                asr_cache_enabled=True,
+                cache_dir=str(Path(tmp) / "cache"),
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+
+            first = PipelineRunner(config).run(str(audio), reference_text="첫 번째 전사", run_id="first")
+            sidecar.write_text("두 번째 전사", encoding="utf-8")
+            second = PipelineRunner(config).run(str(audio), reference_text="두 번째 전사", run_id="second")
+
+        self.assertEqual(first.raw.text, "첫 번째 전사")
+        self.assertEqual(second.raw.text, "두 번째 전사")
 
     def test_stage_replicas_post_endpoint_pool_starts_from_assigned_case_endpoint(self):
         config = ExperimentConfig(
@@ -206,6 +229,14 @@ class ParserPipelineUiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
             audio.write_bytes(b"mock")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                cache_dir=str(Path(tmp) / "cache"),
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                upload_cache_dir=str(Path(tmp) / "upload_cache"),
+            )
             raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
                 str(audio),
                 None,
@@ -246,6 +277,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "",
                 "mock",
                 "mock",
+                base_config_state=base_config.to_dict(),
             )
             self.assertEqual(raw, "테스트 전사 문장입니다.")
             self.assertEqual(corrected, "테스트 전사 문장입니다.")
@@ -253,10 +285,12 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertIn("cer_normalized_no_space", metrics)
             self.assertIsInstance(edits, list)
             self.assertFalse(preprocess["applied"])
-            self.assertEqual(preprocessed_audio, str(audio))
+            self.assertNotEqual(preprocessed_audio, str(audio))
+            self.assertTrue(Path(str(preprocessed_audio)).exists())
             self.assertEqual(preprocessed_audio_html, "")
             self.assertEqual(servers, [])
             self.assertIn("diff", diff.lower())
+            self.assertIn("Audio upload cache", status)
             self.assertIn("available", gpu_status)
 
     def test_ui_preserves_configured_pipeline_lanes(self):
@@ -508,6 +542,14 @@ class ParserPipelineUiTest(unittest.TestCase):
             audio = Path(tmp) / "hour-long.mp3"
             audio.write_bytes(b"mock mp3")
             audio.with_suffix(".txt").write_text("긴 오디오 테스트 문장입니다.", encoding="utf-8")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                cache_dir=str(Path(tmp) / "cache"),
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                upload_cache_dir=str(Path(tmp) / "upload_cache"),
+            )
             raw, corrected, diff, metrics, edits, preprocess, servers, status, preprocessed_audio, preprocessed_audio_html, gpu_status = run_from_ui(
                 None,
                 {"name": str(audio)},
@@ -548,14 +590,274 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "",
                 "mock",
                 "mock",
+                base_config_state=base_config.to_dict(),
             )
-        self.assertEqual(raw, "긴 오디오 테스트 문장입니다.")
-        self.assertEqual(corrected, "긴 오디오 테스트 문장입니다.")
-        self.assertEqual(preprocessed_audio, str(audio))
-        self.assertEqual(preprocessed_audio_html, "")
-        self.assertFalse(preprocess["applied"])
+            self.assertEqual(raw, "긴 오디오 테스트 문장입니다.")
+            self.assertEqual(corrected, "긴 오디오 테스트 문장입니다.")
+            self.assertNotEqual(preprocessed_audio, str(audio))
+            self.assertTrue(Path(str(preprocessed_audio)).exists())
+            self.assertEqual(preprocessed_audio_html, "")
+            self.assertFalse(preprocess["applied"])
+            self.assertIn("Run ID:", status)
+            self.assertIn("Audio upload cache", status)
+            self.assertIn("available", gpu_status)
+
+    def test_ui_metrics_warn_when_reference_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                cache_dir=str(Path(tmp) / "cache"),
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                upload_cache_dir=str(Path(tmp) / "upload_cache"),
+            )
+            raw, corrected, diff, metrics, _edits, _preprocess, _servers, status, _audio, _html, _gpu = run_from_ui(
+                str(audio),
+                None,
+                "",
+                None,
+                False,
+                0.0,
+                "",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+                base_config_state=base_config.to_dict(),
+            )
+
+        self.assertEqual(raw, corrected)
+        self.assertIn("Raw -&gt; Corrected", diff)
+        self.assertIsNone(metrics["cer_normalized_no_space"])
+        self.assertFalse(metrics["reference_provided"])
+        self.assertIn("reference", metrics["reference_required"].lower())
         self.assertIn("Run ID:", status)
-        self.assertIn("available", gpu_status)
+
+    def test_ui_reads_sidecar_reference_for_cached_large_audio_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "hour-long.mp3"
+            audio.write_bytes(b"mock mp3 payload")
+            audio.with_suffix(".txt").write_text("긴 오디오 테스트 문장입니다.", encoding="utf-8")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                cache_dir=str(Path(tmp) / "cache"),
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                upload_cache_dir=str(Path(tmp) / "upload_cache"),
+            )
+            raw, corrected, diff, metrics, _edits, _preprocess, _servers, status, preprocessed_audio, _html, _gpu = run_from_ui(
+                None,
+                {"name": str(audio)},
+                "",
+                None,
+                False,
+                0.0,
+                "",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+                base_config_state=base_config.to_dict(),
+            )
+
+            self.assertEqual(raw, "긴 오디오 테스트 문장입니다.")
+            self.assertEqual(corrected, "긴 오디오 테스트 문장입니다.")
+            self.assertNotEqual(preprocessed_audio, str(audio))
+            self.assertTrue(metrics["reference_provided"])
+            self.assertEqual(metrics["cer_normalized_no_space"], 0.0)
+            self.assertEqual(metrics["wer_eojeol"], 0.0)
+            self.assertIn("Reference -&gt; Corrected", diff)
+            self.assertIn("Audio upload cache", status)
+
+    def test_ui_caches_large_audio_file_input_by_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "hour-long.mp3"
+            audio.write_bytes(b"mock mp3 payload")
+            audio.with_suffix(".txt").write_text("긴 오디오 테스트 문장입니다.", encoding="utf-8")
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                upload_cache_dir=str(Path(tmp) / "upload_cache"),
+            )
+
+            first = run_from_ui(
+                None,
+                {"name": str(audio)},
+                "긴 오디오 테스트 문장입니다.",
+                None,
+                True,
+                0.5,
+                "",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+                base_config_state=base_config.to_dict(),
+            )
+            second = run_from_ui(
+                None,
+                {"name": str(audio)},
+                "긴 오디오 테스트 문장입니다.",
+                None,
+                True,
+                0.5,
+                "",
+                False,
+                "none",
+                0.0,
+                False,
+                0.0,
+                -20.0,
+                True,
+                0.5,
+                False,
+                0.0,
+                5,
+                "",
+                None,
+                False,
+                0.0,
+                "duckduckgo",
+                "",
+                "Qwen/Qwen3-ASR-1.7B",
+                "Qwen/Qwen3.5-9B",
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                False,
+                60,
+                str(Path(tmp) / "server_logs"),
+                "0",
+                "1",
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "mock",
+                "mock",
+                base_config_state=base_config.to_dict(),
+            )
+
+            first_cached_audio = first[8]
+            second_cached_audio = second[8]
+            self.assertNotEqual(first_cached_audio, str(audio))
+            self.assertEqual(first_cached_audio, second_cached_audio)
+            self.assertTrue(Path(str(first_cached_audio)).exists())
+            self.assertIn("Audio upload cache stored", first[7])
+            self.assertIn("Audio upload cache hit", second[7])
+
+    def test_runtime_saturation_raises_workers_to_lane_count_without_hardcoded_gpu_ids(self):
+        config = ExperimentConfig(
+            model_residency="stage_replicas",
+            stage_server_base_urls=[
+                "http://127.0.0.1:18000/v1",
+                "http://127.0.0.1:18001/v1",
+                "http://127.0.0.1:18002/v1",
+                "http://127.0.0.1:18003/v1",
+            ],
+            preprocess_gpus=["0", "1", "2", "3"],
+            asr_context_chars=0,
+            asr_chunk_parallelism=1,
+            postprocess_parallelism=1,
+            auto_experiment_parallelism=1,
+            auto_experiment_saturate_lanes=True,
+        )
+
+        messages = _apply_runtime_saturation(config)
+
+        self.assertEqual(config.asr_chunk_parallelism, 4)
+        self.assertEqual(config.postprocess_parallelism, 4)
+        self.assertEqual(config.auto_experiment_parallelism, 4)
+        self.assertTrue(any("ASR chunk workers 1 -> 4" in message for message in messages))
 
 
 def _write_pcm16_wav(path: Path, samples):

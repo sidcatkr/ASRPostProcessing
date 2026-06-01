@@ -98,12 +98,14 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - model server auto-start가 lane-aware로 동작해 하나의 config에서 `asr_lane_a`, `post_lane_a`, `asr_lane_b`, `post_lane_b`를 한 번에 준비한다.
 - 후처리 text chunk는 `postprocess_parallelism`으로 병렬 요청할 수 있고, post endpoint pool에 round-robin으로 분산된다.
 - `asr_cache_enabled`와 `preprocess_cache_enabled`를 추가해 같은 audio/preprocess/ASR/keyword 조건의 raw transcript를 재사용한다.
+- `upload_cache_enabled`와 `upload_cache_dir`를 추가해 Gradio로 업로드된 큰 오디오 파일을 content-addressed server cache에 고정한다. 같은 파일은 cache hit 경로를 재사용해 Gradio 임시 파일 삭제와 반복 업로드/I/O 낭비를 줄인다.
 - CLI `asrpp auto-experiment`와 UI `Auto Experiment Mode`를 추가해 수동 토글 방식은 유지하면서도 유효한 실험 조합을 자동 실행할 수 있다.
 - Auto Experiment의 full valid matrix는 Keyword Bias, Noise Reduction, Volume Normalization의 8개 pre/ASR mode와 no post, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search의 5개 post mode를 곱해 40개 조건을 만든다.
 - Auto Experiment에서 `Include model combinations`를 켜면 사용자가 지정한 ASR model list와 post model list도 condition matrix에 포함한다.
 - RAG/Search는 단독 correction module로 취급하지 않고 LLM post-processing에 종속된 valid condition으로만 실행한다.
 - Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄이며, model axis가 켜져 있으면 ASR model별 cache group을 분리한다.
 - `auto_experiment_saturate_lanes`가 켜져 있으면 condition worker와 ASR cache priming worker를 pipeline lane 수 기준으로 자동 확장해 endpoint가 놀지 않도록 한다.
+- 같은 saturation 정책은 UI 일반 Run에도 적용되어 stage/pipeline lane 수가 보이면 ASR chunk worker, postprocess worker, condition worker를 lane 수 이상으로 자동 보정한다.
 - `asrpp sweep`은 `sweep_parallelism`과 pipeline lane 수를 기준으로 condition 실행을 병렬화할 수 있고, 각 case의 ASR endpoint를 lane pool에 분산한다.
 - `asrpp manifest-shard`를 추가해 큰 manifest를 round-robin shard로 나눈 뒤 `configs/l4x4_lane_a.yaml`, `configs/l4x4_lane_b.yaml`로 독립 sweep을 동시에 실행할 수 있다.
 - sweep summary에는 manifest subset/tag, lane id, GPU id, ASR/post endpoint, endpoint pool, stage별 latency, cache hit, audio throughput, vLLM token/preemption delta, token throughput, 관측 GPU/VRAM peak가 기록된다.

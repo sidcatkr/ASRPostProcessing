@@ -75,12 +75,16 @@ def character_f1(a: str, b: str) -> float:
     return 2 * precision * recall / (precision + recall)
 
 
-def make_diff_html(reference: str, hypothesis: str) -> str:
+def make_diff_html(reference: str, hypothesis: str, reference_label: str = "Raw", hypothesis_label: str = "Corrected") -> str:
     reference = reference or ""
     hypothesis = hypothesis or ""
     body, stats = _inline_diff_body(reference, hypothesis)
     if not body:
         body = '<span class="asrpp-diff-empty">(empty)</span>'
+    no_change = stats["delete"] == 0 and stats["insert"] == 0 and stats["replace"] == 0
+    no_change_pill = '<span class="asrpp-diff-pill">No character changes</span>' if no_change else ""
+    escaped_reference_label = html.escape(reference_label or "Reference")
+    escaped_hypothesis_label = html.escape(hypothesis_label or "Hypothesis")
     return f"""
 <div class="asrpp-inline-diff" role="region" aria-label="Inline transcript diff">
   <style>
@@ -153,11 +157,12 @@ def make_diff_html(reference: str, hypothesis: str) -> str:
     .asrpp-diff-empty {{ color: #57606a; }}
   </style>
   <div class="asrpp-diff-bar">
-    <span class="asrpp-diff-pill">Raw {len(reference):,} chars</span>
-    <span class="asrpp-diff-pill">Corrected {len(hypothesis):,} chars</span>
+    <span class="asrpp-diff-pill">{escaped_reference_label} {len(reference):,} chars</span>
+    <span class="asrpp-diff-pill">{escaped_hypothesis_label} {len(hypothesis):,} chars</span>
     <span class="asrpp-diff-pill delete">-{stats["delete"]}</span>
     <span class="asrpp-diff-pill insert">+{stats["insert"]}</span>
     <span class="asrpp-diff-pill replace">~{stats["replace"]}</span>
+    {no_change_pill}
   </div>
   <div class="asrpp-diff-text">{body}</div>
 </div>

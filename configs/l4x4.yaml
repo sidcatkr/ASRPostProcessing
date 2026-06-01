@@ -120,6 +120,8 @@ auto_experiment_search_strengths:
 asr_cache_enabled: true
 preprocess_cache_enabled: true
 cache_dir: outputs/cache
+upload_cache_enabled: true
+upload_cache_dir: outputs/upload_cache
 enable_preprocess: false
 preprocess_model: none
 preprocess_strength: 0.0

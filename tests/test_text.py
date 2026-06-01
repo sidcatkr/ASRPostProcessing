@@ -23,6 +23,13 @@ class InlineDiffHtmlTest(unittest.TestCase):
         self.assertNotIn("<raw>", html)
         self.assertNotIn("<corrected>", html)
 
+    def test_make_diff_html_supports_reference_labels_and_no_change_state(self):
+        html = make_diff_html("정답 문장", "정답 문장", "Reference", "Corrected")
+
+        self.assertIn("Reference", html)
+        self.assertIn("Corrected", html)
+        self.assertIn("No character changes", html)
+
 
 if __name__ == "__main__":
     unittest.main()

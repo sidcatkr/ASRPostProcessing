@@ -261,7 +261,21 @@ class PipelineRunner:
             "keyword_instruction": keyword_instruction,
             "prompt_version": "vllm_asr_instruction_2026_06_01",
         }
+        mock_sidecar_sha256 = self._mock_asr_sidecar_sha256(audio_path)
+        if mock_sidecar_sha256:
+            payload["mock_sidecar_sha256"] = mock_sidecar_sha256
         return cache_json_path(self.config.cache_dir, "asr", stable_json_hash(payload))
+
+    def _mock_asr_sidecar_sha256(self, audio_path: str) -> str:
+        if (self.config.asr_backend or "").lower() != "mock":
+            return ""
+        sidecar = Path(audio_path).with_suffix(".txt")
+        if not sidecar.exists() or not sidecar.is_file():
+            return ""
+        try:
+            return file_sha256(sidecar)
+        except Exception:
+            return ""
 
     def _postprocess_chunks(self, chunks, rag_index):
         if self.config.postprocess_parallelism <= 1 or len(chunks) <= 1:
