@@ -166,7 +166,7 @@ def _get_model(config: ExperimentConfig, backend: str):
         import torch  # type: ignore
         from qwen_asr import Qwen3ASRModel  # type: ignore
     except Exception as exc:
-        raise RuntimeError("Install `qwen-asr[vllm]` on the CUDA server to use the qwen_asr backend.") from exc
+        raise RuntimeError("Install `qwen-asr` and `vllm[audio]` on the CUDA server to use the qwen_asr backend.") from exc
     if backend == "vllm":
         model = Qwen3ASRModel.LLM(
             model=config.asr_model,
