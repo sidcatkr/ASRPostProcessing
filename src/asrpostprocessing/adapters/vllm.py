@@ -576,13 +576,19 @@ def _parse_asr_text(text: str) -> dict:
 
 def _clean_parsed_asr(parsed: dict, raw_text: str) -> dict:
     cleaned = dict(parsed)
-    if "text" in cleaned:
-        cleaned["text"] = _clean_asr_transcript_text(str(cleaned.get("text") or ""))
-    else:
-        cleaned["text"] = _clean_asr_transcript_text(raw_text)
+    raw_cleaned_text = _clean_asr_transcript_text(raw_text)
     language = str(cleaned.get("language") or "").strip()
+    if "text" in cleaned:
+        parsed_text = _clean_asr_transcript_text(str(cleaned.get("text") or ""))
+    else:
+        parsed_text = raw_cleaned_text
     if language.lower() == "none":
         cleaned["language"] = ""
+        if raw_cleaned_text and raw_cleaned_text != parsed_text:
+            cleaned["text"] = raw_cleaned_text
+            cleaned["raw_marker_mix_preserved"] = True
+            return cleaned
+    cleaned["text"] = parsed_text
     return cleaned
 
 

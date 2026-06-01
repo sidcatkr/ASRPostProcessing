@@ -1,4 +1,5 @@
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -241,6 +242,19 @@ class VLLMAdapterTest(unittest.TestCase):
 
         self.assertEqual(parsed["text"], "")
         self.assertIn(parsed.get("language"), (None, ""))
+
+    def test_parse_asr_text_preserves_text_around_midstream_none_marker(self):
+        fake_qwen_asr = types.SimpleNamespace(
+            parse_asr_output=lambda _text: {"language": "None", "text": "假如我查新闻，然后卡特总统。 다음 곡 잡자."}
+        )
+
+        with patch.dict("sys.modules", {"qwen_asr": fake_qwen_asr}):
+            parsed = _parse_asr_text("쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자.")
+        text, reason = _filter_asr_language_drift(parsed["text"], "ko")
+
+        self.assertEqual(text, "쉬다 와요. 다음 곡 잡자.")
+        self.assertEqual(reason, "inline_cjk_drift_removed")
+        self.assertTrue(parsed["raw_marker_mix_preserved"])
 
     def test_korean_asr_filters_cjk_language_drift_chunk(self):
         response = Mock()
