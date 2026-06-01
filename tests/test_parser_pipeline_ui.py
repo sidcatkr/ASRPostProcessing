@@ -9,7 +9,7 @@ from unittest.mock import patch
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
-from asrpostprocessing.pipeline import PipelineRunner
+from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
 from asrpostprocessing.ui import preview_preprocessed_audio_from_ui, run_from_ui, run_from_ui_stream
 
 
@@ -70,6 +70,18 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("Sending audio to ASR backend mock", event_text)
         self.assertIn("Post-processing chunk 1/1", event_text)
         self.assertIn("Run progress-test complete", event_text)
+
+    def test_preprocess_status_surfaces_applied_warnings(self):
+        status = _preprocess_status(
+            {
+                "applied": True,
+                "steps": [{"step": "volume_normalization"}],
+                "warnings": ["Volume normalization gain was peak-limited to avoid clipping."],
+            }
+        )
+
+        self.assertIn("Preprocessing complete", status)
+        self.assertIn("peak-limited", status)
 
     def test_sequential_model_residency_prepares_and_releases_each_stage(self):
         with tempfile.TemporaryDirectory() as tmp:

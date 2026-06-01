@@ -245,9 +245,13 @@ def _combine_risk(risks: List[str]) -> str:
 def _preprocess_status(preprocess: Dict[str, Any]) -> str:
     if preprocess.get("applied"):
         steps = preprocess.get("steps") or []
-        labels = [str(step.get("name", "preprocess")) for step in steps if isinstance(step, dict)]
+        labels = [str(step.get("step") or step.get("name") or "preprocess") for step in steps if isinstance(step, dict)]
         detail = ", ".join(labels) if labels else "selected preprocessing"
-        return f"Preprocessing complete: {detail}."
+        message = f"Preprocessing complete: {detail}."
+        warnings = preprocess.get("warnings") or []
+        if warnings:
+            message += f" Warning: {warnings[0]}"
+        return message
     warnings = preprocess.get("warnings") or []
     if warnings:
         return f"Preprocessing skipped with warning: {warnings[0]}"
