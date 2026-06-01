@@ -262,6 +262,80 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - `auto_experiment_analysis.json`: best/worst, latency-quality tradeoff, baseline 대비 악화 case, 주요 ablation effect
 - `auto_experiment_conditions.json`: 생성된 condition matrix
 
+## L4 x4 실험 진행 개요서
+
+목표는 README의 연구 질문을 그대로 검증하는 것이다. 즉, 전처리, Keyword Bias, LLM 후처리, RAG, Search, 모델 선택, 강도 값을 조합해 CER/WER이 실제로 낮아지는 조건과 오히려 악화되는 조건을 분리한다. L4 x4 서버에서는 GPU를 절약하지 않고 ASR replica와 post-processing replica를 동시에 resident 상태로 둔 뒤, cache, condition worker, postprocess chunk worker를 사용해 전체 실험 처리량을 높인다.
+
+1. 서버 준비
+
+    원격 서버의 `csgpu2` tmux session에서 repository로 이동한다.
+
+        cd ~/hcilabs/ASRPostProcessing
+        git pull --ff-only
+
+    모델 서버를 모두 띄운다.
+
+        scripts/serve_l4x4.sh all
+
+    Gradio UI는 같은 config로 띄운다.
+
+        PYTHONPATH=src asrpp ui --config configs/l4x4.yaml --host 127.0.0.1 --port 7860
+
+    로컬에서 SSH tunnel 또는 Termius port forwarding으로 `http://127.0.0.1:7860`에 접속한다. 7860은 UI이고, 18000/18002는 ASR, 18001/18003은 post-processing vLLM endpoint이다.
+
+2. 서버 상태 확인
+
+    먼저 endpoint가 모두 살아 있는지 확인한다.
+
+        curl -s http://127.0.0.1:18000/v1/models
+        curl -s http://127.0.0.1:18001/v1/models
+        curl -s http://127.0.0.1:18002/v1/models
+        curl -s http://127.0.0.1:18003/v1/models
+        curl -s http://127.0.0.1:7860/
+
+    `nvidia-smi`에서 네 GPU에 vLLM process가 모두 resident 상태로 올라와 있어야 한다. GPU utilization은 stage에 따라 달라진다. ASR cache group이 아직 하나도 준비되지 않은 시작 구간이나 ASR-only condition에서는 GPU 0/2가 바쁘고 GPU 1/3 post LLM은 대기할 수 있다. ASR group 하나가 준비되면 해당 group의 후처리 condition이 바로 시작되어 GPU 1/3으로 분산된다. 따라서 "모델이 떠 있는지"는 memory/process로, "현재 stage에서 일하는지"는 utilization과 vLLM metrics delta로 판단한다.
+
+3. UI 설정 확인
+
+    Gradio의 `Configured pipeline lanes`에 다음 lane이 보이는지 확인한다.
+
+        lane_a: GPU 0 ASR 18000 -> GPU 1 post 18001
+        lane_b: GPU 2 ASR 18002 -> GPU 3 post 18003
+
+    UI의 primary ASR/POST GPU와 URL 입력은 단일 서버 fallback이다. L4 x4 병렬 실행 기준은 `configs/l4x4.yaml`의 `pipeline_lanes`, `asr_base_urls`, `post_base_urls`이다.
+
+4. 빠른 baseline
+
+    Auto Experiment Mode를 끄고 단일 Run으로 기준 성능을 만든다. 먼저 같은 audio/reference에서 전처리와 후처리를 모두 끈 baseline을 남기고, 그 다음 README의 핵심 조건인 Keyword Bias, LLM, RAG, Search를 수동으로 하나씩 켜서 raw/corrected, CER/WER, latency, `asr_quality.json`, `correction_quality.json`, `vllm_metrics.json`을 확인한다.
+
+5. 자동 실험 preview
+
+    본 실행 전에 case 수와 ASR cache group 수를 확인한다.
+
+        asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid --preview
+
+    모델 비교까지 포함할 때만 `Include model combinations`를 켠다. 이 토글이 꺼져 있으면 현재 선택된 ASR/post/noise/RAG embedding model만 사용한다.
+
+6. 자동 실험 본 실행
+
+    UI에서는 `Auto Experiment Mode`를 켜고 coverage를 먼저 `full_valid`로 둔다. 기본 축은 Keyword Bias, Noise Reduction, Volume Normalization, LLM, RAG, Search이다. `Saturate available lanes`는 켠다. L4 x4 profile에서는 condition worker와 ASR cache priming worker가 lane 수 기준으로 확장되고, postprocess text chunk는 post endpoint pool에 round-robin으로 분산된다.
+
+        asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid
+
+    `full_valid` 결과에서 개선/악화 조건을 확인한 뒤, 최종 후보에 대해서만 `full_strength_sweep`을 돌린다. 강도 sweep은 비용이 크므로 baseline과 full_valid로 명백히 나쁜 축을 먼저 제거한다.
+
+7. 결과 판정
+
+    1차 기준은 `cer_normalized_no_space`와 `wer_eojeol`이다. 동률에 가까우면 latency, fallback 여부, keyword over-correction, RAG/Search hallucination risk, vLLM preemption delta를 같이 본다. 최종 후보는 `auto_experiment_summary.csv`에서 baseline 대비 delta가 일관되게 낮고, `auto_experiment_analysis.json`에서 worse-than-baseline bucket에 들어가지 않는 조건이다.
+
+8. GPU 사용률 해석
+
+    Auto Experiment는 pre/ASR/model group별 raw transcript를 cache에 넣어 40개 이상의 조건에서 ASR을 반복 호출하지 않게 한다. 동시에 cache-first 전체 대기 방식이 아니라, ASR group 하나가 준비되는 즉시 같은 group의 condition들을 condition worker에 제출한다. 이 producer/consumer 구조 때문에 ASR priming과 후처리가 겹쳐서 실행되고, post GPU 1/3의 대기 시간이 줄어든다.
+
+    그래도 모든 순간에 네 GPU utilization이 100%로 고정되지는 않는다. 첫 ASR group이 아직 끝나지 않은 시작 구간, 후처리가 꺼진 condition, 매우 짧은 postprocess chunk, 마지막 tail 구간에서는 해당 stage의 작업량이 부족해 일부 GPU가 낮게 보일 수 있다. 중요한 확인 기준은 run 전체에서 18000/18002 ASR endpoint와 18001/18003 post endpoint의 request/token delta가 모두 증가하고, summary의 lane/endpoint 기록이 두 lane에 분산되는지이다.
+
+    추가 개선 후보는 DeepFilterNet/RNNoise 같은 GPU 전처리 backend를 별도 GPU worker pool에 올리는 preprocess scheduling이다. 이 작업은 ASR/post scheduler와 분리된 전처리 단계 최적화이다.
+
 ## 실험 비교 축
 
 권장 비교 조건은 다음과 같다:

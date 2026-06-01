@@ -4,10 +4,10 @@ import copy
 import csv
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .cache import stable_json_hash
 from .config import ExperimentConfig
@@ -46,25 +46,25 @@ def run_auto_experiment(
     output_dir = Path(base_config.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     _emit(status_callback, f"Auto experiment {run_id} generated {len(cases)} case(s) from {len(conditions)} condition(s).")
-    _prime_asr_cache(audio_path, base_config, cases, reference_text, rag_inline_text, status_callback)
     started = time.time()
-    rows: List[Dict[str, Any]] = []
-    max_workers = _effective_worker_count(base_config)
-    _emit(status_callback, f"Running auto experiment with {max_workers} parallel condition worker(s).")
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for index, case in enumerate(cases):
-            config = _config_for_case(base_config, case, index)
-            futures[executor.submit(_run_condition, audio_path, config, case, reference_text, rag_inline_text)] = case
-        for future in as_completed(futures):
-            case = futures[future]
-            try:
-                row = future.result()
-                _emit(status_callback, f"Auto case complete: {case.case_id}.")
-            except Exception as exc:
-                row = _error_row(case, exc)
-                _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
-            rows.append(row)
+    if base_config.asr_cache_enabled:
+        rows = _run_conditions_after_asr_cache_ready(
+            audio_path,
+            base_config,
+            cases,
+            reference_text,
+            rag_inline_text,
+            status_callback,
+        )
+    else:
+        rows = _run_conditions_parallel(
+            audio_path,
+            base_config,
+            list(enumerate(cases)),
+            reference_text,
+            rag_inline_text,
+            status_callback,
+        )
     rows.sort(key=lambda row: str(row.get("case_id") or row.get("condition_id", "")))
     _annotate_baseline_deltas(rows)
     summary_path = output_dir / "auto_experiment_summary.csv"
@@ -91,6 +91,110 @@ def run_auto_experiment(
         "analysis": analysis,
         "rows": rows,
     }
+
+
+def _run_conditions_parallel(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    indexed_cases: List[Tuple[int, ExperimentCase]],
+    reference_text: Optional[str],
+    rag_inline_text: str,
+    status_callback: Optional[StatusCallback],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    max_workers = _effective_worker_count(base_config)
+    _emit(status_callback, f"Running auto experiment with {max_workers} parallel condition worker(s).")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for index, case in indexed_cases:
+            config = _config_for_case(base_config, case, index)
+            futures[executor.submit(_run_condition, audio_path, config, case, reference_text, rag_inline_text)] = case
+        for future in as_completed(futures):
+            case = futures[future]
+            rows.append(_condition_row_from_future(future, case, status_callback))
+    return rows
+
+
+def _run_conditions_after_asr_cache_ready(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    cases: List[ExperimentCase],
+    reference_text: Optional[str],
+    rag_inline_text: str,
+    status_callback: Optional[StatusCallback],
+) -> List[Dict[str, Any]]:
+    grouped = _group_indexed_cases_by_asr_cache_key(cases)
+    if not grouped:
+        return []
+    asr_workers = min(len(grouped), _effective_asr_worker_count(base_config))
+    condition_workers = _effective_worker_count(base_config)
+    _emit(
+        status_callback,
+        f"Priming ASR cache for {len(grouped)} pre/ASR model group(s) with {asr_workers} ASR worker(s); "
+        f"running ready cases with {condition_workers} condition worker(s).",
+    )
+    rows: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=asr_workers) as asr_executor, ThreadPoolExecutor(max_workers=condition_workers) as condition_executor:
+        pending_asr = {}
+        for group_index, indexed_cases in enumerate(grouped.values()):
+            case = indexed_cases[0][1]
+            pending_asr[
+                asr_executor.submit(
+                    _prime_one_asr_group,
+                    audio_path,
+                    base_config,
+                    case,
+                    group_index,
+                    reference_text,
+                    rag_inline_text,
+                    status_callback,
+                )
+            ] = indexed_cases
+        pending_conditions = {}
+        while pending_asr or pending_conditions:
+            done, _ = wait(list(pending_asr) + list(pending_conditions), return_when=FIRST_COMPLETED)
+            for future in done:
+                if future in pending_asr:
+                    indexed_cases = pending_asr.pop(future)
+                    case = indexed_cases[0][1]
+                    try:
+                        future.result()
+                        _emit(status_callback, f"ASR cache ready for group {case.condition.asr_group_key}.")
+                    except Exception as exc:
+                        _emit(status_callback, f"ASR cache priming failed for {case.case_id}: {exc}")
+                    for index, condition_case in indexed_cases:
+                        config = _config_for_case(base_config, condition_case, index)
+                        pending_conditions[
+                            condition_executor.submit(
+                                _run_condition,
+                                audio_path,
+                                config,
+                                condition_case,
+                                reference_text,
+                                rag_inline_text,
+                            )
+                        ] = condition_case
+                    continue
+                case = pending_conditions.pop(future)
+                rows.append(_condition_row_from_future(future, case, status_callback))
+    return rows
+
+
+def _condition_row_from_future(future, case: ExperimentCase, status_callback: Optional[StatusCallback]) -> Dict[str, Any]:
+    try:
+        row = future.result()
+        _emit(status_callback, f"Auto case complete: {case.case_id}.")
+    except Exception as exc:
+        row = _error_row(case, exc)
+        _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
+    return row
+
+
+def _group_indexed_cases_by_asr_cache_key(cases: List[ExperimentCase]) -> Dict[str, List[Tuple[int, ExperimentCase]]]:
+    grouped: Dict[str, List[Tuple[int, ExperimentCase]]] = {}
+    for index, case in enumerate(cases):
+        grouped.setdefault(_asr_cache_group_key(case), []).append((index, case))
+    return grouped
 
 
 def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_valid") -> Dict[str, Any]:
@@ -158,49 +262,12 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _prime_asr_cache(
-    audio_path: str,
-    base_config: ExperimentConfig,
-    cases: List[ExperimentCase],
-    reference_text: Optional[str],
-    rag_inline_text: str,
-    status_callback: Optional[StatusCallback],
-) -> None:
-    if not base_config.asr_cache_enabled:
-        return
-    grouped: Dict[str, ExperimentCase] = {}
-    for case in cases:
-        grouped.setdefault(f"{case.condition.asr_group_key}|asr={case.asr_model}", case)
-    workers = min(len(grouped), _effective_asr_worker_count(base_config))
-    _emit(status_callback, f"Priming ASR cache for {len(grouped)} pre/ASR model group(s) with {workers} worker(s).")
-    if workers <= 1:
-        for index, case in enumerate(grouped.values()):
-            _prime_one_asr_group(audio_path, base_config, case, index, reference_text, rag_inline_text, status_callback)
-        return
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                _prime_one_asr_group,
-                audio_path,
-                base_config,
-                case,
-                index,
-                reference_text,
-                rag_inline_text,
-                status_callback,
-            ): case
-            for index, case in enumerate(grouped.values())
-        }
-        for future in as_completed(futures):
-            case = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                _emit(status_callback, f"ASR cache priming failed for {case.case_id}: {exc}")
-
-
 def _asr_cache_group_count(cases: List[ExperimentCase]) -> int:
-    return len({f"{case.condition.asr_group_key}|asr={case.asr_model}" for case in cases})
+    return len({_asr_cache_group_key(case) for case in cases})
+
+
+def _asr_cache_group_key(case: ExperimentCase) -> str:
+    return f"{case.condition.asr_group_key}|asr={case.asr_model}"
 
 
 def _prime_one_asr_group(

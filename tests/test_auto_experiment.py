@@ -1,7 +1,9 @@
 import tempfile
+import threading
 import unittest
 import csv
 from pathlib import Path
+from unittest.mock import patch
 
 from asrpostprocessing.auto_experiment import run_auto_experiment
 from asrpostprocessing.config import ExperimentConfig, load_config
@@ -173,6 +175,90 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertIn("asr_latency_ms", rows[0])
             self.assertIn("vllm_total_tokens", rows[0])
             self.assertIn("preprocess_cache_hit", rows[0])
+
+    def test_auto_experiment_starts_ready_conditions_before_all_asr_groups_finish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=True,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=False,
+                enable_search=False,
+                auto_experiment_parallelism=2,
+                auto_experiment_saturate_lanes=True,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+                pipeline_lanes=[
+                    {"asr_base_url": "http://lane-a/v1", "post_base_url": "http://lane-a-post/v1"},
+                    {"asr_base_url": "http://lane-b/v1", "post_base_url": "http://lane-b-post/v1"},
+                ],
+            )
+            events = []
+            event_lock = threading.Lock()
+            first_prime_done = threading.Event()
+            allow_second_prime_done = threading.Event()
+            first_group = {"key": ""}
+
+            def fake_prime(audio_path, base_config, case, index, reference_text, rag_inline_text, status_callback):
+                key = case.condition.asr_group_key
+                with event_lock:
+                    is_first = not first_group["key"]
+                    if is_first:
+                        first_group["key"] = key
+                    events.append(("prime_start", key))
+                if is_first:
+                    with event_lock:
+                        events.append(("prime_done", key))
+                    first_prime_done.set()
+                    return
+                first_prime_done.wait(1.0)
+                allow_second_prime_done.wait(1.0)
+                with event_lock:
+                    events.append(("prime_done", key))
+
+            def fake_run_condition(audio_path, config, case, reference_text, rag_inline_text):
+                with event_lock:
+                    events.append(("condition", case.condition.asr_group_key))
+                allow_second_prime_done.set()
+                return {
+                    "case_id": case.case_id,
+                    "condition_id": case.condition.condition_id,
+                    "label": case.condition.label,
+                    "group": case.condition.group,
+                    "asr_model": case.asr_model,
+                    "post_model": case.post_model,
+                    "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+                    "cer_normalized_no_space": 0.0,
+                    "wer_eojeol": 0.0,
+                    "error": "",
+                }
+
+            with patch("asrpostprocessing.auto_experiment._prime_one_asr_group", side_effect=fake_prime), patch(
+                "asrpostprocessing.auto_experiment._run_condition", side_effect=fake_run_condition
+            ):
+                report = run_auto_experiment(
+                    str(audio),
+                    config,
+                    reference_text="테스트 전사 문장입니다.",
+                    mode="full_valid",
+                )
+
+            self.assertEqual(report["analysis"]["num_failed_rows"], 0)
+            first_key = first_group["key"]
+            second_prime_done_index = next(
+                index
+                for index, event in enumerate(events)
+                if event[0] == "prime_done" and event[1] != first_key
+            )
+            first_condition_index = next(index for index, event in enumerate(events) if event[0] == "condition")
+            self.assertLess(first_condition_index, second_prime_done_index)
 
     def test_auto_experiment_can_expand_model_axis(self):
         with tempfile.TemporaryDirectory() as tmp:
