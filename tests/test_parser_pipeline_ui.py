@@ -108,6 +108,28 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("Post-processing chunk 1/1", event_text)
         self.assertIn("Run progress-test complete", event_text)
 
+    def test_stage_replicas_post_endpoint_pool_starts_from_assigned_case_endpoint(self):
+        config = ExperimentConfig(
+            model_residency="stage_replicas",
+            post_base_url="http://stage-3/v1",
+            stage_server_base_urls=[
+                "http://stage-0/v1",
+                "http://stage-1/v1",
+                "http://stage-2/v1",
+                "http://stage-3/v1",
+            ],
+        )
+
+        self.assertEqual(
+            PipelineRunner(config)._post_endpoint_pool(),
+            [
+                "http://stage-3/v1",
+                "http://stage-0/v1",
+                "http://stage-1/v1",
+                "http://stage-2/v1",
+            ],
+        )
+
     def test_pipeline_falls_back_when_postprocess_chunk_fails(self):
         class FailingPostprocessor:
             def correct(self, chunk_text, config, contexts, search_results):

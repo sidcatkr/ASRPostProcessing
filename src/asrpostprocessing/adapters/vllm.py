@@ -337,13 +337,12 @@ def _config_for_asr_chunk(config: ExperimentConfig, chunk_index: int) -> Experim
 
 def _asr_endpoint_pool(config: ExperimentConfig) -> List[str]:
     if getattr(config, "model_residency", "") == "stage_replicas":
-        endpoints = [
+        endpoints = [str(getattr(config, "asr_base_url", "") or "").strip()]
+        endpoints.extend(
             str(item).strip()
             for item in (getattr(config, "stage_server_base_urls", []) or [])
             if str(item).strip()
-        ]
-        if not endpoints:
-            endpoints = [config.asr_base_url]
+        )
         deduped: List[str] = []
         for endpoint in endpoints:
             if endpoint and endpoint not in deduped:

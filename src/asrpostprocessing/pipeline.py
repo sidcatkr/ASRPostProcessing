@@ -327,13 +327,12 @@ class PipelineRunner:
 
     def _post_endpoint_pool(self) -> List[str]:
         if self.config.model_residency == "stage_replicas":
-            endpoints = [
+            endpoints = [str(getattr(self.config, "post_base_url", "") or "").strip()]
+            endpoints.extend(
                 str(item).strip()
                 for item in (getattr(self.config, "stage_server_base_urls", []) or [])
                 if str(item).strip()
-            ]
-            if not endpoints:
-                endpoints = [self.config.post_base_url]
+            )
             deduped: List[str] = []
             for endpoint in endpoints:
                 if endpoint and endpoint not in deduped:

@@ -12,6 +12,7 @@ from asrpostprocessing.adapters.vllm import (
     VLLMChatASRAdapter,
     VLLMOpenAIPostProcessAdapter,
     _asr_audio_chunks,
+    _asr_endpoint_pool,
     _asr_instruction,
     _asr_request_timeout_s,
     _duration_from_ffmpeg_output,
@@ -25,6 +26,28 @@ from asrpostprocessing.config import ExperimentConfig
 
 
 class VLLMAdapterTest(unittest.TestCase):
+    def test_stage_replicas_asr_endpoint_pool_starts_from_assigned_case_endpoint(self):
+        config = ExperimentConfig(
+            model_residency="stage_replicas",
+            asr_base_url="http://stage-2/v1",
+            stage_server_base_urls=[
+                "http://stage-0/v1",
+                "http://stage-1/v1",
+                "http://stage-2/v1",
+                "http://stage-3/v1",
+            ],
+        )
+
+        self.assertEqual(
+            _asr_endpoint_pool(config),
+            [
+                "http://stage-2/v1",
+                "http://stage-0/v1",
+                "http://stage-1/v1",
+                "http://stage-3/v1",
+            ],
+        )
+
     def test_postprocess_request_caps_tokens_and_disables_vllm_thinking(self):
         response = Mock()
         response.raise_for_status.return_value = None

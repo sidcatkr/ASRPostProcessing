@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import shutil
 import site
 import socket
@@ -574,7 +575,7 @@ def _stop_process(
             log_path=spec.log_path,
         )
     _emit(status_callback, f"Stopping {spec.name} model server pid={process.pid}")
-    process.terminate()
+    _signal_process_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=timeout_s)
         return ModelServerStatus(
@@ -586,7 +587,7 @@ def _stop_process(
             log_path=spec.log_path,
         )
     except subprocess.TimeoutExpired:
-        process.kill()
+        _signal_process_group(process, signal.SIGKILL)
         process.wait(timeout=10)
         return ModelServerStatus(
             spec.name,
@@ -596,6 +597,18 @@ def _stop_process(
             pid=process.pid,
             log_path=spec.log_path,
         )
+
+
+def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(os.getpgid(process.pid), sig)
+        return
+    except (OSError, ProcessLookupError):
+        pass
+    if sig == signal.SIGTERM:
+        process.terminate()
+    else:
+        process.kill()
 
 
 def _endpoint_ready(base_url: str, expected_model: str = "") -> bool:
