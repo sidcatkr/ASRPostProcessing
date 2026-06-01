@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from .config import ExperimentConfig
 from .keyword_bias import normalize_keywords
 from .keyword_correction import keyword_near_miss_replacements
-from .schemas import TranscriptResult
+from .schemas import CorrectionResult, TranscriptResult
+
+_ASR_TEXT_TAG_RE = re.compile(r"</?\s*asr_text\s*>", flags=re.IGNORECASE)
+_LANGUAGE_LABEL_RE = re.compile(
+    r"(?:^|\n|\s)language\s+[A-Za-z_-]{1,32}(?=\s*<\s*asr_text\s*>|\s*$|\n)",
+    flags=re.IGNORECASE,
+)
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_CJK_PUNCT_RE = re.compile(r"[\u3000-\u303f\uff00-\uffef，。！？、：；]")
 
 
 def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], config: ExperimentConfig) -> Dict[str, Any]:
@@ -73,6 +82,69 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     }
 
 
+def build_correction_quality_report(
+    raw: TranscriptResult,
+    correction: CorrectionResult,
+    config: ExperimentConfig,
+) -> Dict[str, Any]:
+    raw_text = raw.text or ""
+    corrected_text = correction.corrected_text or ""
+    raw_keyword_near_misses = _keyword_near_misses(raw_text, config)
+    corrected_keyword_near_misses = _keyword_near_misses(corrected_text, config)
+    raw_artifacts = _text_artifact_summary(raw_text)
+    corrected_artifacts = _text_artifact_summary(corrected_text)
+    fallback = _fallback_summary(correction)
+    warnings: List[str] = []
+    action_items: List[str] = []
+    improvements: List[str] = []
+
+    if raw_keyword_near_misses and len(corrected_keyword_near_misses) < len(raw_keyword_near_misses):
+        improvements.append("Corrected transcript has fewer keyword near-miss candidate(s) than raw transcript.")
+    if _artifact_score(corrected_artifacts) < _artifact_score(raw_artifacts):
+        improvements.append("Corrected transcript has fewer ASR artifact marker(s) than raw transcript.")
+
+    if corrected_keyword_near_misses:
+        warnings.append("Corrected transcript still contains keyword near-miss candidate(s).")
+        action_items.append("Inspect keyword list, post-processing edits, and local context for missed supported corrections.")
+    if _has_artifact_risk(corrected_artifacts):
+        warnings.append("Corrected transcript still contains ASR artifact or non-Korean CJK drift candidate(s).")
+        action_items.append("Inspect ASR cleanup and rerun the affected chunk if transcript context is missing.")
+    if fallback["fallback_chunk_count"] > 0:
+        warnings.append("Post-processing fallback was used for at least one chunk.")
+        action_items.append("Check post-processing backend health, request timeout, and text chunk size.")
+    if correction.risk in {"medium", "high"}:
+        warnings.append(f"Post-processing returned {correction.risk} risk.")
+
+    if not action_items:
+        action_items.append("Use reference text with CER/WER evaluation for final quality judgment.")
+
+    return {
+        "risk": correction.risk,
+        "text_chars": {
+            "raw": len(raw_text),
+            "corrected": len(corrected_text),
+            "delta": len(corrected_text) - len(raw_text),
+        },
+        "edits": _edit_summary(correction),
+        "keyword_near_misses": {
+            "raw_count": len(raw_keyword_near_misses),
+            "corrected_count": len(corrected_keyword_near_misses),
+            "resolved_count": max(0, len(raw_keyword_near_misses) - len(corrected_keyword_near_misses)),
+            "raw": raw_keyword_near_misses,
+            "corrected": corrected_keyword_near_misses,
+        },
+        "artifacts": {
+            "raw": raw_artifacts,
+            "corrected": corrected_artifacts,
+        },
+        "postprocess": fallback,
+        "improvements": improvements,
+        "warnings": _dedupe(warnings),
+        "action_items": _dedupe(action_items),
+        "note": "Reference-free corrected-output quality report; CER/WER still require reference text.",
+    }
+
+
 def _keyword_near_misses(text: str, config: ExperimentConfig) -> List[Dict[str, Any]]:
     keywords = [keyword for keyword in normalize_keywords(getattr(config, "keywords", [])) if keyword]
     if not text or not keywords:
@@ -81,6 +153,98 @@ def _keyword_near_misses(text: str, config: ExperimentConfig) -> List[Dict[str, 
     for start, end, before, after in keyword_near_miss_replacements(text, keywords):
         results.append({"before": before, "after": after, "start_char": start, "end_char": end})
     return results
+
+
+def _edit_summary(correction: CorrectionResult) -> Dict[str, Any]:
+    keyword_edit_count = 0
+    for edit in correction.edits or []:
+        if "keyword" in (edit.reason or "").lower() and "near-miss" in (edit.reason or "").lower():
+            keyword_edit_count += 1
+    return {
+        "count": len(correction.edits or []),
+        "keyword_near_miss_count": keyword_edit_count,
+    }
+
+
+def _fallback_summary(correction: CorrectionResult) -> Dict[str, Any]:
+    chunks = []
+    for index, item in enumerate(_correction_chunk_metadata(correction)):
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        fallback = str(metadata.get("fallback") or "").strip()
+        error = str(metadata.get("postprocess_error") or "").strip()
+        if not fallback and not error:
+            continue
+        chunks.append(
+            {
+                "index": int(item.get("index", index)),
+                "fallback": fallback,
+                "post_backend": metadata.get("post_backend"),
+                "postprocess_error": _preview(error, limit=300) if error else "",
+            }
+        )
+
+    metadata = correction.metadata if isinstance(correction.metadata, dict) else {}
+    if not chunks and (metadata.get("fallback") or metadata.get("postprocess_error")):
+        error = str(metadata.get("postprocess_error") or "").strip()
+        chunks.append(
+            {
+                "index": 0,
+                "fallback": str(metadata.get("fallback") or "").strip(),
+                "post_backend": metadata.get("post_backend"),
+                "postprocess_error": _preview(error, limit=300) if error else "",
+            }
+        )
+
+    return {
+        "chunk_count": len(_correction_chunk_metadata(correction)),
+        "fallback_chunk_count": len(chunks),
+        "postprocess_error_count": sum(1 for chunk in chunks if chunk.get("postprocess_error")),
+        "fallback_chunks": chunks,
+    }
+
+
+def _correction_chunk_metadata(correction: CorrectionResult) -> List[Dict[str, Any]]:
+    metadata = correction.metadata if isinstance(correction.metadata, dict) else {}
+    chunks = metadata.get("chunks")
+    if not isinstance(chunks, list):
+        return []
+    result = []
+    for index, item in enumerate(chunks):
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        normalized.setdefault("index", index)
+        result.append(normalized)
+    return result
+
+
+def _text_artifact_summary(text: str) -> Dict[str, Any]:
+    asr_text_tag_count = len(_ASR_TEXT_TAG_RE.findall(text or ""))
+    language_label_count = len(_LANGUAGE_LABEL_RE.findall(text or ""))
+    han_chars = _HAN_RE.findall(text or "")
+    cjk_punctuation_count = len(_CJK_PUNCT_RE.findall(text or ""))
+    return {
+        "asr_text_tag_count": asr_text_tag_count,
+        "language_label_count": language_label_count,
+        "han_char_count": len(han_chars),
+        "cjk_punctuation_count": cjk_punctuation_count,
+        "non_korean_cjk_drift_candidate": len(han_chars) >= 4,
+        "has_asr_artifact_markers": asr_text_tag_count > 0 or language_label_count > 0,
+        "han_preview": "".join(han_chars[:24]),
+    }
+
+
+def _artifact_score(summary: Dict[str, Any]) -> int:
+    return (
+        int(summary.get("asr_text_tag_count") or 0)
+        + int(summary.get("language_label_count") or 0)
+        + int(summary.get("han_char_count") or 0)
+        + int(summary.get("cjk_punctuation_count") or 0)
+    )
+
+
+def _has_artifact_risk(summary: Dict[str, Any]) -> bool:
+    return bool(summary.get("has_asr_artifact_markers") or summary.get("non_korean_cjk_drift_candidate"))
 
 
 def _chunk_reports(raw: TranscriptResult) -> List[Dict[str, Any]]:

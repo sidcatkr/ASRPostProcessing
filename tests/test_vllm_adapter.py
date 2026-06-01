@@ -43,7 +43,7 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["선행 연구"],
+            keywords=["목표 용어"],
         )
         with patch("requests.post", return_value=response) as post:
             result = VLLMOpenAIPostProcessAdapter().correct("원문 문장", config, [], [])
@@ -55,7 +55,7 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertIn("Do not include reasoning", prompt)
         self.assertIn("Keyword correction guidance", prompt)
         self.assertIn("do not rely on domain-specific examples", prompt)
-        self.assertNotIn("서론 연구", prompt)
+        self.assertNotIn("고정된 예시 보정", prompt)
         self.assertEqual(result.corrected_text, "교정된 문장")
 
     def test_postprocess_applies_high_strength_keyword_near_miss(self):
@@ -66,7 +66,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '{"corrected_text":"모표 용어를 찾아보고 읽어볼 거니까",'
                             '"edits":[],"risk":"unchanged","used_context_ids":[]}'
                         )
                     }
@@ -76,15 +76,15 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["선행 연구"],
+            keywords=["목표 용어"],
             postprocess_strength=0.9,
         )
         with patch("requests.post", return_value=response):
-            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("모표 용어를 찾아보고 읽어볼 거니까", config, [], [])
 
-        self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 읽어볼 거니까")
-        self.assertEqual(result.edits[-1].before, "서론 연구를")
-        self.assertEqual(result.edits[-1].after, "선행 연구를")
+        self.assertEqual(result.corrected_text, "목표 용어를 찾아보고 읽어볼 거니까")
+        self.assertEqual(result.edits[-1].before, "모표 용어를")
+        self.assertEqual(result.edits[-1].after, "목표 용어를")
         self.assertIn("keyword_near_miss_corrections", result.metadata)
 
     def test_postprocess_applies_keyword_near_miss_variants(self):
@@ -95,7 +95,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"서면 연구를 찾아보고 사학 연구를 읽어볼 거니까",'
+                            '{"corrected_text":"모표 용어를 찾아보고 목포 용어를 읽어볼 거니까",'
                             '"edits":[],"risk":"unchanged","used_context_ids":[]}'
                         )
                     }
@@ -105,14 +105,14 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["선행 연구"],
+            keywords=["목표 용어"],
             postprocess_strength=0.9,
         )
         with patch("requests.post", return_value=response):
-            result = VLLMOpenAIPostProcessAdapter().correct("서면 연구를 찾아보고 사학 연구를 읽어볼 거니까", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("모표 용어를 찾아보고 목포 용어를 읽어볼 거니까", config, [], [])
 
-        self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 선행 연구를 읽어볼 거니까")
-        self.assertEqual([edit.before for edit in result.edits[-2:]], ["서면 연구를", "사학 연구를"])
+        self.assertEqual(result.corrected_text, "목표 용어를 찾아보고 목표 용어를 읽어볼 거니까")
+        self.assertEqual([edit.before for edit in result.edits[-2:]], ["모표 용어를", "목포 용어를"])
 
     def test_postprocess_applies_keyword_near_miss_at_balanced_strength(self):
         response = Mock()
@@ -122,7 +122,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '{"corrected_text":"모표 용어를 찾아보고 읽어볼 거니까",'
                             '"edits":[],"risk":"unchanged","used_context_ids":[]}'
                         )
                     }
@@ -132,14 +132,14 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["선행 연구"],
+            keywords=["목표 용어"],
             postprocess_strength=0.5,
         )
         with patch("requests.post", return_value=response):
-            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("모표 용어를 찾아보고 읽어볼 거니까", config, [], [])
 
-        self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 읽어볼 거니까")
-        self.assertEqual(result.edits[-1].before, "서론 연구를")
+        self.assertEqual(result.corrected_text, "목표 용어를 찾아보고 읽어볼 거니까")
+        self.assertEqual(result.edits[-1].before, "모표 용어를")
 
     def test_postprocess_keeps_keyword_near_miss_disabled_at_conservative_strength(self):
         response = Mock()
@@ -149,7 +149,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '{"corrected_text":"모표 용어를 찾아보고 읽어볼 거니까",'
                             '"edits":[],"risk":"unchanged","used_context_ids":[]}'
                         )
                     }
@@ -159,13 +159,13 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["선행 연구"],
+            keywords=["목표 용어"],
             postprocess_strength=0.25,
         )
         with patch("requests.post", return_value=response):
-            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("모표 용어를 찾아보고 읽어볼 거니까", config, [], [])
 
-        self.assertEqual(result.corrected_text, "서론 연구를 찾아보고 읽어볼 거니까")
+        self.assertEqual(result.corrected_text, "모표 용어를 찾아보고 읽어볼 거니까")
 
     def test_postprocess_keyword_near_miss_rejects_unrelated_context_words(self):
         response = Mock()
@@ -175,7 +175,7 @@ class VLLMAdapterTest(unittest.TestCase):
                 {
                     "message": {
                         "content": (
-                            '{"corrected_text":"청중 그날 청중이 누구냐",'
+                            '{"corrected_text":"자료 그날 자료가 뭐냐",'
                             '"edits":[],"risk":"unchanged","used_context_ids":[]}'
                         )
                     }
@@ -185,13 +185,13 @@ class VLLMAdapterTest(unittest.TestCase):
         config = ExperimentConfig(
             post_backend="vllm_openai",
             post_base_url="http://127.0.0.1:18001/v1",
-            keywords=["청중 분석"],
+            keywords=["자료 분석"],
             postprocess_strength=0.9,
         )
         with patch("requests.post", return_value=response):
-            result = VLLMOpenAIPostProcessAdapter().correct("청중 그날 청중이 누구냐", config, [], [])
+            result = VLLMOpenAIPostProcessAdapter().correct("자료 그날 자료가 뭐냐", config, [], [])
 
-        self.assertEqual(result.corrected_text, "청중 그날 청중이 누구냐")
+        self.assertEqual(result.corrected_text, "자료 그날 자료가 뭐냐")
         self.assertNotIn("keyword_near_miss_corrections", result.metadata)
 
     def test_asr_request_splits_long_audio_into_chunks(self):
@@ -282,7 +282,7 @@ class VLLMAdapterTest(unittest.TestCase):
         )
 
         with patch.dict("sys.modules", {"qwen_asr": fake_qwen_asr}):
-            parsed = _parse_asr_text("쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자.")
+            parsed = _parse_asr_text("쉬다 와요. language None<asr_text> 如果测试新闻，然后示例文本。 다음 곡 잡자.")
         text, reason = _filter_asr_language_drift(parsed["text"], "ko")
 
         self.assertEqual(text, "쉬다 와요. 다음 곡 잡자.")
@@ -292,7 +292,7 @@ class VLLMAdapterTest(unittest.TestCase):
     def test_korean_asr_filters_cjk_language_drift_chunk(self):
         response = Mock()
         response.raise_for_status.return_value = None
-        response.json.return_value = {"choices": [{"message": {"content": "假如我查新闻，然后卡特总统。"}}]}
+        response.json.return_value = {"choices": [{"message": {"content": "如果测试新闻，然后示例文本。"}}]}
         config = ExperimentConfig(language="ko")
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
@@ -310,7 +310,7 @@ class VLLMAdapterTest(unittest.TestCase):
             "choices": [
                 {
                     "message": {
-                        "content": "쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자."
+                        "content": "쉬다 와요. language None<asr_text> 如果测试新闻，然后示例文本。 다음 곡 잡자."
                     }
                 }
             ]

@@ -49,14 +49,18 @@ class ParserPipelineUiTest(unittest.TestCase):
                 output.correction.corrected_text,
             )
             self.assertTrue((Path(output.output_dir) / "asr_quality.json").exists())
+            self.assertTrue((Path(output.output_dir) / "correction_quality.json").exists())
             self.assertTrue((Path(output.output_dir) / "metrics.json").exists())
             self.assertTrue((Path(output.output_dir) / "preprocess.json").exists())
             result_payload = json.loads((Path(output.output_dir) / "result.json").read_text(encoding="utf-8"))
             self.assertIn("asr_quality", result_payload)
+            self.assertIn("correction_quality", result_payload)
             self.assertIn("artifacts", result_payload)
             self.assertEqual(result_payload["artifacts"]["raw_transcript"], output.artifacts["raw_transcript"])
             self.assertIn("raw_transcript", output.artifacts)
+            self.assertIn("correction_quality", output.artifacts)
             self.assertEqual(output.asr_quality["backend"], "mock")
+            self.assertEqual(output.correction_quality["risk"], output.correction.risk)
             run_dir = Path(tmp) / "runs" / "test-run"
             metrics_tsv = run_dir / "metrics.tsv"
             self.assertTrue(metrics_tsv.exists())
@@ -113,6 +117,8 @@ class ParserPipelineUiTest(unittest.TestCase):
         chunk_metadata = output.correction.metadata["chunks"][0]["metadata"]
         self.assertEqual(chunk_metadata["fallback"], "raw_transcript_after_postprocess_error")
         self.assertIn("post backend timeout", chunk_metadata["postprocess_error"])
+        self.assertEqual(output.correction_quality["postprocess"]["fallback_chunk_count"], 1)
+        self.assertEqual(output.correction_quality["keyword_near_misses"]["corrected_count"], 0)
 
     def test_preprocess_status_surfaces_applied_warnings(self):
         status = _preprocess_status(

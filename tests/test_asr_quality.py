@@ -1,8 +1,8 @@
 import unittest
 
-from asrpostprocessing.asr_quality import build_asr_quality_report
+from asrpostprocessing.asr_quality import build_asr_quality_report, build_correction_quality_report
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.schemas import TranscriptResult, TranscriptSegment
+from asrpostprocessing.schemas import CorrectionResult, Edit, TranscriptResult, TranscriptSegment
 
 
 class ASRQualityReportTest(unittest.TestCase):
@@ -70,13 +70,13 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertTrue(any("language drift" in action for action in report["action_items"]))
 
     def test_report_flags_keyword_near_miss_terms(self):
-        raw = TranscriptResult(language="ko", text="여러분이 이제 서면 연구를 찾아보고 읽어볼 거니까")
-        config = ExperimentConfig(keywords=["선행 연구"])
+        raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다.")
+        config = ExperimentConfig(keywords=["목표 용어"])
 
         report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, config)
 
-        self.assertEqual(report["keyword_near_misses"][0]["before"], "서면 연구를")
-        self.assertEqual(report["keyword_near_misses"][0]["after"], "선행 연구를")
+        self.assertEqual(report["keyword_near_misses"][0]["before"], "모표 용어를")
+        self.assertEqual(report["keyword_near_misses"][0]["after"], "목표 용어를")
         self.assertTrue(any("keyword near-miss" in warning for warning in report["warnings"]))
 
     def test_report_surfaces_filtered_language_drift(self):
@@ -99,6 +99,58 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertEqual(report["language_drift"]["filtered_reasons"], ["inline_cjk_drift_removed"])
         self.assertEqual(report["chunks"][0]["filtered_reason"], "inline_cjk_drift_removed")
         self.assertTrue(any("language drift" in warning for warning in report["warnings"]))
+
+    def test_correction_quality_counts_resolved_keyword_near_misses(self):
+        raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다.")
+        correction = CorrectionResult(
+            corrected_text="오늘은 목표 용어를 설명합니다.",
+            edits=[
+                Edit(
+                    before="모표 용어를",
+                    after="목표 용어를",
+                    reason="Keyword-guided ASR near-miss correction.",
+                    confidence=0.82,
+                )
+            ],
+            risk="low",
+        )
+        config = ExperimentConfig(keywords=["목표 용어"])
+
+        report = build_correction_quality_report(raw, correction, config)
+
+        self.assertEqual(report["keyword_near_misses"]["raw_count"], 1)
+        self.assertEqual(report["keyword_near_misses"]["corrected_count"], 0)
+        self.assertEqual(report["keyword_near_misses"]["resolved_count"], 1)
+        self.assertEqual(report["edits"]["keyword_near_miss_count"], 1)
+        self.assertTrue(any("fewer keyword" in item for item in report["improvements"]))
+
+    def test_correction_quality_flags_artifacts_and_fallbacks(self):
+        raw = TranscriptResult(language="ko", text="원문")
+        correction = CorrectionResult(
+            corrected_text="정리된 문장 language None<asr_text> 測試文本內容",
+            risk="high",
+            metadata={
+                "chunks": [
+                    {
+                        "risk": "high",
+                        "metadata": {
+                            "fallback": "raw_transcript_after_postprocess_error",
+                            "post_backend": "mock",
+                            "postprocess_error": "post backend timeout",
+                        },
+                    }
+                ]
+            },
+        )
+
+        report = build_correction_quality_report(raw, correction, ExperimentConfig())
+
+        self.assertEqual(report["postprocess"]["fallback_chunk_count"], 1)
+        self.assertEqual(report["postprocess"]["postprocess_error_count"], 1)
+        self.assertTrue(report["artifacts"]["corrected"]["has_asr_artifact_markers"])
+        self.assertTrue(report["artifacts"]["corrected"]["non_korean_cjk_drift_candidate"])
+        self.assertTrue(any("fallback" in warning for warning in report["warnings"]))
+        self.assertTrue(any("artifact" in warning for warning in report["warnings"]))
 
 
 if __name__ == "__main__":

@@ -96,7 +96,7 @@ class ASRQualityCompareTest(unittest.TestCase):
             audio = Path(tmp) / "audio.wav"
             audio.write_bytes(b"audio")
             output = Path(tmp) / "compare.json"
-            config = ExperimentConfig(output_dir=str(Path(tmp) / "outputs"), asr_backend="mock", keywords=["선행 연구"])
+            config = ExperimentConfig(output_dir=str(Path(tmp) / "outputs"), asr_backend="mock", keywords=["목표 용어"])
             with patch("asrpostprocessing.asr_quality_compare._sample_audio", return_value=audio), patch(
                 "asrpostprocessing.asr_quality_compare.preprocess_audio"
             ) as preprocess, patch(
@@ -105,7 +105,7 @@ class ASRQualityCompareTest(unittest.TestCase):
                 preprocess.return_value = PreprocessResult(audio_path=str(audio), applied=False)
                 adapter = build_adapter.return_value
                 adapter.transcribe.side_effect = [
-                    TranscriptResult(language="ko", text="서면 연구를 찾아보고"),
+                    TranscriptResult(language="ko", text="모표 용어를 찾아보고"),
                     TranscriptResult(language="ko", text=""),
                 ]
                 result_path = run_asr_quality_compare(

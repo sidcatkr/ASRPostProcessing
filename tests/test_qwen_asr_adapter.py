@@ -80,7 +80,7 @@ class QwenASRPackageAdapterTest(unittest.TestCase):
             audio = Path(tmp) / "audio.wav"
             audio.write_bytes(b"audio")
             chunk = ASRAudioChunk(path=audio, index=0, start_s=0.0, end_s=30.0, method="single")
-            model = _FakeQwenModel(texts=["假如我查新闻，然后卡特总统。"])
+            model = _FakeQwenModel(texts=["如果测试新闻，然后示例文本。"])
             config = ExperimentConfig(asr_backend="qwen_asr_vllm", language="ko")
             with patch("asrpostprocessing.adapters.qwen_asr._get_model", return_value=model), patch(
                 "asrpostprocessing.adapters.qwen_asr._asr_audio_chunks", return_value=[chunk]
@@ -95,7 +95,7 @@ class QwenASRPackageAdapterTest(unittest.TestCase):
             audio = Path(tmp) / "audio.wav"
             audio.write_bytes(b"audio")
             chunk = ASRAudioChunk(path=audio, index=0, start_s=0.0, end_s=30.0, method="single")
-            model = _FakeQwenModel(texts=["쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자."])
+            model = _FakeQwenModel(texts=["쉬다 와요. language None<asr_text> 如果测试新闻，然后示例文本。 다음 곡 잡자."])
             config = ExperimentConfig(asr_backend="qwen_asr_vllm", language="ko")
             with patch("asrpostprocessing.adapters.qwen_asr._get_model", return_value=model), patch(
                 "asrpostprocessing.adapters.qwen_asr._asr_audio_chunks", return_value=[chunk]
@@ -114,7 +114,7 @@ class QwenASRPackageAdapterTest(unittest.TestCase):
                 texts=["쉬다 와요. 다음 곡 잡자."],
                 time_stamps=[
                     {
-                        "text": "쉬다 와요. language None<asr_text> 假如我查新闻，然后卡特总统。 다음 곡 잡자.",
+                        "text": "쉬다 와요. language None<asr_text> 如果测试新闻，然后示例文本。 다음 곡 잡자.",
                         "start": 0.0,
                         "end": 8.0,
                     }

@@ -79,6 +79,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 기본 balanced 후처리 강도(`postprocess_strength: 0.5`)에서도 keyword list가 제공되면 가까운 ASR near-miss를 사용자가 등록한 keyword로 교정한다.
 - RAW transcript, corrected transcript, diff, CER/WER 계열 metric, edit list, preprocess 결과, server status를 UI에서 확인할 수 있다.
 - 실행 artifact에는 `asr_quality.json`이 포함되어 chunk별 길이/문자 밀도, preprocessing warning, clipping 여부, 권장 재실험 조건을 확인할 수 있다.
+- 실행 artifact에는 `correction_quality.json`도 포함되어 raw/corrected 간 keyword near-miss 변화, ASR artifact marker 잔류 여부, 후처리 fallback 사용 여부를 reference 없이 확인할 수 있다.
 - CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
 - Korean ASR 모드에서는 `language None<asr_text>` 같은 Qwen artifact와 중국어/CJK drift가 transcript 안에 섞여 들어온 경우 후처리 전에 제거한다.
 - 제거된 language drift는 `asr_quality.json`의 `language_drift.filtered_reasons`와 chunk metadata에 기록한다.
@@ -129,6 +130,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - ASR 결과에 중국어/Han drift가 섞여도 후처리 LLM으로 넘기기 전에 제거하므로, `/tmp/processed.txt`처럼 외국어 artifact가 그럴듯한 한국어 문장으로 번역되는 위험을 줄인다.
 - keyword-guided near-miss 보정을 기본 balanced 강도에서 적용해 명확한 domain-term 오인식이 후처리 뒤에도 그대로 남는 문제를 줄인다.
 - 후처리 LLM 요청이 느리거나 실패해도 ASR 결과와 deterministic correction artifact가 남으므로 timeout 상황에서 분석 자료를 잃지 않는다.
+- raw transcript와 corrected transcript를 함께 진단하는 `correction_quality.json`이 남기 때문에 `/tmp`처럼 두 텍스트 파일만으로도 후처리 뒤에 남은 near-miss, artifact marker, fallback 사용 여부를 추적할 수 있다.
 - silence detection이 실패해도 fixed chunking으로 fallback하므로 실험 실행이 중단되지 않는다.
 - ASR 전용 timeout을 둬서 후처리 LLM timeout과 ASR timeout을 별도로 조정할 수 있다.
 - UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.
