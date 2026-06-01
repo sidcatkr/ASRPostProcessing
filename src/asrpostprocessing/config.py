@@ -15,6 +15,8 @@ class ExperimentConfig:
     post_backend: str = "vllm_openai"
     asr_base_url: str = "http://127.0.0.1:18000/v1"
     post_base_url: str = "http://127.0.0.1:18001/v1"
+    asr_base_urls: List[str] = field(default_factory=list)
+    post_base_urls: List[str] = field(default_factory=list)
     request_timeout_s: float = 120.0
     asr_request_timeout_s: float = 300.0
     asr_chunking_strategy: str = "silence"
@@ -35,12 +37,19 @@ class ExperimentConfig:
     post_server_host: str = "0.0.0.0"
     asr_server_command: str = ""
     post_server_command: str = ""
+    pipeline_lanes: List[Dict[str, Any]] = field(default_factory=list)
+    postprocess_parallelism: int = 1
+    auto_experiment_parallelism: int = 1
+    asr_cache_enabled: bool = False
+    preprocess_cache_enabled: bool = False
+    cache_dir: str = "outputs/cache"
 
     enable_preprocess: bool = False
     preprocess_model: str = "none"
     preprocess_strength: float = 0.0
     enable_noise_reduction: bool = False
     noise_reduction_model: str = "none"
+    noise_reduction_command: str = ""
     noise_reduction_strength: float = 0.0
     enable_volume_normalization: bool = False
     volume_normalization_strength: float = 0.0
@@ -103,6 +112,11 @@ class ExperimentConfig:
         config.asr_context_chars = max(0, min(2000, int(config.asr_context_chars)))
         config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
         config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))
+        config.postprocess_parallelism = max(1, min(64, int(config.postprocess_parallelism)))
+        config.auto_experiment_parallelism = max(1, min(64, int(config.auto_experiment_parallelism)))
+        config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)
+        config.asr_base_urls = normalize_url_list(config.asr_base_urls)
+        config.post_base_urls = normalize_url_list(config.post_base_urls)
         return config
 
 
@@ -151,6 +165,34 @@ def normalize_asr_chunking_strategy(value: Any) -> str:
         "false": "none",
     }
     return aliases.get(normalized, "silence")
+
+
+def normalize_url_list(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def normalize_pipeline_lanes(value: Any) -> List[Dict[str, Any]]:
+    if not value:
+        return []
+    if not isinstance(value, list):
+        return []
+    lanes: List[Dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        lane = {str(key): val for key, val in item.items()}
+        lane_name = str(lane.get("name") or f"lane_{index}").strip()
+        if not lane_name:
+            lane_name = f"lane_{index}"
+        lane["name"] = lane_name
+        lanes.append(lane)
+    return lanes
 
 
 def load_config(path: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> ExperimentConfig:

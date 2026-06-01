@@ -10,3 +10,4 @@ gradio.log
 dist/
 build/
 *.egg-info/
+conversations.txt

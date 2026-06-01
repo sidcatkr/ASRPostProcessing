@@ -30,6 +30,10 @@ rag = [
   "sentence-transformers>=3.0",
   "pypdf>=4.0",
 ]
+preprocess = [
+  "deepfilternet>=0.5.6",
+  "pyrnnoise>=0.4.3",
+]
 dev = [
   "pytest>=8.0",
 ]

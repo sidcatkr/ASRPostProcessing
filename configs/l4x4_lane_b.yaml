@@ -1,0 +1,51 @@
+asr_model: Qwen/Qwen3-ASR-1.7B
+post_model: Qwen/Qwen3.5-9B
+asr_backend: vllm_chat
+post_backend: vllm_openai
+asr_base_url: http://127.0.0.1:18002/v1
+post_base_url: http://127.0.0.1:18003/v1
+request_timeout_s: 180
+asr_request_timeout_s: 600
+asr_chunking_strategy: silence
+asr_chunk_seconds: 120
+asr_context_chars: 360
+auto_start_model_servers: true
+model_residency: parallel
+server_start_timeout_s: 1200
+server_log_dir: outputs/model_servers_l4x4
+asr_server_gpu: "2"
+post_server_gpu: "3"
+asr_server_command: >-
+  python -m asrpostprocessing.qwen_asr_serve_compat {model}
+  --host {host}
+  --port {port}
+  --gpu-memory-utilization 0.90
+  --max-model-len 65536
+post_server_command: >-
+  vllm serve {model}
+  --host {host}
+  --port {port}
+  --dtype bfloat16
+  --max-model-len 8192
+  --language-model-only
+  --gpu-memory-utilization 0.90
+  --max-num-seqs 8
+  --max-num-batched-tokens 16384
+postprocess_parallelism: 4
+auto_experiment_parallelism: 1
+asr_cache_enabled: true
+preprocess_cache_enabled: true
+cache_dir: outputs/cache
+enable_noise_reduction: true
+noise_reduction_model: deepfilternet2
+noise_reduction_strength: 0.5
+enable_volume_normalization: true
+volume_normalization_strength: 1.0
+enable_keyword_bias: true
+keyword_bias_weight: 0.5
+enable_llm_postprocess: true
+postprocess_strength: 0.5
+enable_rag: true
+rag_strength: 0.5
+enable_search: true
+search_strength: 0.5

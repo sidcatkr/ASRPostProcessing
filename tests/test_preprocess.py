@@ -9,14 +9,16 @@ from asrpostprocessing.preprocess import ffmpeg_executable, preprocess_audio
 
 
 class PreprocessTest(unittest.TestCase):
-    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for RNNoise preview denoise")
-    def test_rnnoise_uses_browser_safe_ffmpeg_denoise_without_command(self):
+    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for afftdn preview denoise")
+    def test_afftdn_uses_browser_safe_ffmpeg_denoise_without_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "input.wav"
             _write_pcm16_wav(source, [30, -30, 1200, -1200, 20, -20, 900, -900] * 2000)
             config = ExperimentConfig(
                 enable_preprocess=True,
-                preprocess_model="rnnoise",
+                preprocess_model="denoise",
+                enable_noise_reduction=True,
+                noise_reduction_model="afftdn",
                 noise_reduction_strength=0.5,
                 output_dir=str(Path(tmp) / "outputs"),
             )
@@ -32,8 +34,23 @@ class PreprocessTest(unittest.TestCase):
             self.assertGreater(info["duration_seconds"], 0.9)
             self.assertFalse(any("command" in warning.lower() for warning in result.warnings))
 
-    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for BS-RoFormer preview denoise")
-    def test_bs_roformer_uses_browser_safe_ffmpeg_denoise_without_command(self):
+    def test_rnnoise_requires_real_backend_or_custom_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.wav"
+            _write_pcm16_wav(source, [40, -40, 1400, -1400] * 4000)
+            config = ExperimentConfig(
+                enable_noise_reduction=True,
+                noise_reduction_model="RNNoise",
+                noise_reduction_strength=0.5,
+                output_dir=str(Path(tmp) / "outputs"),
+            )
+            result = preprocess_audio(str(source), config)
+            if result.applied:
+                self.assertEqual(result.steps[0]["metadata"]["processor"], "pyrnnoise")
+            else:
+                self.assertIn("RNNoise requires", result.warnings[0])
+
+    def test_bs_roformer_is_not_faked_as_afftdn(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "input.wav"
             _write_pcm16_wav(source, [40, -40, 1400, -1400] * 4000)
@@ -44,18 +61,18 @@ class PreprocessTest(unittest.TestCase):
                 output_dir=str(Path(tmp) / "outputs"),
             )
             result = preprocess_audio(str(source), config)
-            self.assertTrue(result.applied)
-            self.assertEqual(result.steps[0]["metadata"]["processor"], "ffmpeg_afftdn")
-            self.assertEqual(_read_wav_info(Path(result.audio_path))["sample_width"], 2)
+            self.assertFalse(result.applied)
+            self.assertIn("not wired", result.warnings[0])
+            self.assertNotIn("ffmpeg_afftdn", str(result.to_dict()))
 
-    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for RNNoise preview denoise")
+    @unittest.skipUnless(ffmpeg_executable(), "ffmpeg required for afftdn preview denoise")
     def test_noise_and_volume_are_independent_ordered_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "input.wav"
             _write_pcm16_wav(source, [1000, -1000, 1000, -1000] * 4000)
             config = ExperimentConfig(
                 enable_noise_reduction=True,
-                noise_reduction_model="RNNoise",
+                noise_reduction_model="afftdn",
                 noise_reduction_strength=0.5,
                 enable_volume_normalization=True,
                 volume_normalization_strength=1.0,
@@ -144,7 +161,7 @@ class PreprocessTest(unittest.TestCase):
             _write_pcm16_wav(source, [40, -40, 1400, -1400] * 4000)
             config = ExperimentConfig(
                 enable_noise_reduction=True,
-                noise_reduction_model="RNNoise",
+                noise_reduction_model="afftdn",
                 noise_reduction_strength=0.5,
                 output_dir=str(Path(tmp) / "outputs"),
             )

@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from .config import load_config
 from .doctor import doctor_as_json, has_failures, run_doctor
 from .asr_quality_compare import run_asr_quality_compare
+from .auto_experiment import run_auto_experiment
 from .pipeline import PipelineRunner, read_reference
 from .sweep import run_sweep
 from .transcript_quality import build_transcript_quality_report
@@ -38,6 +39,14 @@ def main(argv: Optional[list] = None) -> int:
     sweep_parser = subcommands.add_parser("sweep", help="Run a weight grid over a manifest CSV")
     sweep_parser.add_argument("--manifest", required=True)
     sweep_parser.add_argument("--config")
+
+    auto_parser = subcommands.add_parser("auto-experiment", help="Run the valid toggle-condition matrix for one audio sample")
+    auto_parser.add_argument("--audio", required=True)
+    auto_parser.add_argument("--reference")
+    auto_parser.add_argument("--reference-text")
+    auto_parser.add_argument("--config")
+    auto_parser.add_argument("--mode", choices=["core_ablation", "full_valid"], default="full_valid")
+    _add_backend_overrides(auto_parser)
 
     asr_quality_parser = subcommands.add_parser("asr-quality", help="Compare ASR-only quality across chunk/preprocess settings")
     asr_quality_parser.add_argument("--audio", required=True)
@@ -90,6 +99,20 @@ def main(argv: Optional[list] = None) -> int:
         config = load_config(args.config)
         summary_path = run_sweep(args.manifest, config)
         print(str(summary_path))
+        return 0
+    if args.command == "auto-experiment":
+        config = load_config(args.config, overrides=_backend_overrides(args))
+        reference = args.reference_text or read_reference(args.reference)
+        with contextlib.redirect_stdout(sys.stderr):
+            report = run_auto_experiment(
+                audio_path=args.audio,
+                base_config=config,
+                reference_text=reference,
+                mode=args.mode,
+            )
+        output_path = Path(report["output_dir"]) / "auto_experiment_result.json"
+        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(str(output_path))
         return 0
     if args.command == "asr-quality":
         config = load_config(args.config, overrides=_backend_overrides(args))
@@ -207,7 +230,25 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--search-provider", choices=["duckduckgo", "endpoint", "none"])
     parser.add_argument("--search-endpoint")
     parser.add_argument("--enable-noise-reduction", action="store_true")
-    parser.add_argument("--noise-reduction-model", choices=["none", "RNNoise", "BS-RoFormer", "rnnoise", "bs_roformer"])
+    parser.add_argument(
+        "--noise-reduction-model",
+        choices=[
+            "none",
+            "afftdn",
+            "ffmpeg_afftdn",
+            "RNNoise",
+            "rnnoise",
+            "DeepFilterNet2",
+            "deepfilternet2",
+            "DeepFilterNet2-PF",
+            "deepfilternet2_pf",
+            "DeepFilterNet3",
+            "deepfilternet3",
+            "BS-RoFormer",
+            "bs_roformer",
+        ],
+    )
+    parser.add_argument("--noise-reduction-command")
     parser.add_argument("--noise-reduction-strength", type=float)
     parser.add_argument("--enable-volume-normalization", action="store_true")
     parser.add_argument("--volume-normalization-strength", type=float)
@@ -226,6 +267,12 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     residency_group.add_argument("--sequential-model-loading", action="store_true")
     residency_group.add_argument("--parallel-model-loading", action="store_true")
     parser.add_argument("--server-shutdown-timeout-s", type=float)
+    parser.add_argument("--postprocess-parallelism", type=int)
+    parser.add_argument("--auto-experiment-parallelism", type=int)
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument("--enable-cache", action="store_true")
+    cache_group.add_argument("--disable-cache", action="store_true")
+    parser.add_argument("--cache-dir")
 
 
 def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
@@ -242,6 +289,7 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "search_provider": args.search_provider,
         "search_endpoint": args.search_endpoint,
         "noise_reduction_model": args.noise_reduction_model,
+        "noise_reduction_command": args.noise_reduction_command,
         "noise_reduction_strength": args.noise_reduction_strength,
         "volume_normalization_strength": args.volume_normalization_strength,
         "volume_target_dbfs": args.volume_target_dbfs,
@@ -254,7 +302,16 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "asr_context_chars": args.asr_context_chars,
         "model_residency": args.model_residency,
         "server_shutdown_timeout_s": args.server_shutdown_timeout_s,
+        "postprocess_parallelism": args.postprocess_parallelism,
+        "auto_experiment_parallelism": args.auto_experiment_parallelism,
+        "cache_dir": args.cache_dir,
     }
+    if args.enable_cache:
+        overrides["asr_cache_enabled"] = True
+        overrides["preprocess_cache_enabled"] = True
+    if args.disable_cache:
+        overrides["asr_cache_enabled"] = False
+        overrides["preprocess_cache_enabled"] = False
     if args.auto_start_model_servers:
         overrides["auto_start_model_servers"] = True
     if args.no_auto_start_model_servers:

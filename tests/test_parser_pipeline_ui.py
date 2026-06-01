@@ -345,7 +345,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             finally:
                 os.chdir(current)
 
-    def test_preprocessed_audio_preview_applies_noise_without_command(self):
+    def test_preprocessed_audio_preview_applies_afftdn_without_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             current = Path.cwd()
             try:
@@ -356,7 +356,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                     str(audio),
                     None,
                     True,
-                    "RNNoise",
+                    "afftdn",
                     0.5,
                     False,
                     0.0,
@@ -376,7 +376,7 @@ class ParserPipelineUiTest(unittest.TestCase):
                     str(audio),
                     None,
                     True,
-                    "RNNoise",
+                    "afftdn",
                     0.5,
                     False,
                     0.0,

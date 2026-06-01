@@ -90,6 +90,20 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - ASR 요청에는 post-processing 요청과 별도의 timeout(`asr_request_timeout_s`)을 적용한다.
 - 긴 오디오는 ASR 전 단계에서 audio chunk로 나누어 vLLM ASR endpoint에 순차 요청할 수 있다.
 - chunked ASR에서는 이전 chunk transcript의 최근 일부를 다음 요청에 rolling context로 넣어 긴 발화의 문맥 단절을 줄인다.
+- L4 x4 서버용 scalable profile(`configs/l4x4.yaml`)을 추가해 GPU 0/1과 GPU 2/3을 각각 ASR→post-processing lane으로 동시에 사용할 수 있다.
+- `pipeline_lanes`, `asr_base_urls`, `post_base_urls`를 config에서 정의할 수 있어 endpoint pool을 2개 이상으로 확장할 수 있다.
+- model server auto-start가 lane-aware로 동작해 하나의 config에서 `asr_lane_a`, `post_lane_a`, `asr_lane_b`, `post_lane_b`를 한 번에 준비한다.
+- 후처리 text chunk는 `postprocess_parallelism`으로 병렬 요청할 수 있고, post endpoint pool에 round-robin으로 분산된다.
+- `asr_cache_enabled`와 `preprocess_cache_enabled`를 추가해 같은 audio/preprocess/ASR/keyword 조건의 raw transcript를 재사용한다.
+- CLI `asrpp auto-experiment`와 UI `Auto Experiment Mode`를 추가해 수동 토글 방식은 유지하면서도 유효한 실험 조합을 자동 실행할 수 있다.
+- Auto Experiment의 full valid matrix는 Keyword Bias, Noise Reduction, Volume Normalization의 8개 pre/ASR mode와 no post, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search의 5개 post mode를 곱해 40개 조건을 만든다.
+- RAG/Search는 단독 correction module로 취급하지 않고 LLM post-processing에 종속된 valid condition으로만 실행한다.
+- Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄인다.
+- 전처리 모델 표기를 정리해 `afftdn`은 기존 ffmpeg spectral denoise baseline, `rnnoise`는 실제 RNNoise backend, `deepfilternet2/3`는 실제 DeepFilterNet backend로 분리했다.
+- DeepFilterNet/RNNoise backend가 설치되지 않은 경우 해당 모델을 가짜 afftdn으로 실행하지 않고 warning과 함께 original audio fallback을 남긴다.
+- DeepFilterNet/RNNoise enhanced output은 `noise_reduction_strength`에 따라 original/enhanced alpha mix를 적용할 수 있어 denoise artifact로 ASR이 악화되는지 실험할 수 있다.
+- 외부 전처리 backend는 `noise_reduction_command`로 연결할 수 있어 ClearVoice, FRCRN, MossFormer 같은 후보를 production code hardcoding 없이 실험에 붙일 수 있다.
+- `scripts/serve_l4x4.sh`는 `LANES=asr_gpu:post_gpu:asr_port:post_port,...` 형식으로 lane 수를 늘릴 수 있는 scalable serving script이다.
 
 ## ASR Audio Chunking 구현
 
@@ -139,6 +153,66 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - chunk별 metadata가 남기 때문에 오류 분석과 재현이 쉬워진다.
 - `asr_quality.json`을 별도 artifact로 남겨 `/tmp/raw.txt`처럼 transcript만 남은 상황에서도 preprocess와 chunk 조건을 추적할 수 있다.
 - `asrpp asr-quality --sample-seconds 120 --chunk-seconds 30 --chunk-seconds 60 --chunk-seconds 120`처럼 `/tmp` 문제 구간만 잘라 비교할 수 있다.
+- L4 x4 profile에서는 RTX5000 생존용 post LLM 설정이던 4-bit bitsandbytes, 2K context, `max-num-seqs=1` 제약을 제거하고 bfloat16, 8K context, batched serving으로 후처리 처리량을 높인다.
+- GPU를 tensor-parallel 한 덩어리로만 묶지 않고 ASR/post lane replica로 사용하므로 sweep과 Auto Experiment처럼 조건 수가 많은 연구 작업에서 전체 처리량이 좋아진다.
+- ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
+- preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
+- Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
+- 이전에는 RNNoise/BS-RoFormer 이름을 선택해도 실제로는 ffmpeg afftdn이 실행될 수 있었지만, 이제는 실제 backend가 없으면 fallback으로 명시되어 연구 결과에 잘못된 모델명이 기록되지 않는다.
+
+## L4 x4 실행 구조
+
+권장 기본 실행은 `configs/l4x4.yaml`이다.
+
+    Lane A
+      GPU 0: Qwen3-ASR-1.7B, http://127.0.0.1:18000/v1
+      GPU 1: Qwen3.5-9B post LLM, http://127.0.0.1:18001/v1
+
+    Lane B
+      GPU 2: Qwen3-ASR-1.7B, http://127.0.0.1:18002/v1
+      GPU 3: Qwen3.5-9B post LLM, http://127.0.0.1:18003/v1
+
+수동 실행:
+
+    asrpp run --config configs/l4x4.yaml --audio sample.wav --reference reference.txt
+
+자동 실험:
+
+    asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid
+
+서버만 직접 띄우는 경우:
+
+    scripts/serve_l4x4.sh all
+
+GPU나 port를 더 늘리는 경우:
+
+    LANES=0:1:18000:18001,2:3:18002:18003 scripts/serve_l4x4.sh all
+
+이 구조는 서버 자원을 절약하기 위한 설정이 아니라, ASR endpoint와 post-processing endpoint를 동시에 resident 상태로 두고 condition-level 병렬 실행과 chunk-level 병렬 후처리를 통해 처리량을 극대화하기 위한 설정이다.
+
+## Auto Experiment Matrix
+
+Auto Experiment Mode가 꺼져 있으면 기존 수동 토글이 그대로 실행 설정이다.
+
+Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포함할 축을 의미한다.
+
+- Keyword Bias, Noise Reduction, Volume Normalization: pre/ASR stage axis
+- LLM Postprocess, RAG, Search: postprocess stage axis
+- RAG/Search는 LLM 없이는 실행하지 않는다.
+
+기본 `full_valid` coverage는 다음 조건을 만든다:
+
+- pre/ASR modes: none, K, N, V, K+N, K+V, N+V, K+N+V
+- post modes: none, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search
+- total: 8 x 5 = 40 conditions
+
+`core_ablation` coverage는 빠른 확인용 subset이다.
+
+결과 artifact:
+
+- `auto_experiment_summary.csv`: condition별 metric, cache hit, risk, output path
+- `auto_experiment_analysis.json`: best/worst, baseline 대비 악화 case
+- `auto_experiment_conditions.json`: 생성된 condition matrix
 
 ## 실험 비교 축
 

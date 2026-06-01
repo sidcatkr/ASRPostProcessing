@@ -11,6 +11,7 @@ from threading import Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+from .auto_experiment import run_auto_experiment
 from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
@@ -56,7 +57,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 with gr.Row():
                     enable_noise_reduction = gr.Checkbox(label="Noise reduction", value=initial_config.enable_noise_reduction)
                     noise_reduction_model = gr.Dropdown(
-                        ["none", "RNNoise", "BS-RoFormer"],
+                        ["none", "afftdn", "RNNoise", "DeepFilterNet2", "DeepFilterNet2-PF", "DeepFilterNet3", "BS-RoFormer"],
                         value=initial_config.noise_reduction_model,
                         label="Noise reduction model",
                     )
@@ -154,6 +155,33 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         step=40,
                         label="ASR rolling context chars",
                     )
+            with gr.Accordion("Auto Experiment", open=False):
+                with gr.Row():
+                    auto_experiment_mode = gr.Checkbox(label="Auto Experiment Mode", value=False)
+                    auto_experiment_coverage = gr.Dropdown(
+                        [
+                            ("Core ablation", "core_ablation"),
+                            ("Full valid combination", "full_valid"),
+                        ],
+                        value="full_valid",
+                        label="Coverage",
+                    )
+                with gr.Row():
+                    auto_experiment_parallelism = gr.Slider(
+                        1,
+                        16,
+                        value=initial_config.auto_experiment_parallelism,
+                        step=1,
+                        label="Condition workers",
+                    )
+                    postprocess_parallelism = gr.Slider(
+                        1,
+                        16,
+                        value=initial_config.postprocess_parallelism,
+                        step=1,
+                        label="Postprocess chunk workers",
+                    )
+                    enable_cache = gr.Checkbox(label="Use preprocess/ASR cache", value=True)
             with gr.Accordion("Model server startup", open=True):
                 with gr.Row():
                     auto_start_model_servers = gr.Checkbox(
@@ -295,6 +323,11 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_min_silence_seconds,
                 asr_request_timeout_s,
                 asr_context_chars,
+                auto_experiment_mode,
+                auto_experiment_coverage,
+                auto_experiment_parallelism,
+                postprocess_parallelism,
+                enable_cache,
             ],
             outputs=[
                 raw_output,
@@ -531,6 +564,11 @@ def run_from_ui(
     asr_min_silence_seconds: float = 0.6,
     asr_request_timeout_s: float = 300.0,
     asr_context_chars: int = 240,
+    auto_experiment_mode: bool = False,
+    auto_experiment_coverage: str = "full_valid",
+    auto_experiment_parallelism: int = 1,
+    postprocess_parallelism: int = 1,
+    enable_cache: bool = True,
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
@@ -566,6 +604,10 @@ def run_from_ui(
         enable_preprocess=False,
         preprocess_model="none",
         preprocess_strength=0.0,
+        postprocess_parallelism=int(postprocess_parallelism or 1),
+        auto_experiment_parallelism=int(auto_experiment_parallelism or 1),
+        asr_cache_enabled=bool(enable_cache),
+        preprocess_cache_enabled=bool(enable_cache),
         enable_noise_reduction=bool(enable_noise_reduction),
         noise_reduction_model=noise_reduction_model or "none",
         noise_reduction_strength=float(noise_reduction_strength),
@@ -587,6 +629,38 @@ def run_from_ui(
         search_provider=search_provider or "duckduckgo",
         search_endpoint=search_endpoint or "",
     )
+    if auto_experiment_mode:
+        try:
+            report = run_auto_experiment(
+                audio_path=audio_path,
+                base_config=config,
+                reference_text=reference,
+                rag_inline_text=rag_text or "",
+                mode=auto_experiment_coverage or "full_valid",
+                status_callback=status_callback,
+            )
+        except Exception as exc:
+            return "", "", "", {}, [], {}, [], f"Auto experiment failed: {exc}", None, "", query_gpu_status()
+        return (
+            "",
+            "",
+            "",
+            report.get("analysis", {}),
+            [],
+            {"auto_experiment": True, "condition_count": report.get("condition_count")},
+            [],
+            (
+                f"Auto Experiment ID: {report['run_id']}\n"
+                f"Coverage: {report['mode']}\n"
+                f"Conditions: {report['condition_count']}\n"
+                f"Summary: {report['summary_csv']}\n"
+                f"Analysis: {report['analysis_json']}\n"
+                f"Output: {report['output_dir']}"
+            ),
+            None,
+            "",
+            query_gpu_status(),
+        )
     try:
         output = PipelineRunner(config, status_callback=status_callback).run(audio_path=audio_path, reference_text=reference)
     except Exception as exc:

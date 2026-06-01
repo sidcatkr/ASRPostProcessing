@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import copy
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import build_asr_adapter, build_postprocess_adapter
 from .asr_quality import build_asr_quality_report, build_correction_quality_report
+from .cache import cache_json_path, file_sha256, read_json, stable_json_hash, transcript_from_dict, write_json_atomic
 from .chunking import chunk_segments, chunk_text
 from .config import ExperimentConfig, normalize_model_residency
 from .keyword_correction import apply_keyword_near_miss_corrections
@@ -86,8 +89,7 @@ class PipelineRunner:
             server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["asr"]))
         try:
             self._emit(f"Sending audio to ASR backend {self.config.asr_backend}.")
-            asr = build_asr_adapter(self.config)
-            raw = asr.transcribe(preprocess_result.audio_path, self.config, keyword_instruction=keyword_instruction)
+            raw = self._transcribe_with_cache(preprocess_result.audio_path, keyword_instruction)
             self._emit(f"ASR complete: {len(raw.text)} transcript characters.")
         finally:
             if self._sequential_model_residency():
@@ -144,39 +146,11 @@ class PipelineRunner:
         chunks = chunk_segments(raw.segments) if raw.segments else chunk_text(raw.text, self.config.chunk_max_chars, self.config.chunk_overlap)
         self._emit(f"Preparing LLM post-processing for {len(chunks)} chunk(s).")
         rag_index = build_rag_index(self.config) if self.config.enable_rag else None
-        search_provider = CachedSearchProvider(self.config)
         if self._sequential_model_residency():
             self._emit("Starting post-processing model server.")
             server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["post"]))
         try:
-            postprocessor = build_postprocess_adapter(self.config)
-
-            corrected_chunks: List[str] = []
-            all_edits: List[Edit] = []
-            all_context_ids: List[str] = []
-            chunk_metadata: List[Dict[str, Any]] = []
-            for chunk in chunks:
-                self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)}.")
-                contexts: List[RAGContext] = []
-                if rag_index is not None:
-                    self._emit(f"Retrieving RAG context for chunk {chunk.index + 1}/{len(chunks)}.")
-                    contexts = rag_index.retrieve(chunk.text, top_k=self.config.rag_top_k, strength=self.config.rag_strength)
-                query = self._search_query(chunk.text)
-                search_results: List[SearchResult] = []
-                if self.config.enable_search:
-                    self._emit(f"Searching external context for chunk {chunk.index + 1}/{len(chunks)}.")
-                    search_results = search_provider.search(query)
-                self._emit(f"Sending chunk {chunk.index + 1}/{len(chunks)} to post-processing backend {self.config.post_backend}.")
-                try:
-                    result = postprocessor.correct(chunk.text, self.config, contexts, search_results)
-                    self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)} complete.")
-                except Exception as exc:
-                    self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)} failed; using deterministic fallback.")
-                    result = _fallback_postprocess_result(chunk.text, self.config, exc)
-                corrected_chunks.append(result.corrected_text)
-                all_edits.extend(result.edits)
-                all_context_ids.extend(result.used_context_ids)
-                chunk_metadata.append({"chunk": chunk.__dict__, "risk": result.risk, "metadata": result.metadata})
+            corrected_chunks, all_edits, all_context_ids, chunk_metadata = self._postprocess_chunks(chunks, rag_index)
         finally:
             if self._sequential_model_residency():
                 server_statuses.extend(self._release_stage_model("post"))
@@ -190,6 +164,131 @@ class PipelineRunner:
             used_context_ids=sorted(set(all_context_ids)),
             metadata={"chunks": chunk_metadata},
         )
+
+    def _transcribe_with_cache(self, audio_path: str, keyword_instruction: str) -> TranscriptResult:
+        cache_path = self._asr_cache_path(audio_path, keyword_instruction) if self.config.asr_cache_enabled else None
+        if cache_path is not None:
+            cached = read_json(cache_path)
+            if cached and isinstance(cached.get("transcript"), dict):
+                raw = transcript_from_dict(cached["transcript"])
+                raw.metadata.setdefault("asr_cache", {})
+                raw.metadata["asr_cache"].update({"hit": True, "path": str(cache_path), "key": cached.get("key")})
+                self._emit(f"ASR cache hit: {cache_path}")
+                return raw
+        asr = build_asr_adapter(self.config)
+        raw = asr.transcribe(audio_path, self.config, keyword_instruction=keyword_instruction)
+        if cache_path is not None:
+            key = cache_path.stem
+            write_json_atomic(
+                cache_path,
+                {
+                    "key": key,
+                    "created_at": time.time(),
+                    "transcript": raw.to_dict(),
+                },
+            )
+            raw.metadata.setdefault("asr_cache", {})
+            raw.metadata["asr_cache"].update({"hit": False, "path": str(cache_path), "key": key})
+            self._emit(f"ASR cache stored: {cache_path}")
+        return raw
+
+    def _asr_cache_path(self, audio_path: str, keyword_instruction: str) -> Path:
+        payload = {
+            "audio_sha256": file_sha256(audio_path),
+            "asr_model": self.config.asr_model,
+            "asr_backend": self.config.asr_backend,
+            "language": self.config.language,
+            "asr_chunking_strategy": self.config.asr_chunking_strategy,
+            "asr_chunk_seconds": float(self.config.asr_chunk_seconds),
+            "asr_chunk_padding_seconds": float(self.config.asr_chunk_padding_seconds),
+            "asr_silence_threshold_db": float(self.config.asr_silence_threshold_db),
+            "asr_min_silence_seconds": float(self.config.asr_min_silence_seconds),
+            "asr_context_chars": int(self.config.asr_context_chars),
+            "keyword_bias_enabled": bool(self.config.enable_keyword_bias),
+            "keyword_bias_weight": float(self.config.keyword_bias_weight),
+            "keywords": sorted(self.config.keywords),
+            "keyword_instruction": keyword_instruction,
+            "prompt_version": "vllm_asr_instruction_2026_06_01",
+        }
+        return cache_json_path(self.config.cache_dir, "asr", stable_json_hash(payload))
+
+    def _postprocess_chunks(self, chunks, rag_index):
+        if self.config.postprocess_parallelism <= 1 or len(chunks) <= 1:
+            ordered = [self._postprocess_one_chunk(chunk, len(chunks), rag_index) for chunk in chunks]
+        else:
+            self._emit(
+                f"Post-processing chunks with parallelism={self.config.postprocess_parallelism} "
+                f"across {len(self._post_endpoint_pool())} endpoint(s)."
+            )
+            ordered = [None] * len(chunks)
+            with ThreadPoolExecutor(max_workers=self.config.postprocess_parallelism) as executor:
+                future_to_index = {
+                    executor.submit(self._postprocess_one_chunk, chunk, len(chunks), rag_index): chunk.index for chunk in chunks
+                }
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    ordered[index] = future.result()
+            ordered = [item for item in ordered if item is not None]
+        corrected_chunks: List[str] = []
+        all_edits: List[Edit] = []
+        all_context_ids: List[str] = []
+        chunk_metadata: List[Dict[str, Any]] = []
+        for _, chunk, result in sorted(ordered, key=lambda item: item[0]):
+            corrected_chunks.append(result.corrected_text)
+            all_edits.extend(result.edits)
+            all_context_ids.extend(result.used_context_ids)
+            chunk_metadata.append({"chunk": chunk.__dict__, "risk": result.risk, "metadata": result.metadata})
+        return corrected_chunks, all_edits, all_context_ids, chunk_metadata
+
+    def _postprocess_one_chunk(self, chunk, total_chunks: int, rag_index):
+        self._emit(f"Post-processing chunk {chunk.index + 1}/{total_chunks}.")
+        contexts: List[RAGContext] = []
+        if rag_index is not None:
+            self._emit(f"Retrieving RAG context for chunk {chunk.index + 1}/{total_chunks}.")
+            contexts = rag_index.retrieve(chunk.text, top_k=self.config.rag_top_k, strength=self.config.rag_strength)
+        query = self._search_query(chunk.text)
+        search_results: List[SearchResult] = []
+        chunk_config = self._config_for_post_chunk(chunk.index)
+        if chunk_config.enable_search:
+            self._emit(f"Searching external context for chunk {chunk.index + 1}/{total_chunks}.")
+            search_results = CachedSearchProvider(chunk_config).search(query)
+        self._emit(
+            f"Sending chunk {chunk.index + 1}/{total_chunks} to post-processing backend "
+            f"{chunk_config.post_backend} at {chunk_config.post_base_url}."
+        )
+        try:
+            postprocessor = build_postprocess_adapter(chunk_config)
+            result = postprocessor.correct(chunk.text, chunk_config, contexts, search_results)
+            self._emit(f"Post-processing chunk {chunk.index + 1}/{total_chunks} complete.")
+        except Exception as exc:
+            self._emit(f"Post-processing chunk {chunk.index + 1}/{total_chunks} failed; using deterministic fallback.")
+            result = _fallback_postprocess_result(chunk.text, chunk_config, exc)
+        result.metadata.setdefault("post_base_url", chunk_config.post_base_url)
+        return chunk.index, chunk, result
+
+    def _config_for_post_chunk(self, chunk_index: int) -> ExperimentConfig:
+        endpoints = self._post_endpoint_pool()
+        if not endpoints:
+            return self.config
+        config = copy.deepcopy(self.config)
+        config.post_base_url = endpoints[chunk_index % len(endpoints)]
+        return config
+
+    def _post_endpoint_pool(self) -> List[str]:
+        lanes = getattr(self.config, "pipeline_lanes", []) or []
+        endpoints = [
+            str(lane.get("post_base_url")).strip()
+            for lane in lanes
+            if isinstance(lane, dict) and str(lane.get("post_base_url") or "").strip()
+        ]
+        endpoints.extend(str(item).strip() for item in (getattr(self.config, "post_base_urls", []) or []) if str(item).strip())
+        if not endpoints:
+            endpoints = [self.config.post_base_url]
+        deduped: List[str] = []
+        for endpoint in endpoints:
+            if endpoint not in deduped:
+                deduped.append(endpoint)
+        return deduped
 
     def _initial_server_statuses(self) -> List[Dict[str, Any]]:
         if self._sequential_model_residency():

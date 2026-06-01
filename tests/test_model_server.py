@@ -55,6 +55,34 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual([item.status for item in statuses], ["ready", "ready"])
         start_process.assert_not_called()
 
+    def test_server_specs_expand_pipeline_lanes(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="vllm_chat",
+            post_backend="vllm_openai",
+            pipeline_lanes=[
+                {
+                    "name": "lane_a",
+                    "asr_base_url": "http://127.0.0.1:18000/v1",
+                    "post_base_url": "http://127.0.0.1:18001/v1",
+                    "asr_server_gpu": "0",
+                    "post_server_gpu": "1",
+                },
+                {
+                    "name": "lane_b",
+                    "asr_base_url": "http://127.0.0.1:18002/v1",
+                    "post_base_url": "http://127.0.0.1:18003/v1",
+                    "asr_server_gpu": "2",
+                    "post_server_gpu": "3",
+                },
+            ],
+        )
+        specs = _server_specs(config)
+        self.assertEqual([spec.name for spec in specs], ["asr_lane_a", "post_lane_a", "asr_lane_b", "post_lane_b"])
+        self.assertEqual([spec.stage for spec in specs], ["asr", "post", "asr", "post"])
+        self.assertEqual([spec.gpu for spec in specs], ["0", "1", "2", "3"])
+        self.assertEqual(specs[2].port, 18002)
+
     def test_open_non_model_port_fails_fast(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
         with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
