@@ -24,6 +24,7 @@ from .rag import build_rag_index
 from .schemas import CorrectionResult, Edit, MetricsResult, RAGContext, SearchResult, TranscriptResult
 from .search import CachedSearchProvider
 from .text import make_diff_html, merge_overlapping_texts
+from .vllm_metrics import diff_vllm_metrics, query_vllm_metrics, vllm_metrics_endpoint_pool
 
 StatusCallback = Callable[[str], None]
 
@@ -43,6 +44,7 @@ class PipelineOutput:
     correction_quality: Dict[str, Any]
     timings: Dict[str, Any]
     hardware: Dict[str, Any]
+    vllm_metrics: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -58,6 +60,7 @@ class PipelineOutput:
             "correction_quality": self.correction_quality,
             "timings": self.timings,
             "hardware": self.hardware,
+            "vllm_metrics": self.vllm_metrics,
         }
 
 
@@ -88,6 +91,7 @@ class PipelineRunner:
         server_statuses = self._initial_server_statuses()
         timings["server_readiness_ms"] = _elapsed_ms(stage_started)
         _append_gpu_sample(hardware_samples, "after_server_readiness")
+        vllm_metrics_before = _query_vllm_metrics_for_config(self.config)
         self._emit("Preprocessing audio.")
         stage_started = time.time()
         preprocess_result = preprocess_audio(audio_path, self.config)
@@ -124,6 +128,8 @@ class PipelineRunner:
         timings["audio_seconds_per_second"] = (
             duration_s / (latency_ms / 1000.0) if duration_s is not None and latency_ms > 0.0 else None
         )
+        vllm_metrics_after = _query_vllm_metrics_for_config(self.config)
+        vllm_metrics = diff_vllm_metrics(vllm_metrics_before, vllm_metrics_after)
         self._emit("Evaluating transcript metrics.")
         metrics = evaluate_transcripts(reference_text, raw.text, correction.corrected_text, latency_ms=latency_ms)
         diff_html = make_diff_html(raw.text, correction.corrected_text)
@@ -141,6 +147,7 @@ class PipelineRunner:
             "correction_quality": str(logger.write_json("correction_quality.json", correction_quality)),
             "preprocess": str(logger.write_json("preprocess.json", preprocess_result.to_dict())),
             "metrics": str(logger.write_json("metrics.json", metrics.to_dict())),
+            "vllm_metrics": str(logger.write_json("vllm_metrics.json", vllm_metrics)),
             "edits": str(logger.write_edits(correction.edits)),
             "config": str(logger.write_config()),
             "tensorboard_fallback": str(logger.write_tensorboard_metrics(metrics)),
@@ -159,6 +166,7 @@ class PipelineRunner:
                 artifacts,
                 timings,
                 hardware,
+                vllm_metrics,
             ),
         )
         output = PipelineOutput(
@@ -175,6 +183,7 @@ class PipelineRunner:
             correction_quality=correction_quality,
             timings=timings,
             hardware=hardware,
+            vllm_metrics=vllm_metrics,
         )
         self._emit(f"Run {run_id} complete in {latency_ms / 1000.0:.1f}s.")
         return output
@@ -385,6 +394,7 @@ class PipelineRunner:
         artifacts: Dict[str, str],
         timings: Dict[str, Any],
         hardware: Dict[str, Any],
+        vllm_metrics: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "raw": raw.to_dict(),
@@ -397,6 +407,7 @@ class PipelineRunner:
             "correction_quality": correction_quality,
             "timings": timings,
             "hardware": hardware,
+            "vllm_metrics": vllm_metrics,
             "config": self.config.to_dict(),
         }
 
@@ -421,6 +432,13 @@ def _append_gpu_sample(samples: List[Dict[str, Any]], stage: str) -> None:
             "warnings": status.get("warnings") or [],
         }
     )
+
+
+def _query_vllm_metrics_for_config(config: ExperimentConfig) -> Dict[str, Any]:
+    endpoints = vllm_metrics_endpoint_pool(config)
+    if not endpoints:
+        return {"timestamp": time.time(), "endpoints": {}}
+    return query_vllm_metrics(endpoints)
 
 
 def _hardware_summary(samples: List[Dict[str, Any]]) -> Dict[str, Any]:

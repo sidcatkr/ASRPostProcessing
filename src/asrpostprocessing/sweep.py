@@ -99,6 +99,11 @@ def run_sweep(
             "tokens_per_second",
             "post_output_tokens",
             "vllm_preemption_count",
+            "vllm_prompt_tokens",
+            "vllm_generation_tokens",
+            "vllm_total_tokens",
+            "vllm_request_success_count",
+            "vllm_metrics_available",
             "peak_vram_mb",
             "peak_gpu_utilization_percent",
             "asr_cache_hit",
@@ -211,8 +216,19 @@ def _run_sweep_item(item: Dict[str, Any]) -> Dict[str, object]:
     metrics = output.metrics.to_dict()
     timings = output.timings or {}
     hardware = output.hardware or {}
+    vllm_delta = (output.vllm_metrics or {}).get("delta") if isinstance(output.vllm_metrics, dict) else {}
+    if not isinstance(vllm_delta, dict):
+        vllm_delta = {}
+    vllm_total_tokens = _metric_from_mapping(vllm_delta, "total_tokens")
+    vllm_prompt_tokens = _metric_from_mapping(vllm_delta, "prompt_tokens")
+    vllm_generation_tokens = _metric_from_mapping(vllm_delta, "generation_tokens")
+    vllm_request_success_count = _metric_from_mapping(vllm_delta, "request_success_count")
+    vllm_preemption_count = _metric_from_mapping(vllm_delta, "preemption_count")
     post_output_tokens = _post_output_tokens(output.correction.metadata)
     postprocess_latency_ms = _metric_from_mapping(timings, "postprocess_latency_ms")
+    latency_ms = _metric_from_mapping(timings, "latency_ms") or _metric_from_mapping(metrics, "latency_ms")
+    token_count = post_output_tokens if post_output_tokens is not None else vllm_total_tokens
+    token_latency_ms = postprocess_latency_ms if post_output_tokens is not None else latency_ms
     return {
         "run_id": output.run_id,
         "condition": item["condition"],
@@ -248,12 +264,19 @@ def _run_sweep_item(item: Dict[str, Any]) -> Dict[str, object]:
         "audio_duration_s": timings.get("audio_duration_s"),
         "audio_seconds_per_second": timings.get("audio_seconds_per_second"),
         "tokens_per_second": (
-            post_output_tokens / (postprocess_latency_ms / 1000.0)
-            if post_output_tokens is not None and postprocess_latency_ms and postprocess_latency_ms > 0.0
+            token_count / (token_latency_ms / 1000.0)
+            if token_count is not None and token_latency_ms and token_latency_ms > 0.0
             else ""
         ),
         "post_output_tokens": post_output_tokens if post_output_tokens is not None else "",
-        "vllm_preemption_count": "",
+        "vllm_preemption_count": vllm_preemption_count if vllm_preemption_count is not None else "",
+        "vllm_prompt_tokens": vllm_prompt_tokens if vllm_prompt_tokens is not None else "",
+        "vllm_generation_tokens": vllm_generation_tokens if vllm_generation_tokens is not None else "",
+        "vllm_total_tokens": vllm_total_tokens if vllm_total_tokens is not None else "",
+        "vllm_request_success_count": vllm_request_success_count if vllm_request_success_count is not None else "",
+        "vllm_metrics_available": bool((output.vllm_metrics or {}).get("available"))
+        if isinstance(output.vllm_metrics, dict)
+        else False,
         "peak_vram_mb": hardware.get("observed_peak_vram_mb"),
         "peak_gpu_utilization_percent": hardware.get("observed_peak_gpu_utilization_percent"),
         "asr_cache_hit": _cache_hit(output.raw.metadata.get("asr_cache")),

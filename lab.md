@@ -81,6 +81,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 실행 artifact에는 `asr_quality.json`이 포함되어 chunk별 길이/문자 밀도, preprocessing warning, clipping 여부, 권장 재실험 조건을 확인할 수 있다.
 - `asr_quality.json`은 metadata가 없는 raw transcript만 남은 경우에도 ASR marker, non-Korean CJK drift 후보, near-duplicate phrase variant를 직접 스캔한다.
 - 실행 artifact에는 `correction_quality.json`도 포함되어 raw/corrected 간 keyword near-miss 변화, ASR artifact marker 잔류 여부, 후처리 fallback 사용 여부를 reference 없이 확인할 수 있다.
+- 실행 artifact에는 `vllm_metrics.json`도 포함되어 run 전후 vLLM `/metrics` counter delta, token 처리량, preemption 발생 여부를 endpoint별로 확인할 수 있다.
 - CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
 - CLI `asrpp transcript-quality --raw raw.txt --corrected processed.txt`로 이미 남아 있는 raw/corrected transcript 파일만 가지고도 같은 품질 신호를 JSON으로 재현할 수 있다.
 - Korean ASR 모드에서는 `language None<asr_text>` 같은 Qwen artifact와 중국어/CJK drift가 transcript 안에 섞여 들어온 경우 후처리 전에 제거한다.
@@ -105,7 +106,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - `auto_experiment_saturate_lanes`가 켜져 있으면 condition worker와 ASR cache priming worker를 pipeline lane 수 기준으로 자동 확장해 endpoint가 놀지 않도록 한다.
 - `asrpp sweep`은 `sweep_parallelism`과 pipeline lane 수를 기준으로 condition 실행을 병렬화할 수 있고, 각 case의 ASR endpoint를 lane pool에 분산한다.
 - `asrpp manifest-shard`를 추가해 큰 manifest를 round-robin shard로 나눈 뒤 `configs/l4x4_lane_a.yaml`, `configs/l4x4_lane_b.yaml`로 독립 sweep을 동시에 실행할 수 있다.
-- sweep summary에는 lane id, ASR/post endpoint, endpoint pool, stage별 latency, cache hit, audio throughput, token throughput, 관측 GPU/VRAM peak가 기록된다.
+- sweep summary에는 lane id, ASR/post endpoint, endpoint pool, stage별 latency, cache hit, audio throughput, vLLM token/preemption delta, token throughput, 관측 GPU/VRAM peak가 기록된다.
 - sweep analysis는 `worse_than_raw_cases`, `over_keyword_cases`, `over_rag_cases`, `over_postprocess_cases`, `over_preprocess_cases`를 분리해 어떤 축이 성능을 악화시켰는지 구분한다.
 - model server auto-start와 `scripts/serve_l4x4.sh`는 `server_gpu_memory_utilization: auto` / `GPU_MEMORY_UTILIZATION=auto`를 지원한다.
 - auto GPU memory mode는 서버 시작 시점의 `nvidia-smi` free VRAM을 읽고 `server_gpu_memory_reserved_mb`만 남긴 뒤, `server_gpu_memory_utilization_max` 상한 안에서 lane별 vLLM `--gpu-memory-utilization` 값을 계산한다.
@@ -174,6 +175,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - GPU별/port별 cache root를 분리해 여러 vLLM 서버를 동시에 올릴 때 Torch Inductor/Triton compile cache 파일이 서로 덮이는 문제를 줄인다.
 - 기존 sweep summary의 `over_bias_cases`는 keyword bias와 무관한 악화까지 섞일 수 있었지만, 이제 raw ASR 대비 악화와 keyword/RAG/postprocess/preprocess 강도 악화를 별도 bucket으로 나눠 분석한다.
 - sweep 실행 결과에 lane/endpoint와 stage latency가 남아 L4 x4에서 어떤 lane, 어떤 stage가 병목인지 확인할 수 있다.
+- sweep 실행 결과에는 vLLM `/metrics` 기반 token/preemption delta도 남아 `nvidia-smi` 순간값만으로는 보이지 않는 endpoint별 실제 처리 여부를 확인할 수 있다.
 - ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
 - preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
 - Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
