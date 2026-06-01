@@ -314,6 +314,16 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(parsed["text"], "")
         self.assertIn(parsed.get("language"), (None, ""))
 
+    def test_parse_asr_text_skips_qwen_import_for_plain_transcript(self):
+        def fail_parse(_text):
+            raise AssertionError("plain transcripts should not import qwen_asr parser")
+
+        fake_qwen_asr = types.SimpleNamespace(parse_asr_output=fail_parse)
+        with patch.dict("sys.modules", {"qwen_asr": fake_qwen_asr}):
+            parsed = _parse_asr_text("first text")
+
+        self.assertEqual(parsed["text"], "first text")
+
     def test_parse_asr_text_removes_standalone_language_labels(self):
         parsed = _parse_asr_text("쉬다 와요. language None language None<asr_text> 다음 곡 잡자.")
 

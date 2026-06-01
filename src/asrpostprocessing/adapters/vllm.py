@@ -6,6 +6,8 @@ import json
 import mimetypes
 import re
 import subprocess
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,13 @@ from asrpostprocessing.schemas import CorrectionResult, RAGContext, SearchResult
 
 ASR_CHUNK_OUTPUT_DIR = Path("outputs/asr_chunks")
 ASR_CHUNK_THRESHOLD_RATIO = 1.1
+_QWEN_ASR_PARSE_LOCK = threading.Lock()
+_QWEN_ASR_PARSE_FUNC = None
+_QWEN_ASR_PARSE_LOADED = False
+_QWEN_ASR_MARKER_RE = re.compile(
+    r"(?:^|\s)language\s+(?:none|korean|english|chinese|[a-z_-]+)?\s*<\s*asr_text\s*>|<\s*asr_text\s*>",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -482,19 +491,47 @@ def _extract_message_text(data: dict) -> str:
 
 def _parse_asr_text(text: str) -> dict:
     raw_text = (text or "").strip()
-    try:
-        from qwen_asr import parse_asr_output  # type: ignore
+    if not _looks_like_qwen_asr_output(raw_text):
+        return {"text": _clean_asr_transcript_text(raw_text)}
 
-        parsed = parse_asr_output(raw_text)
+    parse_asr_output = _qwen_asr_parse_output()
+    if parse_asr_output is not None:
+        try:
+            parsed = parse_asr_output(raw_text)
+        except Exception:
+            parsed = None
         if isinstance(parsed, dict):
             return _clean_parsed_asr(parsed, raw_text)
         if isinstance(parsed, tuple) and len(parsed) >= 2:
             return _clean_parsed_asr({"language": parsed[0], "text": parsed[1]}, raw_text)
         if isinstance(parsed, str):
             return {"text": _clean_asr_transcript_text(parsed)}
-    except Exception:
-        pass
     return {"text": _clean_asr_transcript_text(raw_text)}
+
+
+def _qwen_asr_parse_output():
+    module = sys.modules.get("qwen_asr")
+    if module is not None and hasattr(module, "parse_asr_output"):
+        return getattr(module, "parse_asr_output")
+
+    global _QWEN_ASR_PARSE_FUNC, _QWEN_ASR_PARSE_LOADED
+    if _QWEN_ASR_PARSE_LOADED:
+        return _QWEN_ASR_PARSE_FUNC
+
+    with _QWEN_ASR_PARSE_LOCK:
+        if _QWEN_ASR_PARSE_LOADED:
+            return _QWEN_ASR_PARSE_FUNC
+        try:
+            from qwen_asr import parse_asr_output  # type: ignore
+        except Exception:
+            return None
+        _QWEN_ASR_PARSE_FUNC = parse_asr_output
+        _QWEN_ASR_PARSE_LOADED = True
+        return _QWEN_ASR_PARSE_FUNC
+
+
+def _looks_like_qwen_asr_output(raw_text: str) -> bool:
+    return bool(_QWEN_ASR_MARKER_RE.search(raw_text or ""))
 
 
 def _clean_parsed_asr(parsed: dict, raw_text: str) -> dict:
@@ -516,11 +553,7 @@ def _clean_parsed_asr(parsed: dict, raw_text: str) -> dict:
 
 
 def _has_transcript_before_asr_marker(raw_text: str) -> bool:
-    match = re.search(
-        r"(?:^|\s)language\s+(?:none|korean|english|chinese|[a-z_-]+)?\s*<\s*asr_text\s*>|<\s*asr_text\s*>",
-        raw_text or "",
-        flags=re.IGNORECASE,
-    )
+    match = _QWEN_ASR_MARKER_RE.search(raw_text or "")
     if not match:
         return False
     prefix = _clean_asr_transcript_text((raw_text or "")[: match.start()])
