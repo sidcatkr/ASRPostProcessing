@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ExperimentConfig
 from .keyword_bias import normalize_keywords
@@ -15,6 +16,8 @@ _LANGUAGE_LABEL_RE = re.compile(
 )
 _HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 _CJK_PUNCT_RE = re.compile(r"[\u3000-\u303f\uff00-\uffef，。！？、：；]")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]+")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
 
 
 def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], config: ExperimentConfig) -> Dict[str, Any]:
@@ -22,6 +25,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     keyword_near_misses = _keyword_near_misses(raw.text or "", config)
     language_drift_reasons = _language_drift_reasons(raw)
     text_artifacts = _text_artifact_summary(raw.text or "")
+    phrase_instability = _phrase_instability(raw.text or "")
     warnings: List[str] = []
     action_items: List[str] = []
 
@@ -61,6 +65,9 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     if keyword_near_misses:
         warnings.append("ASR contains keyword near-miss candidate(s).")
         action_items.append("Enable keyword-guided post-processing or inspect the listed near-miss terms.")
+    if phrase_instability:
+        warnings.append("ASR transcript contains near-duplicate phrase variant candidate(s).")
+        action_items.append("Inspect repeated phrase variants and provide keywords or reference text for supported correction.")
 
     if not action_items:
         action_items.append("If quality is still poor, compare no-preprocess, fixed 120s, and silence-aware 120s ASR runs.")
@@ -80,6 +87,7 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
         "language_drift": {"filtered_reasons": language_drift_reasons},
         "text_artifacts": text_artifacts,
         "keyword_near_misses": keyword_near_misses,
+        "phrase_instability": phrase_instability,
         "chunks": chunk_reports,
         "warnings": _dedupe(warnings),
         "action_items": _dedupe(action_items),
@@ -98,6 +106,8 @@ def build_correction_quality_report(
     corrected_keyword_near_misses = _keyword_near_misses(corrected_text, config)
     raw_artifacts = _text_artifact_summary(raw_text)
     corrected_artifacts = _text_artifact_summary(corrected_text)
+    raw_phrase_instability = _phrase_instability(raw_text)
+    corrected_phrase_instability = _phrase_instability(corrected_text)
     fallback = _fallback_summary(correction)
     warnings: List[str] = []
     action_items: List[str] = []
@@ -107,6 +117,8 @@ def build_correction_quality_report(
         improvements.append("Corrected transcript has fewer keyword near-miss candidate(s) than raw transcript.")
     if _artifact_score(corrected_artifacts) < _artifact_score(raw_artifacts):
         improvements.append("Corrected transcript has fewer ASR artifact marker(s) than raw transcript.")
+    if raw_phrase_instability and len(corrected_phrase_instability) < len(raw_phrase_instability):
+        improvements.append("Corrected transcript has fewer near-duplicate phrase variant candidate(s) than raw transcript.")
 
     if corrected_keyword_near_misses:
         warnings.append("Corrected transcript still contains keyword near-miss candidate(s).")
@@ -119,6 +131,9 @@ def build_correction_quality_report(
         action_items.append("Check post-processing backend health, request timeout, and text chunk size.")
     if correction.risk in {"medium", "high"}:
         warnings.append(f"Post-processing returned {correction.risk} risk.")
+    if corrected_phrase_instability:
+        warnings.append("Corrected transcript still contains near-duplicate phrase variant candidate(s).")
+        action_items.append("Inspect repeated phrase variants and add supported keywords or reference text for evaluation.")
 
     if not action_items:
         action_items.append("Use reference text with CER/WER evaluation for final quality judgment.")
@@ -141,6 +156,12 @@ def build_correction_quality_report(
         "artifacts": {
             "raw": raw_artifacts,
             "corrected": corrected_artifacts,
+        },
+        "phrase_instability": {
+            "raw_count": len(raw_phrase_instability),
+            "corrected_count": len(corrected_phrase_instability),
+            "raw": raw_phrase_instability,
+            "corrected": corrected_phrase_instability,
         },
         "postprocess": fallback,
         "improvements": improvements,
@@ -250,6 +271,110 @@ def _artifact_score(summary: Dict[str, Any]) -> int:
 
 def _has_artifact_risk(summary: Dict[str, Any]) -> bool:
     return bool(summary.get("has_asr_artifact_markers") or summary.get("non_korean_cjk_drift_candidate"))
+
+
+def _phrase_instability(text: str, max_candidates: int = 900, max_clusters: int = 20) -> List[Dict[str, Any]]:
+    tokens = _TOKEN_RE.findall(text or "")
+    if len(tokens) < 4:
+        return []
+    counts: Dict[Tuple[str, ...], int] = {}
+    first_offsets: Dict[Tuple[str, ...], int] = {}
+    for token_count in (2, 3):
+        for index in range(0, len(tokens) - token_count + 1):
+            phrase_tokens = tuple(tokens[index : index + token_count])
+            compact = "".join(phrase_tokens)
+            if len(compact) < 4 or len(_HANGUL_RE.findall(compact)) < 3:
+                continue
+            counts[phrase_tokens] = counts.get(phrase_tokens, 0) + 1
+            first_offsets.setdefault(phrase_tokens, index)
+    if len(counts) < 2:
+        return []
+
+    candidates = sorted(counts, key=lambda item: (-counts[item], first_offsets[item]))[:max_candidates]
+    groups: Dict[Tuple[int, int, str], List[Tuple[str, ...]]] = defaultdict(list)
+    for phrase_tokens in candidates:
+        for index, token in enumerate(phrase_tokens):
+            if len(token) >= 2:
+                groups[(len(phrase_tokens), index, token.lower())].append(phrase_tokens)
+
+    pairs = []
+    compared = set()
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        limited_group = group[:120]
+        for left_index, left in enumerate(limited_group):
+            for right in limited_group[left_index + 1 :]:
+                key = tuple(sorted((left, right)))
+                if key in compared:
+                    continue
+                compared.add(key)
+                score = _near_phrase_score(left, right)
+                if score is None:
+                    continue
+                pairs.append((score, left, right))
+    if not pairs:
+        return []
+
+    pairs.sort(key=lambda item: (item[0], -counts[item[1]] - counts[item[2]], first_offsets[item[1]]))
+    clusters = []
+    seen = set()
+    for score, left, right in pairs:
+        if left in seen and right in seen:
+            continue
+        seen.add(left)
+        seen.add(right)
+        clusters.append(
+            {
+                "phrases": [
+                    {"text": " ".join(left), "count": counts[left]},
+                    {"text": " ".join(right), "count": counts[right]},
+                ],
+                "token_count": len(left),
+                "distance_ratio": round(score, 3),
+            }
+        )
+        if len(clusters) >= max_clusters:
+            break
+    return clusters
+
+
+def _near_phrase_score(left: Tuple[str, ...], right: Tuple[str, ...]) -> Optional[float]:
+    if len(left) != len(right) or left == right:
+        return None
+    if not any(left_token.lower() == right_token.lower() for left_token, right_token in zip(left, right)):
+        return None
+    left_key = "".join(left).lower()
+    right_key = "".join(right).lower()
+    if left_key == right_key or abs(len(left_key) - len(right_key)) > 2:
+        return None
+    distance = _levenshtein_distance(left_key, right_key)
+    ratio = distance / max(len(left_key), len(right_key))
+    if 0 < distance <= 3 and ratio <= 0.35:
+        return ratio
+    return None
+
+
+def _levenshtein_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    previous[right_index] + 1,
+                    current[right_index - 1] + 1,
+                    previous[right_index - 1] + (0 if left_char == right_char else 1),
+                )
+            )
+        previous = current
+    return previous[-1]
 
 
 def _chunk_reports(raw: TranscriptResult) -> List[Dict[str, Any]]:

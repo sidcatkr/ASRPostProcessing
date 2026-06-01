@@ -110,6 +110,17 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertTrue(report["text_artifacts"]["non_korean_cjk_drift_candidate"])
         self.assertTrue(any("artifact marker" in warning for warning in report["warnings"]))
 
+    def test_report_flags_near_duplicate_phrase_variants_without_keywords(self):
+        raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다. 다음에는 목표 용어를 설명합니다.")
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, ExperimentConfig())
+
+        self.assertGreaterEqual(len(report["phrase_instability"]), 1)
+        phrases = {item["text"] for item in report["phrase_instability"][0]["phrases"]}
+        self.assertTrue(any(phrase.startswith("모표 용어를") for phrase in phrases))
+        self.assertTrue(any(phrase.startswith("목표 용어를") for phrase in phrases))
+        self.assertTrue(any("near-duplicate phrase" in warning for warning in report["warnings"]))
+
     def test_correction_quality_counts_resolved_keyword_near_misses(self):
         raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다.")
         correction = CorrectionResult(
@@ -161,6 +172,16 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertTrue(report["artifacts"]["corrected"]["non_korean_cjk_drift_candidate"])
         self.assertTrue(any("fallback" in warning for warning in report["warnings"]))
         self.assertTrue(any("artifact" in warning for warning in report["warnings"]))
+
+    def test_correction_quality_counts_resolved_phrase_instability(self):
+        raw = TranscriptResult(language="ko", text="오늘은 모표 용어를 설명합니다. 다음에는 목표 용어를 설명합니다.")
+        correction = CorrectionResult(corrected_text="오늘은 목표 용어를 설명합니다. 다음에는 목표 용어를 설명합니다.")
+
+        report = build_correction_quality_report(raw, correction, ExperimentConfig())
+
+        self.assertGreaterEqual(report["phrase_instability"]["raw_count"], 1)
+        self.assertEqual(report["phrase_instability"]["corrected_count"], 0)
+        self.assertTrue(any("near-duplicate phrase" in item for item in report["improvements"]))
 
 
 if __name__ == "__main__":

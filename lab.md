@@ -79,7 +79,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 기본 balanced 후처리 강도(`postprocess_strength: 0.5`)에서도 keyword list가 제공되면 가까운 ASR near-miss를 사용자가 등록한 keyword로 교정한다.
 - RAW transcript, corrected transcript, diff, CER/WER 계열 metric, edit list, preprocess 결과, server status를 UI에서 확인할 수 있다.
 - 실행 artifact에는 `asr_quality.json`이 포함되어 chunk별 길이/문자 밀도, preprocessing warning, clipping 여부, 권장 재실험 조건을 확인할 수 있다.
-- `asr_quality.json`은 metadata가 없는 raw transcript만 남은 경우에도 ASR marker와 non-Korean CJK drift 후보를 직접 스캔한다.
+- `asr_quality.json`은 metadata가 없는 raw transcript만 남은 경우에도 ASR marker, non-Korean CJK drift 후보, near-duplicate phrase variant를 직접 스캔한다.
 - 실행 artifact에는 `correction_quality.json`도 포함되어 raw/corrected 간 keyword near-miss 변화, ASR artifact marker 잔류 여부, 후처리 fallback 사용 여부를 reference 없이 확인할 수 있다.
 - CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
 - CLI `asrpp transcript-quality --raw raw.txt --corrected processed.txt`로 이미 남아 있는 raw/corrected transcript 파일만 가지고도 같은 품질 신호를 JSON으로 재현할 수 있다.
