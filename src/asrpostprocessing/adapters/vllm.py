@@ -257,8 +257,8 @@ def _keyword_correction_guidance(keywords: List[str]) -> str:
     return (
         "Treat the keyword list as correction candidates, not content to insert. "
         "When the raw transcript contains a close Korean ASR near-miss for a listed keyword and the surrounding sentence supports it, "
-        "prefer the listed keyword. For example, if `선행 연구` is listed and the transcript says `서론 연구` near verbs like "
-        "`찾아보다`, `읽어보다`, or academic writing context, correct it to `선행 연구`. "
+        "prefer the listed keyword. Use only the terms provided in the keyword list and local transcript context; "
+        "do not rely on domain-specific examples or fixed replacement pairs. "
         "If the match is not close or the context does not support it, keep the raw phrase."
     )
 

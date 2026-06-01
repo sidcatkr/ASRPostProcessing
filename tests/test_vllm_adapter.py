@@ -54,7 +54,8 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
         self.assertIn("Do not include reasoning", prompt)
         self.assertIn("Keyword correction guidance", prompt)
-        self.assertIn("서론 연구", prompt)
+        self.assertIn("do not rely on domain-specific examples", prompt)
+        self.assertNotIn("서론 연구", prompt)
         self.assertEqual(result.corrected_text, "교정된 문장")
 
     def test_postprocess_applies_high_strength_keyword_near_miss(self):
