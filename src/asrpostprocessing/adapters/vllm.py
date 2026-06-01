@@ -584,12 +584,24 @@ def _clean_parsed_asr(parsed: dict, raw_text: str) -> dict:
         parsed_text = raw_cleaned_text
     if language.lower() == "none":
         cleaned["language"] = ""
-        if raw_cleaned_text and raw_cleaned_text != parsed_text:
-            cleaned["text"] = raw_cleaned_text
-            cleaned["raw_marker_mix_preserved"] = True
-            return cleaned
+    if _has_transcript_before_asr_marker(raw_text) and raw_cleaned_text and raw_cleaned_text != parsed_text:
+        cleaned["text"] = raw_cleaned_text
+        cleaned["raw_marker_mix_preserved"] = True
+        return cleaned
     cleaned["text"] = parsed_text
     return cleaned
+
+
+def _has_transcript_before_asr_marker(raw_text: str) -> bool:
+    match = re.search(
+        r"(?:^|\s)language\s+(?:none|korean|english|chinese|[a-z_-]+)?\s*<\s*asr_text\s*>|<\s*asr_text\s*>",
+        raw_text or "",
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return False
+    prefix = _clean_asr_transcript_text((raw_text or "")[: match.start()])
+    return bool(_HANGUL_RE.search(prefix))
 
 
 def _clean_asr_transcript_text(text: str) -> str:

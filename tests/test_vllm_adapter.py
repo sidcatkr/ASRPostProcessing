@@ -245,7 +245,7 @@ class VLLMAdapterTest(unittest.TestCase):
 
     def test_parse_asr_text_preserves_text_around_midstream_none_marker(self):
         fake_qwen_asr = types.SimpleNamespace(
-            parse_asr_output=lambda _text: {"language": "None", "text": "假如我查新闻，然后卡特总统。 다음 곡 잡자."}
+            parse_asr_output=lambda _text: {"language": "Korean", "text": "다음 곡 잡자."}
         )
 
         with patch.dict("sys.modules", {"qwen_asr": fake_qwen_asr}):
