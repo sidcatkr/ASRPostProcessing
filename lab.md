@@ -82,6 +82,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
 - Korean ASR 모드에서는 `language None<asr_text>` 같은 Qwen artifact와 중국어/CJK drift가 transcript 안에 섞여 들어온 경우 후처리 전에 제거한다.
 - 제거된 language drift는 `asr_quality.json`의 `language_drift.filtered_reasons`와 chunk metadata에 기록한다.
+- 후처리 backend가 timeout 또는 오류를 내도 run 전체를 중단하지 않고 raw transcript를 보존한 뒤, 사용자가 제공한 keyword list 기반 deterministic near-miss correction만 fallback으로 적용한다.
 - 실행 중 GPU/VRAM snapshot과 최근 진행 이벤트를 표시한다.
 - ASR 요청에는 post-processing 요청과 별도의 timeout(`asr_request_timeout_s`)을 적용한다.
 - 긴 오디오는 ASR 전 단계에서 audio chunk로 나누어 vLLM ASR endpoint에 순차 요청할 수 있다.
@@ -127,6 +128,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - 전처리에서 볼륨을 키울 때 peak-limited gain을 사용해 clipped sample이 ASR 품질을 망치는 위험을 줄인다.
 - ASR 결과에 중국어/Han drift가 섞여도 후처리 LLM으로 넘기기 전에 제거하므로, `/tmp/processed.txt`처럼 외국어 artifact가 그럴듯한 한국어 문장으로 번역되는 위험을 줄인다.
 - keyword-guided near-miss 보정을 기본 balanced 강도에서 적용해 명확한 domain-term 오인식이 후처리 뒤에도 그대로 남는 문제를 줄인다.
+- 후처리 LLM 요청이 느리거나 실패해도 ASR 결과와 deterministic correction artifact가 남으므로 timeout 상황에서 분석 자료를 잃지 않는다.
 - silence detection이 실패해도 fixed chunking으로 fallback하므로 실험 실행이 중단되지 않는다.
 - ASR 전용 timeout을 둬서 후처리 LLM timeout과 ASR timeout을 별도로 조정할 수 있다.
 - UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.

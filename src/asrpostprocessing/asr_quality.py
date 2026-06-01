@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .adapters.vllm import _keyword_near_miss_replacements
 from .config import ExperimentConfig
 from .keyword_bias import normalize_keywords
+from .keyword_correction import keyword_near_miss_replacements
 from .schemas import TranscriptResult
 
 
@@ -78,7 +78,7 @@ def _keyword_near_misses(text: str, config: ExperimentConfig) -> List[Dict[str, 
     if not text or not keywords:
         return []
     results = []
-    for start, end, before, after in _keyword_near_miss_replacements(text, keywords):
+    for start, end, before, after in keyword_near_miss_replacements(text, keywords):
         results.append({"before": before, "after": after, "start_char": start, "end_char": end})
     return results
 

@@ -9,6 +9,7 @@ from .adapters import build_asr_adapter, build_postprocess_adapter
 from .asr_quality import build_asr_quality_report
 from .chunking import chunk_segments, chunk_text
 from .config import ExperimentConfig, normalize_model_residency
+from .keyword_correction import apply_keyword_near_miss_corrections
 from .keyword_bias import build_keyword_bias_instruction
 from .logging import RunLogger, make_run_id
 from .metrics import evaluate_transcripts
@@ -158,8 +159,12 @@ class PipelineRunner:
                     self._emit(f"Searching external context for chunk {chunk.index + 1}/{len(chunks)}.")
                     search_results = search_provider.search(query)
                 self._emit(f"Sending chunk {chunk.index + 1}/{len(chunks)} to post-processing backend {self.config.post_backend}.")
-                result = postprocessor.correct(chunk.text, self.config, contexts, search_results)
-                self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)} complete.")
+                try:
+                    result = postprocessor.correct(chunk.text, self.config, contexts, search_results)
+                    self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)} complete.")
+                except Exception as exc:
+                    self._emit(f"Post-processing chunk {chunk.index + 1}/{len(chunks)} failed; using deterministic fallback.")
+                    result = _fallback_postprocess_result(chunk.text, self.config, exc)
                 corrected_chunks.append(result.corrected_text)
                 all_edits.extend(result.edits)
                 all_context_ids.extend(result.used_context_ids)
@@ -254,6 +259,19 @@ def _combine_risk(risks: List[str]) -> str:
     if risks and all(risk == "unchanged" for risk in risks):
         return "unchanged"
     return "unknown"
+
+
+def _fallback_postprocess_result(chunk_text: str, config: ExperimentConfig, exc: Exception) -> CorrectionResult:
+    result = CorrectionResult(
+        corrected_text=chunk_text,
+        risk="high",
+        metadata={
+            "fallback": "raw_transcript_after_postprocess_error",
+            "postprocess_error": str(exc),
+            "post_backend": config.post_backend,
+        },
+    )
+    return apply_keyword_near_miss_corrections(result, config)
 
 
 def _preprocess_status(preprocess: Dict[str, Any]) -> str:

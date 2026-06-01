@@ -87,6 +87,33 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("Post-processing chunk 1/1", event_text)
         self.assertIn("Run progress-test complete", event_text)
 
+    def test_pipeline_falls_back_when_postprocess_chunk_fails(self):
+        class FailingPostprocessor:
+            def correct(self, chunk_text, config, contexts, search_results):
+                raise RuntimeError("post backend timeout")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                mock_transcript="모표 용어를 설명합니다.",
+                keywords=["목표 용어"],
+                postprocess_strength=0.5,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+            with patch("asrpostprocessing.pipeline.build_postprocess_adapter", return_value=FailingPostprocessor()):
+                output = PipelineRunner(config).run(str(audio), run_id="fallback-test")
+
+        self.assertEqual(output.correction.corrected_text, "목표 용어를 설명합니다.")
+        self.assertEqual(output.correction.risk, "high")
+        self.assertEqual(output.correction.edits[0].before, "모표 용어를")
+        chunk_metadata = output.correction.metadata["chunks"][0]["metadata"]
+        self.assertEqual(chunk_metadata["fallback"], "raw_transcript_after_postprocess_error")
+        self.assertIn("post backend timeout", chunk_metadata["postprocess_error"])
+
     def test_preprocess_status_surfaces_applied_warnings(self):
         status = _preprocess_status(
             {
