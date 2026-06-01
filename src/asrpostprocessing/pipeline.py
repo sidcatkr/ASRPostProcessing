@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import time
+import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from .asr_quality import build_asr_quality_report, build_correction_quality_repo
 from .cache import cache_json_path, file_sha256, read_json, stable_json_hash, transcript_from_dict, write_json_atomic
 from .chunking import chunk_segments, chunk_text
 from .config import ExperimentConfig, normalize_model_residency
+from .gpu_status import query_gpu_status
 from .keyword_correction import apply_keyword_near_miss_corrections
 from .keyword_bias import build_keyword_bias_instruction
 from .logging import RunLogger, make_run_id
@@ -39,6 +41,8 @@ class PipelineOutput:
     preprocess: Dict[str, Any]
     asr_quality: Dict[str, Any]
     correction_quality: Dict[str, Any]
+    timings: Dict[str, Any]
+    hardware: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +56,8 @@ class PipelineOutput:
             "preprocess": self.preprocess,
             "asr_quality": self.asr_quality,
             "correction_quality": self.correction_quality,
+            "timings": self.timings,
+            "hardware": self.hardware,
         }
 
 
@@ -69,15 +75,25 @@ class PipelineRunner:
         rag_inline_text: str = "",
     ) -> PipelineOutput:
         started = time.time()
+        timings: Dict[str, Any] = {}
+        hardware_samples: List[Dict[str, Any]] = []
         run_id = run_id or make_run_id(self.config.run_name or "run")
         self._emit(f"Run {run_id} started.")
         if rag_inline_text:
             self.config.rag_inline_text = rag_inline_text
 
+        _append_gpu_sample(hardware_samples, "start")
         self._emit("Checking model server readiness.")
+        stage_started = time.time()
         server_statuses = self._initial_server_statuses()
+        timings["server_readiness_ms"] = _elapsed_ms(stage_started)
+        _append_gpu_sample(hardware_samples, "after_server_readiness")
         self._emit("Preprocessing audio.")
+        stage_started = time.time()
         preprocess_result = preprocess_audio(audio_path, self.config)
+        timings["preprocess_latency_ms"] = _elapsed_ms(stage_started)
+        timings["audio_duration_s"] = _audio_duration_seconds(preprocess_result.to_dict())
+        _append_gpu_sample(hardware_samples, "after_preprocess")
         self._emit(_preprocess_status(preprocess_result.to_dict()))
         keyword_instruction = ""
         if self.config.enable_keyword_bias:
@@ -89,14 +105,25 @@ class PipelineRunner:
             server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["asr"]))
         try:
             self._emit(f"Sending audio to ASR backend {self.config.asr_backend}.")
+            stage_started = time.time()
             raw = self._transcribe_with_cache(preprocess_result.audio_path, keyword_instruction)
+            timings["asr_latency_ms"] = _elapsed_ms(stage_started)
+            _append_gpu_sample(hardware_samples, "after_asr")
             self._emit(f"ASR complete: {len(raw.text)} transcript characters.")
         finally:
             if self._sequential_model_residency():
                 server_statuses.extend(self._release_stage_model("asr"))
 
+        stage_started = time.time()
         correction = self._postprocess(raw, server_statuses)
+        timings["postprocess_latency_ms"] = _elapsed_ms(stage_started)
+        _append_gpu_sample(hardware_samples, "after_postprocess")
         latency_ms = (time.time() - started) * 1000.0
+        timings["latency_ms"] = latency_ms
+        duration_s = _to_float_or_none(timings.get("audio_duration_s"))
+        timings["audio_seconds_per_second"] = (
+            duration_s / (latency_ms / 1000.0) if duration_s is not None and latency_ms > 0.0 else None
+        )
         self._emit("Evaluating transcript metrics.")
         metrics = evaluate_transcripts(reference_text, raw.text, correction.corrected_text, latency_ms=latency_ms)
         diff_html = make_diff_html(raw.text, correction.corrected_text)
@@ -118,9 +145,21 @@ class PipelineRunner:
             "config": str(logger.write_config()),
             "tensorboard_fallback": str(logger.write_tensorboard_metrics(metrics)),
         }
+        hardware = _hardware_summary(hardware_samples)
         logger.write_json(
             "result.json",
-            self._result_payload(raw, correction, metrics, preprocess_result, server_statuses, asr_quality, correction_quality, artifacts),
+            self._result_payload(
+                raw,
+                correction,
+                metrics,
+                preprocess_result,
+                server_statuses,
+                asr_quality,
+                correction_quality,
+                artifacts,
+                timings,
+                hardware,
+            ),
         )
         output = PipelineOutput(
             run_id=run_id,
@@ -134,6 +173,8 @@ class PipelineRunner:
             preprocess=preprocess_result.to_dict(),
             asr_quality=asr_quality,
             correction_quality=correction_quality,
+            timings=timings,
+            hardware=hardware,
         )
         self._emit(f"Run {run_id} complete in {latency_ms / 1000.0:.1f}s.")
         return output
@@ -341,6 +382,8 @@ class PipelineRunner:
         asr_quality: Dict[str, Any],
         correction_quality: Dict[str, Any],
         artifacts: Dict[str, str],
+        timings: Dict[str, Any],
+        hardware: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "raw": raw.to_dict(),
@@ -351,8 +394,91 @@ class PipelineRunner:
             "preprocess": preprocess_result.to_dict(),
             "asr_quality": asr_quality,
             "correction_quality": correction_quality,
+            "timings": timings,
+            "hardware": hardware,
             "config": self.config.to_dict(),
         }
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.time() - started) * 1000.0
+
+
+def _append_gpu_sample(samples: List[Dict[str, Any]], stage: str) -> None:
+    try:
+        status = query_gpu_status()
+    except Exception:
+        return
+    if not status.get("available"):
+        return
+    samples.append(
+        {
+            "stage": stage,
+            "timestamp": status.get("timestamp"),
+            "gpus": status.get("gpus") or [],
+            "processes": status.get("processes") or [],
+            "warnings": status.get("warnings") or [],
+        }
+    )
+
+
+def _hardware_summary(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+    peak_vram_mb = None
+    peak_gpu_utilization_percent = None
+    for sample in samples:
+        for gpu in sample.get("gpus") or []:
+            used = _to_float_or_none(gpu.get("memory_used_mb"))
+            util = _to_float_or_none(gpu.get("gpu_utilization_percent"))
+            if used is not None:
+                peak_vram_mb = used if peak_vram_mb is None else max(peak_vram_mb, used)
+            if util is not None:
+                peak_gpu_utilization_percent = (
+                    util if peak_gpu_utilization_percent is None else max(peak_gpu_utilization_percent, util)
+                )
+    return {
+        "samples": samples,
+        "sample_count": len(samples),
+        "observed_peak_vram_mb": peak_vram_mb,
+        "observed_peak_gpu_utilization_percent": peak_gpu_utilization_percent,
+    }
+
+
+def _audio_duration_seconds(preprocess: Dict[str, Any]) -> Optional[float]:
+    candidates: List[Any] = []
+    for step in preprocess.get("steps") or []:
+        if isinstance(step, dict):
+            metadata = step.get("metadata")
+            if isinstance(metadata, dict):
+                candidates.append(metadata.get("duration_seconds"))
+    metadata = preprocess.get("metadata")
+    if isinstance(metadata, dict):
+        for step in metadata.get("steps") or []:
+            if isinstance(step, dict):
+                step_metadata = step.get("metadata")
+                if isinstance(step_metadata, dict):
+                    candidates.append(step_metadata.get("duration_seconds"))
+    for value in reversed(candidates):
+        duration = _to_float_or_none(value)
+        if duration is not None and duration > 0.0:
+            return duration
+    audio_path = preprocess.get("audio_path")
+    if audio_path:
+        try:
+            with wave.open(str(audio_path), "rb") as reader:
+                rate = reader.getframerate()
+                return reader.getnframes() / float(rate) if rate else None
+        except Exception:
+            return None
+    return None
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    if value in {"", None}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def read_reference(path: Optional[str]) -> Optional[str]:

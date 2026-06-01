@@ -101,6 +101,10 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - RAG/Search는 단독 correction module로 취급하지 않고 LLM post-processing에 종속된 valid condition으로만 실행한다.
 - Auto Experiment는 ASR cache priming을 먼저 수행해 40개 조건에서도 실제 ASR 호출을 pre/ASR group 중심으로 줄이며, model axis가 켜져 있으면 ASR model별 cache group을 분리한다.
 - `auto_experiment_saturate_lanes`가 켜져 있으면 condition worker와 ASR cache priming worker를 pipeline lane 수 기준으로 자동 확장해 endpoint가 놀지 않도록 한다.
+- `asrpp sweep`은 `sweep_parallelism`과 pipeline lane 수를 기준으로 condition 실행을 병렬화할 수 있고, 각 case의 ASR endpoint를 lane pool에 분산한다.
+- `asrpp manifest-shard`를 추가해 큰 manifest를 round-robin shard로 나눈 뒤 `configs/l4x4_lane_a.yaml`, `configs/l4x4_lane_b.yaml`로 독립 sweep을 동시에 실행할 수 있다.
+- sweep summary에는 lane id, ASR/post endpoint, endpoint pool, stage별 latency, cache hit, audio throughput, token throughput, 관측 GPU/VRAM peak가 기록된다.
+- sweep analysis는 `worse_than_raw_cases`, `over_keyword_cases`, `over_rag_cases`, `over_postprocess_cases`, `over_preprocess_cases`를 분리해 어떤 축이 성능을 악화시켰는지 구분한다.
 - model server auto-start와 `scripts/serve_l4x4.sh`는 `server_gpu_memory_utilization: auto` / `GPU_MEMORY_UTILIZATION=auto`를 지원한다.
 - auto GPU memory mode는 서버 시작 시점의 `nvidia-smi` free VRAM을 읽고 `server_gpu_memory_reserved_mb`만 남긴 뒤, `server_gpu_memory_utilization_max` 상한 안에서 lane별 vLLM `--gpu-memory-utilization` 값을 계산한다.
 - 따라서 GPU 0에 다른 사용자의 Python 프로세스가 떠 있으면 그 프로세스에 영향을 주지 않는 남은 VRAM만 사용하고, 해당 프로세스가 사라진 뒤 새로 시작하면 GPU 0도 자동으로 최대 상한까지 사용한다.
@@ -163,6 +167,8 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - GPU를 tensor-parallel 한 덩어리로만 묶지 않고 ASR/post lane replica로 사용하므로 sweep과 Auto Experiment처럼 조건 수가 많은 연구 작업에서 전체 처리량이 좋아진다.
 - GPU memory utilization을 고정값으로 박아 두지 않고 시작 시점 free VRAM에서 자동 계산하므로, 다른 사용자의 프로세스가 있는 GPU도 안전하게 공동 사용할 수 있고 빈 GPU는 더 공격적으로 채울 수 있다.
 - GPU별/port별 cache root를 분리해 여러 vLLM 서버를 동시에 올릴 때 Torch Inductor/Triton compile cache 파일이 서로 덮이는 문제를 줄인다.
+- 기존 sweep summary의 `over_bias_cases`는 keyword bias와 무관한 악화까지 섞일 수 있었지만, 이제 raw ASR 대비 악화와 keyword/RAG/postprocess/preprocess 강도 악화를 별도 bucket으로 나눠 분석한다.
+- sweep 실행 결과에 lane/endpoint와 stage latency가 남아 L4 x4에서 어떤 lane, 어떤 stage가 병목인지 확인할 수 있다.
 - ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
 - preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
 - Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
@@ -196,6 +202,16 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 GPU나 port를 더 늘리는 경우:
 
     LANES=0:1:18000:18001,2:3:18002:18003 scripts/serve_l4x4.sh all
+
+큰 manifest를 lane별로 나눠 독립 sweep을 돌리는 경우:
+
+    asrpp manifest-shard --manifest data/manifest.csv --num-shards 2 --out manifests/
+    asrpp sweep --config configs/l4x4_lane_a.yaml --manifest manifests/shard_0.csv
+    asrpp sweep --config configs/l4x4_lane_b.yaml --manifest manifests/shard_1.csv
+
+하나의 L4 x4 config에서 lane pool을 사용해 sweep을 병렬 실행하는 경우:
+
+    asrpp sweep --config configs/l4x4.yaml --manifest data/manifest.csv --jobs 2
 
 이 구조는 서버 자원을 절약하기 위한 설정이 아니라, ASR endpoint와 post-processing endpoint를 동시에 resident 상태로 두고 condition-level 병렬 실행과 chunk-level 병렬 후처리를 통해 처리량을 극대화하기 위한 설정이다.
 

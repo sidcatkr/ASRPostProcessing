@@ -42,6 +42,8 @@ class ExperimentConfig:
     server_gpu_memory_reserved_mb: int = 256
     pipeline_lanes: List[Dict[str, Any]] = field(default_factory=list)
     postprocess_parallelism: int = 1
+    sweep_parallelism: int = 1
+    sweep_saturate_lanes: bool = True
     auto_experiment_parallelism: int = 1
     auto_experiment_saturate_lanes: bool = True
     auto_experiment_include_models: bool = False
@@ -125,6 +127,7 @@ class ExperimentConfig:
         )
         config.server_gpu_memory_reserved_mb = max(0, int(config.server_gpu_memory_reserved_mb))
         config.postprocess_parallelism = max(1, min(64, int(config.postprocess_parallelism)))
+        config.sweep_parallelism = max(1, min(64, int(config.sweep_parallelism)))
         config.auto_experiment_parallelism = max(1, min(64, int(config.auto_experiment_parallelism)))
         config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)
         config.asr_base_urls = normalize_url_list(config.asr_base_urls)

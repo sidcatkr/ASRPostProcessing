@@ -4,10 +4,12 @@ import copy
 import csv
 import itertools
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import ExperimentConfig
+from .model_server import ensure_model_servers
 from .pipeline import PipelineRunner, read_reference
 
 DEFAULT_KEYWORD_WEIGHTS = [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -36,6 +38,7 @@ def run_sweep(
     post_strengths: Optional[Iterable[float]] = None,
     noise_strengths: Optional[Iterable[float]] = None,
     volume_strengths: Optional[Iterable[float]] = None,
+    jobs: Optional[int] = None,
 ) -> Path:
     rows = _read_manifest(manifest_path)
     summary_dir = Path(base_config.output_dir)
@@ -46,11 +49,33 @@ def run_sweep(
     post_strengths = list(post_strengths or DEFAULT_POST_STRENGTHS)
     noise_strengths = list(noise_strengths or DEFAULT_PREPROCESS_STRENGTHS)
     volume_strengths = list(volume_strengths or DEFAULT_PREPROCESS_STRENGTHS)
+    work_items = _sweep_work_items(
+        rows,
+        base_config,
+        keyword_weights,
+        rag_strengths,
+        post_strengths,
+        noise_strengths,
+        volume_strengths,
+    )
+    max_workers = _sweep_worker_count(base_config, jobs)
+    if max_workers > 1 and base_config.auto_start_model_servers and base_config.model_residency == "parallel":
+        ensure_model_servers(base_config)
     with summary_path.open("w", newline="", encoding="utf-8") as handle:
         fieldnames = [
             "run_id",
             "condition",
             "audio",
+            "lane_id",
+            "asr_endpoint",
+            "post_endpoint",
+            "post_endpoint_pool",
+            "asr_model",
+            "post_model",
+            "asr_backend",
+            "post_backend",
+            "preprocess_model",
+            "noise_reduction_model",
             "keyword_bias_weight",
             "noise_reduction_strength",
             "volume_normalization_strength",
@@ -64,60 +89,275 @@ def run_sweep(
             "semantic_similarity",
             "risk",
             "latency_ms",
+            "server_readiness_ms",
+            "preprocess_latency_ms",
+            "asr_latency_ms",
+            "postprocess_latency_ms",
+            "queue_wait_ms",
+            "audio_duration_s",
+            "audio_seconds_per_second",
+            "tokens_per_second",
+            "post_output_tokens",
+            "vllm_preemption_count",
+            "peak_vram_mb",
+            "peak_gpu_utilization_percent",
+            "asr_cache_hit",
+            "preprocess_cache_hit",
             "output_dir",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         summary_rows: List[Dict[str, object]] = []
-        for row in rows:
-            for condition, keyword_weight, rag_strength, post_strength, noise_strength, volume_strength in _condition_grid(
-                keyword_weights,
-                rag_strengths,
-                post_strengths,
-                noise_strengths,
-                volume_strengths,
-            ):
-                config = _config_for_condition(
-                    base_config,
-                    condition,
-                    keyword_weight,
-                    rag_strength,
-                    post_strength,
-                    noise_strength,
-                    volume_strength,
-                )
-                reference = row.get("reference_text") or read_reference(row.get("reference"))
-                output = PipelineRunner(config).run(
-                    audio_path=row["audio"],
-                    reference_text=reference,
-                    rag_inline_text=row.get("rag_inline_text", ""),
-                )
-                metrics = output.metrics.to_dict()
-                summary_row = {
-                    "run_id": output.run_id,
-                    "condition": condition,
-                    "audio": row["audio"],
-                    "keyword_bias_weight": keyword_weight,
-                    "noise_reduction_strength": noise_strength,
-                    "volume_normalization_strength": volume_strength,
-                    "rag_strength": rag_strength,
-                    "postprocess_strength": post_strength,
-                    "model_residency": config.model_residency,
-                    "cer_normalized_no_space": metrics.get("cer_normalized_no_space"),
-                    "wer_eojeol": metrics.get("wer_eojeol"),
-                    "delta_cer": metrics.get("delta_cer"),
-                    "delta_wer": metrics.get("delta_wer"),
-                    "semantic_similarity": metrics.get("semantic_similarity"),
-                    "risk": output.correction.risk,
-                    "latency_ms": metrics.get("latency_ms"),
-                    "output_dir": output.output_dir,
-                }
+        if max_workers <= 1:
+            for item in work_items:
+                summary_row = _run_sweep_item(item)
                 summary_rows.append(summary_row)
                 writer.writerow(summary_row)
                 handle.flush()
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_item = {executor.submit(_run_sweep_item, item): item for item in work_items}
+                for future in as_completed(future_to_item):
+                    summary_row = future.result()
+                    summary_rows.append(summary_row)
+                    writer.writerow(summary_row)
+                    handle.flush()
     analysis_path = summary_dir / "sweep_analysis.json"
     analysis_path.write_text(json.dumps(analyze_sweep(summary_rows), ensure_ascii=False, indent=2), encoding="utf-8")
     return summary_path
+
+
+def shard_manifest(manifest_path: str, num_shards: int, out_dir: str, prefix: str = "shard") -> List[Path]:
+    if num_shards < 1:
+        raise ValueError("num_shards must be >= 1")
+    with open(manifest_path, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        rows = list(reader)
+    if not fieldnames:
+        raise ValueError("Manifest must include a header row.")
+    for row in rows:
+        if not row.get("audio"):
+            raise ValueError("Manifest rows must include an audio column.")
+    output_dir = Path(out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: List[Path] = []
+    for shard_index in range(num_shards):
+        path = output_dir / f"{prefix}_{shard_index}.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows[shard_index::num_shards]:
+                writer.writerow(row)
+        paths.append(path)
+    return paths
+
+
+def _sweep_work_items(
+    rows: List[Dict[str, str]],
+    base_config: ExperimentConfig,
+    keyword_weights: Iterable[float],
+    rag_strengths: Iterable[float],
+    post_strengths: Iterable[float],
+    noise_strengths: Iterable[float],
+    volume_strengths: Iterable[float],
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        for condition, keyword_weight, rag_strength, post_strength, noise_strength, volume_strength in _condition_grid(
+            keyword_weights,
+            rag_strengths,
+            post_strengths,
+            noise_strengths,
+            volume_strengths,
+        ):
+            config = _config_for_condition(
+                base_config,
+                condition,
+                keyword_weight,
+                rag_strength,
+                post_strength,
+                noise_strength,
+                volume_strength,
+            )
+            lane = _lane_for_case(base_config, len(items))
+            if lane:
+                _apply_lane_to_config(config, lane)
+            items.append(
+                {
+                    "row": row,
+                    "config": config,
+                    "lane": lane,
+                    "condition": condition,
+                    "keyword_weight": keyword_weight,
+                    "rag_strength": rag_strength,
+                    "post_strength": post_strength,
+                    "noise_strength": noise_strength,
+                    "volume_strength": volume_strength,
+                }
+            )
+    return items
+
+
+def _run_sweep_item(item: Dict[str, Any]) -> Dict[str, object]:
+    row = item["row"]
+    config = item["config"]
+    reference = row.get("reference_text") or read_reference(row.get("reference"))
+    output = PipelineRunner(config).run(
+        audio_path=row["audio"],
+        reference_text=reference,
+        rag_inline_text=row.get("rag_inline_text", ""),
+    )
+    metrics = output.metrics.to_dict()
+    timings = output.timings or {}
+    hardware = output.hardware or {}
+    post_output_tokens = _post_output_tokens(output.correction.metadata)
+    postprocess_latency_ms = _metric_from_mapping(timings, "postprocess_latency_ms")
+    return {
+        "run_id": output.run_id,
+        "condition": item["condition"],
+        "audio": row["audio"],
+        "lane_id": (item.get("lane") or {}).get("lane_id", ""),
+        "asr_endpoint": config.asr_base_url,
+        "post_endpoint": config.post_base_url,
+        "post_endpoint_pool": ",".join(_post_endpoint_pool(config)),
+        "asr_model": config.asr_model,
+        "post_model": config.post_model if config.enable_llm_postprocess else "",
+        "asr_backend": config.asr_backend,
+        "post_backend": config.post_backend if config.enable_llm_postprocess else "",
+        "preprocess_model": config.preprocess_model,
+        "noise_reduction_model": config.noise_reduction_model if config.enable_noise_reduction else "",
+        "keyword_bias_weight": item["keyword_weight"],
+        "noise_reduction_strength": item["noise_strength"],
+        "volume_normalization_strength": item["volume_strength"],
+        "rag_strength": item["rag_strength"],
+        "postprocess_strength": item["post_strength"],
+        "model_residency": config.model_residency,
+        "cer_normalized_no_space": metrics.get("cer_normalized_no_space"),
+        "wer_eojeol": metrics.get("wer_eojeol"),
+        "delta_cer": metrics.get("delta_cer"),
+        "delta_wer": metrics.get("delta_wer"),
+        "semantic_similarity": metrics.get("semantic_similarity"),
+        "risk": output.correction.risk,
+        "latency_ms": metrics.get("latency_ms"),
+        "server_readiness_ms": timings.get("server_readiness_ms"),
+        "preprocess_latency_ms": timings.get("preprocess_latency_ms"),
+        "asr_latency_ms": timings.get("asr_latency_ms"),
+        "postprocess_latency_ms": timings.get("postprocess_latency_ms"),
+        "queue_wait_ms": "",
+        "audio_duration_s": timings.get("audio_duration_s"),
+        "audio_seconds_per_second": timings.get("audio_seconds_per_second"),
+        "tokens_per_second": (
+            post_output_tokens / (postprocess_latency_ms / 1000.0)
+            if post_output_tokens is not None and postprocess_latency_ms and postprocess_latency_ms > 0.0
+            else ""
+        ),
+        "post_output_tokens": post_output_tokens if post_output_tokens is not None else "",
+        "vllm_preemption_count": "",
+        "peak_vram_mb": hardware.get("observed_peak_vram_mb"),
+        "peak_gpu_utilization_percent": hardware.get("observed_peak_gpu_utilization_percent"),
+        "asr_cache_hit": _cache_hit(output.raw.metadata.get("asr_cache")),
+        "preprocess_cache_hit": _cache_hit(output.preprocess.get("metadata", {}).get("cache_hit")),
+        "output_dir": output.output_dir,
+    }
+
+
+def _sweep_worker_count(config: ExperimentConfig, jobs: Optional[int]) -> int:
+    requested = int(jobs) if jobs is not None else int(getattr(config, "sweep_parallelism", 1) or 1)
+    requested = max(1, min(64, requested))
+    if not bool(getattr(config, "sweep_saturate_lanes", True)):
+        return requested
+    lane_count = max(
+        1,
+        len([lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]),
+        len(config.asr_base_urls or []),
+        len(config.post_base_urls or []),
+    )
+    return max(requested, lane_count)
+
+
+def _lane_for_case(config: ExperimentConfig, case_index: int) -> Dict[str, str]:
+    lanes = [lane for lane in (config.pipeline_lanes or []) if isinstance(lane, dict)]
+    if lanes:
+        index = case_index % len(lanes)
+        lane = lanes[index]
+        return {
+            "lane_id": str(lane.get("name") or lane.get("id") or f"lane_{index}"),
+            "asr_base_url": str(lane.get("asr_base_url") or ""),
+            "post_base_url": str(lane.get("post_base_url") or ""),
+        }
+    asr_urls = [str(url).strip() for url in (config.asr_base_urls or []) if str(url).strip()]
+    post_urls = [str(url).strip() for url in (config.post_base_urls or []) if str(url).strip()]
+    endpoint_count = max(len(asr_urls), len(post_urls))
+    if endpoint_count <= 0:
+        return {}
+    index = case_index % endpoint_count
+    return {
+        "lane_id": f"endpoint_{index}",
+        "asr_base_url": asr_urls[index % len(asr_urls)] if asr_urls else "",
+        "post_base_url": post_urls[index % len(post_urls)] if post_urls else "",
+    }
+
+
+def _apply_lane_to_config(config: ExperimentConfig, lane: Dict[str, str]) -> None:
+    if lane.get("asr_base_url"):
+        config.asr_base_url = lane["asr_base_url"]
+    if lane.get("post_base_url"):
+        config.post_base_url = lane["post_base_url"]
+
+
+def _post_endpoint_pool(config: ExperimentConfig) -> List[str]:
+    endpoints = [
+        str(lane.get("post_base_url")).strip()
+        for lane in (config.pipeline_lanes or [])
+        if isinstance(lane, dict) and str(lane.get("post_base_url") or "").strip()
+    ]
+    endpoints.extend(str(url).strip() for url in (config.post_base_urls or []) if str(url).strip())
+    endpoints.append(config.post_base_url)
+    deduped: List[str] = []
+    for endpoint in endpoints:
+        if endpoint and endpoint not in deduped:
+            deduped.append(endpoint)
+    return deduped
+
+
+def _post_output_tokens(metadata: Dict[str, Any]) -> Optional[int]:
+    total = 0
+    found = False
+    for chunk in metadata.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_metadata = chunk.get("metadata")
+        if not isinstance(chunk_metadata, dict):
+            continue
+        usage = (chunk_metadata.get("raw") or {}).get("usage") if isinstance(chunk_metadata.get("raw"), dict) else None
+        if not isinstance(usage, dict):
+            continue
+        value = usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("total_tokens")
+        try:
+            total += int(value)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    return total if found else None
+
+
+def _metric_from_mapping(values: Dict[str, Any], key: str) -> Optional[float]:
+    value = values.get(key)
+    if value in {"", None}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cache_hit(value: Any) -> object:
+    if isinstance(value, dict):
+        return value.get("hit", "")
+    if isinstance(value, bool):
+        return value
+    return ""
 
 
 def _read_manifest(path: str) -> List[Dict[str, str]]:
@@ -183,15 +423,15 @@ def _config_for_condition(
 
 def analyze_sweep(rows: List[Dict[str, object]]) -> Dict[str, object]:
     comparable = [row for row in rows if _metric(row, "cer_normalized_no_space") is not None]
-    best = min(
-        comparable,
-        key=lambda row: (
-            _metric_or(row, "cer_normalized_no_space", 999.0),
-            _semantic_drift(row),
-            _metric_or(row, "latency_ms", 999999.0),
-        ),
-        default=None,
-    )
+    best = _best_by(comparable, "cer_normalized_no_space")
+    best_by_wer = _best_by(comparable, "wer_eojeol")
+    semantic_safe = [
+        row
+        for row in comparable
+        if _metric_or(row, "semantic_similarity", 1.0) >= 0.85 and str(row.get("risk", "")).lower() != "high"
+    ]
+    best_semantic_safe = _best_by(semantic_safe, "cer_normalized_no_space")
+    best_latency_quality_tradeoff = _best_latency_quality_tradeoff(comparable, best)
     raw_by_audio = {
         str(row["audio"]): _metric(row, "cer_normalized_no_space")
         for row in comparable
@@ -202,27 +442,55 @@ def analyze_sweep(rows: List[Dict[str, object]]) -> Dict[str, object]:
         for row in comparable
         if _is_zero_weight_row(row)
     }
-    over_bias_cases = []
+    lowest_post_by_condition: Dict[Tuple[str, str, float, float], Tuple[float, Optional[float]]] = {}
+    for row in comparable:
+        key = _post_strength_key(row)
+        post_strength = _metric_or(row, "postprocess_strength", 0.0)
+        cer_value = _metric(row, "cer_normalized_no_space")
+        current = lowest_post_by_condition.get(key)
+        if current is None or post_strength < current[0]:
+            lowest_post_by_condition[key] = (post_strength, cer_value)
+    worse_than_raw_cases = []
+    over_keyword_cases = []
     over_rag_cases = []
     over_postprocess_cases = []
+    over_preprocess_cases = []
     for row in comparable:
         audio = str(row["audio"])
         raw_cer = raw_by_audio.get(audio)
         cer_value = _metric(row, "cer_normalized_no_space")
         if raw_cer is not None and cer_value is not None and cer_value > raw_cer:
-            over_bias_cases.append({**row, "over_bias_reason": "worse_than_raw_asr"})
+            worse_than_raw_cases.append({**row, "worse_than_raw_reason": "cer_above_raw_asr"})
+            if _is_preprocess_row(row):
+                over_preprocess_cases.append({**row, "over_preprocess_reason": "worse_than_raw_asr"})
         zero_cer = zero_weight_by_condition.get(_zero_key(row))
         if zero_cer is not None and cer_value is not None and cer_value > zero_cer:
-            over_bias_cases.append({**row, "over_bias_reason": "worse_than_zero_weight"})
+            if _metric_or(row, "keyword_bias_weight", 0.0) > 0.0:
+                over_keyword_cases.append({**row, "over_bias_reason": "worse_than_zero_weight"})
         if _metric_or(row, "rag_strength", 0.0) > 0.0 and zero_cer is not None and cer_value is not None and cer_value > zero_cer:
             over_rag_cases.append({**row, "over_rag_reason": "worse_than_rag_zero"})
-        if _metric_or(row, "postprocess_strength", 0.0) > 0.25 and zero_cer is not None and cer_value is not None and cer_value > zero_cer:
-            over_postprocess_cases.append({**row, "over_postprocess_reason": "worse_than_zero_weight"})
+        post_baseline = lowest_post_by_condition.get(_post_strength_key(row))
+        if post_baseline is not None:
+            baseline_strength, baseline_cer = post_baseline
+            post_strength = _metric_or(row, "postprocess_strength", 0.0)
+            if (
+                post_strength > baseline_strength
+                and baseline_cer is not None
+                and cer_value is not None
+                and cer_value > baseline_cer
+            ):
+                over_postprocess_cases.append({**row, "over_postprocess_reason": "worse_than_lowest_post_strength"})
     return {
         "best_by_cer": best,
-        "over_bias_cases": over_bias_cases,
+        "best_by_wer": best_by_wer,
+        "best_by_cer_under_semantic_risk_threshold": best_semantic_safe,
+        "best_latency_quality_tradeoff": best_latency_quality_tradeoff,
+        "worse_than_raw_cases": worse_than_raw_cases,
+        "over_bias_cases": over_keyword_cases,
+        "over_keyword_cases": over_keyword_cases,
         "over_rag_cases": over_rag_cases,
         "over_postprocess_cases": over_postprocess_cases,
+        "over_preprocess_cases": over_preprocess_cases,
         "num_rows": len(rows),
         "num_comparable_rows": len(comparable),
     }
@@ -236,6 +504,40 @@ def _metric(row: Dict[str, object], key: str):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _best_by(rows: List[Dict[str, object]], metric_key: str):
+    return min(
+        [row for row in rows if _metric(row, metric_key) is not None],
+        key=lambda row: (
+            _metric_or(row, metric_key, 999.0),
+            _semantic_drift(row),
+            _metric_or(row, "latency_ms", 999999.0),
+        ),
+        default=None,
+    )
+
+
+def _best_latency_quality_tradeoff(rows: List[Dict[str, object]], best_row: Optional[Dict[str, object]]):
+    best_cer = _metric(best_row or {}, "cer_normalized_no_space")
+    if best_cer is None:
+        return None
+    tolerance = max(0.005, abs(best_cer) * 0.05)
+    near_best = [
+        row
+        for row in rows
+        if _metric_or(row, "cer_normalized_no_space", 999.0) <= best_cer + tolerance
+        and _metric(row, "latency_ms") is not None
+    ]
+    return min(
+        near_best,
+        key=lambda row: (
+            _metric_or(row, "latency_ms", 999999.0),
+            _metric_or(row, "cer_normalized_no_space", 999.0),
+            _semantic_drift(row),
+        ),
+        default=best_row,
+    )
 
 
 def _semantic_drift(row: Dict[str, object]) -> float:
@@ -262,4 +564,21 @@ def _zero_key(row: Dict[str, object]) -> Tuple[str, str, float]:
         str(row.get("audio", "")),
         str(row.get("condition", "")),
         _metric_or(row, "postprocess_strength", 0.0),
+    )
+
+
+def _post_strength_key(row: Dict[str, object]) -> Tuple[str, str, float, float]:
+    return (
+        str(row.get("audio", "")),
+        str(row.get("condition", "")),
+        _metric_or(row, "keyword_bias_weight", 0.0),
+        _metric_or(row, "rag_strength", 0.0),
+    )
+
+
+def _is_preprocess_row(row: Dict[str, object]) -> bool:
+    return (
+        _metric_or(row, "noise_reduction_strength", 0.0) > 0.0
+        or _metric_or(row, "volume_normalization_strength", 0.0) > 0.0
+        or str(row.get("condition", "")).startswith("B")
     )

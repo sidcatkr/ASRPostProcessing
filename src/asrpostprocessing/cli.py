@@ -14,7 +14,7 @@ from .doctor import doctor_as_json, has_failures, run_doctor
 from .asr_quality_compare import run_asr_quality_compare
 from .auto_experiment import run_auto_experiment
 from .pipeline import PipelineRunner, read_reference
-from .sweep import run_sweep
+from .sweep import run_sweep, shard_manifest
 from .transcript_quality import build_transcript_quality_report
 
 
@@ -39,6 +39,13 @@ def main(argv: Optional[list] = None) -> int:
     sweep_parser = subcommands.add_parser("sweep", help="Run a weight grid over a manifest CSV")
     sweep_parser.add_argument("--manifest", required=True)
     sweep_parser.add_argument("--config")
+    sweep_parser.add_argument("--jobs", type=int, help="Parallel sweep workers. Defaults to config sweep_parallelism.")
+
+    shard_parser = subcommands.add_parser("manifest-shard", help="Split a manifest CSV into round-robin shards")
+    shard_parser.add_argument("--manifest", required=True)
+    shard_parser.add_argument("--num-shards", type=int, required=True)
+    shard_parser.add_argument("--out", required=True)
+    shard_parser.add_argument("--prefix", default="shard")
 
     auto_parser = subcommands.add_parser("auto-experiment", help="Run the valid toggle-condition matrix for one audio sample")
     auto_parser.add_argument("--audio", required=True)
@@ -97,8 +104,12 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     if args.command == "sweep":
         config = load_config(args.config)
-        summary_path = run_sweep(args.manifest, config)
+        summary_path = run_sweep(args.manifest, config, jobs=args.jobs)
         print(str(summary_path))
+        return 0
+    if args.command == "manifest-shard":
+        paths = shard_manifest(args.manifest, args.num_shards, args.out, prefix=args.prefix)
+        print(json.dumps([str(path) for path in paths], ensure_ascii=False, indent=2))
         return 0
     if args.command == "auto-experiment":
         config = load_config(args.config, overrides=_backend_overrides(args))
