@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import csv
 from pathlib import Path
 
 from asrpostprocessing.auto_experiment import run_auto_experiment
@@ -69,6 +70,14 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertTrue(Path(report["analysis_json"]).exists())
             self.assertGreaterEqual(report["condition_count"], 3)
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
+            self.assertIn("effect_summary", report["analysis"])
+            with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertTrue(rows)
+            self.assertIn("delta_cer_vs_baseline", rows[0])
+            self.assertIn("asr_latency_ms", rows[0])
+            self.assertIn("vllm_total_tokens", rows[0])
+            self.assertIn("preprocess_cache_hit", rows[0])
 
     def test_auto_experiment_can_expand_model_axis(self):
         with tempfile.TemporaryDirectory() as tmp:

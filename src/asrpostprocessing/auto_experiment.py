@@ -73,6 +73,7 @@ def run_auto_experiment(
                 _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
             rows.append(row)
     rows.sort(key=lambda row: str(row.get("case_id") or row.get("condition_id", "")))
+    _annotate_baseline_deltas(rows)
     summary_path = output_dir / "auto_experiment_summary.csv"
     analysis = analyze_auto_experiment(rows)
     analysis_path = output_dir / "auto_experiment_analysis.json"
@@ -117,8 +118,10 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "best_by_cer": best_by_cer,
         "best_by_wer": best_by_wer,
+        "best_latency_quality_tradeoff": _best_latency_quality_tradeoff(comparable, best_by_cer),
         "baseline": baseline,
         "worse_than_baseline": worse_than_baseline,
+        "effect_summary": _auto_effect_summary(rows),
         "num_rows": len(rows),
         "num_comparable_rows": len(comparable),
         "num_failed_rows": len([row for row in rows if row.get("error")]),
@@ -193,7 +196,19 @@ def _run_condition(
 ) -> Dict[str, Any]:
     output = PipelineRunner(config).run(audio_path=audio_path, reference_text=reference_text, rag_inline_text=rag_inline_text)
     metrics = output.metrics.to_dict()
+    timings = output.timings or {}
+    hardware = output.hardware or {}
+    vllm_delta = (output.vllm_metrics or {}).get("delta") if isinstance(output.vllm_metrics, dict) else {}
+    if not isinstance(vllm_delta, dict):
+        vllm_delta = {}
+    post_output_tokens = _post_output_tokens(output.correction.metadata)
+    postprocess_latency_ms = _metric(timings, "postprocess_latency_ms")
+    latency_ms = _metric(timings, "latency_ms") or _metric(metrics, "latency_ms")
+    vllm_total_tokens = _metric(vllm_delta, "total_tokens")
+    token_count = post_output_tokens if post_output_tokens is not None else vllm_total_tokens
+    token_latency_ms = postprocess_latency_ms if post_output_tokens is not None else latency_ms
     asr_cache = output.raw.metadata.get("asr_cache") if isinstance(output.raw.metadata, dict) else {}
+    preprocess_cache = output.preprocess.get("metadata", {}).get("cache_hit") if isinstance(output.preprocess, dict) else ""
     return {
         "case_id": case.case_id,
         "condition_id": case.condition.condition_id,
@@ -218,6 +233,7 @@ def _run_condition(
         "search_strength": config.search_strength,
         "asr_cache_key": asr_cache.get("key") if isinstance(asr_cache, dict) else "",
         "asr_cache_hit": asr_cache.get("hit") if isinstance(asr_cache, dict) else "",
+        "preprocess_cache_hit": preprocess_cache,
         "cer_normalized_no_space": metrics.get("cer_normalized_no_space"),
         "raw_cer_normalized_no_space": metrics.get("raw_cer_normalized_no_space"),
         "delta_cer": metrics.get("delta_cer"),
@@ -226,6 +242,28 @@ def _run_condition(
         "delta_wer": metrics.get("delta_wer"),
         "semantic_similarity": metrics.get("semantic_similarity"),
         "latency_ms": metrics.get("latency_ms"),
+        "server_readiness_ms": timings.get("server_readiness_ms"),
+        "preprocess_latency_ms": timings.get("preprocess_latency_ms"),
+        "asr_latency_ms": timings.get("asr_latency_ms"),
+        "postprocess_latency_ms": timings.get("postprocess_latency_ms"),
+        "audio_duration_s": timings.get("audio_duration_s"),
+        "audio_seconds_per_second": timings.get("audio_seconds_per_second"),
+        "tokens_per_second": (
+            token_count / (token_latency_ms / 1000.0)
+            if token_count is not None and token_latency_ms and token_latency_ms > 0.0
+            else ""
+        ),
+        "post_output_tokens": post_output_tokens if post_output_tokens is not None else "",
+        "vllm_preemption_count": _metric_or_blank(vllm_delta, "preemption_count"),
+        "vllm_prompt_tokens": _metric_or_blank(vllm_delta, "prompt_tokens"),
+        "vllm_generation_tokens": _metric_or_blank(vllm_delta, "generation_tokens"),
+        "vllm_total_tokens": _metric_or_blank(vllm_delta, "total_tokens"),
+        "vllm_request_success_count": _metric_or_blank(vllm_delta, "request_success_count"),
+        "vllm_metrics_available": bool((output.vllm_metrics or {}).get("available"))
+        if isinstance(output.vllm_metrics, dict)
+        else False,
+        "peak_vram_mb": hardware.get("observed_peak_vram_mb"),
+        "peak_gpu_utilization_percent": hardware.get("observed_peak_gpu_utilization_percent"),
         "risk": output.correction.risk,
         "error": "",
     }
@@ -294,14 +332,33 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "search_strength",
         "asr_cache_key",
         "asr_cache_hit",
+        "preprocess_cache_hit",
         "cer_normalized_no_space",
         "raw_cer_normalized_no_space",
         "delta_cer",
+        "delta_cer_vs_baseline",
         "wer_eojeol",
         "raw_wer_eojeol",
         "delta_wer",
+        "delta_wer_vs_baseline",
         "semantic_similarity",
         "latency_ms",
+        "server_readiness_ms",
+        "preprocess_latency_ms",
+        "asr_latency_ms",
+        "postprocess_latency_ms",
+        "audio_duration_s",
+        "audio_seconds_per_second",
+        "tokens_per_second",
+        "post_output_tokens",
+        "vllm_preemption_count",
+        "vllm_prompt_tokens",
+        "vllm_generation_tokens",
+        "vllm_total_tokens",
+        "vllm_request_success_count",
+        "vllm_metrics_available",
+        "peak_vram_mb",
+        "peak_gpu_utilization_percent",
         "risk",
         "error",
     ]
@@ -310,6 +367,112 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def _annotate_baseline_deltas(rows: List[Dict[str, Any]]) -> None:
+    baselines: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if row.get("condition_id") == "baseline" and not row.get("error"):
+            baselines.setdefault(str(row.get("asr_model") or ""), row)
+    fallback = next((row for row in rows if row.get("condition_id") == "baseline" and not row.get("error")), None)
+    for row in rows:
+        baseline = baselines.get(str(row.get("asr_model") or "")) or fallback or {}
+        row["delta_cer_vs_baseline"] = _baseline_delta(baseline, row, "cer_normalized_no_space")
+        row["delta_wer_vs_baseline"] = _baseline_delta(baseline, row, "wer_eojeol")
+
+
+def _baseline_delta(baseline: Dict[str, Any], row: Dict[str, Any], key: str) -> float | str:
+    baseline_value = _metric(baseline, key)
+    value = _metric(row, key)
+    if baseline_value is None or value is None:
+        return ""
+    return baseline_value - value
+
+
+def _best_latency_quality_tradeoff(
+    rows: List[Dict[str, Any]], best_row: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    best_cer = _metric(best_row or {}, "cer_normalized_no_space")
+    if best_cer is None:
+        return None
+    tolerance = max(0.005, abs(best_cer) * 0.05)
+    near_best = [
+        row
+        for row in rows
+        if _metric(row, "latency_ms") is not None
+        and _metric(row, "cer_normalized_no_space") is not None
+        and float(_metric(row, "cer_normalized_no_space") or 999.0) <= best_cer + tolerance
+    ]
+    return min(
+        near_best,
+        key=lambda row: (
+            _metric(row, "latency_ms") or 999999.0,
+            _metric(row, "cer_normalized_no_space") or 999.0,
+        ),
+        default=best_row,
+    )
+
+
+def _auto_effect_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    keys = {
+        "keyword_bias_only": "keyword",
+        "noise_reduction_only": "noise",
+        "volume_normalization_only": "volume",
+        "llm_only": "llm",
+        "llm_rag": "llm__rag",
+        "llm_search": "llm__search",
+        "llm_rag_search": "llm__rag__search",
+    }
+    by_condition: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if row.get("error"):
+            continue
+        by_condition.setdefault(str(row.get("condition_id") or ""), row)
+    return {
+        name: _effect_payload(by_condition.get(condition_id))
+        for name, condition_id in keys.items()
+        if by_condition.get(condition_id) is not None
+    }
+
+
+def _effect_payload(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not row:
+        return {}
+    return {
+        "case_id": row.get("case_id"),
+        "cer_normalized_no_space": row.get("cer_normalized_no_space"),
+        "wer_eojeol": row.get("wer_eojeol"),
+        "delta_cer_vs_baseline": row.get("delta_cer_vs_baseline"),
+        "delta_wer_vs_baseline": row.get("delta_wer_vs_baseline"),
+        "latency_ms": row.get("latency_ms"),
+        "risk": row.get("risk"),
+    }
+
+
+def _post_output_tokens(metadata: Dict[str, Any]) -> Optional[int]:
+    total = 0
+    found = False
+    for chunk in metadata.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_metadata = chunk.get("metadata")
+        if not isinstance(chunk_metadata, dict):
+            continue
+        usage = (chunk_metadata.get("raw") or {}).get("usage") if isinstance(chunk_metadata.get("raw"), dict) else None
+        if not isinstance(usage, dict):
+            continue
+        value = usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("total_tokens")
+        try:
+            total += int(value)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    return total if found else None
+
+
+def _metric_or_blank(values: Dict[str, Any], key: str) -> float | str:
+    value = _metric(values, key)
+    return value if value is not None else ""
 
 
 def _error_row(case: ExperimentCase, exc: Exception) -> Dict[str, Any]:

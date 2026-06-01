@@ -256,8 +256,8 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 
 결과 artifact:
 
-- `auto_experiment_summary.csv`: case별 condition, ASR/post model, metric, cache hit, risk, output path
-- `auto_experiment_analysis.json`: best/worst, baseline 대비 악화 case
+- `auto_experiment_summary.csv`: case별 condition, ASR/post model, metric, baseline 대비 delta, cache hit, stage latency, vLLM token/preemption delta, GPU/VRAM peak, risk, output path
+- `auto_experiment_analysis.json`: best/worst, latency-quality tradeoff, baseline 대비 악화 case, 주요 ablation effect
 - `auto_experiment_conditions.json`: 생성된 condition matrix
 
 ## 실험 비교 축
