@@ -243,6 +243,11 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(parsed["text"], "")
         self.assertIn(parsed.get("language"), (None, ""))
 
+    def test_parse_asr_text_removes_standalone_language_labels(self):
+        parsed = _parse_asr_text("쉬다 와요. language None language None<asr_text> 다음 곡 잡자.")
+
+        self.assertEqual(parsed["text"], "쉬다 와요. 다음 곡 잡자.")
+
     def test_parse_asr_text_preserves_text_around_midstream_none_marker(self):
         fake_qwen_asr = types.SimpleNamespace(
             parse_asr_output=lambda _text: {"language": "Korean", "text": "다음 곡 잡자."}

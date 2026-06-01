@@ -615,6 +615,12 @@ def _clean_asr_transcript_text(text: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(r"</?\s*asr_text\s*>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"(?:^|\s)language\s+(?:none|korean|english|chinese|[a-z_-]+)(?=\s|$)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return re.sub(r"[ \t\r\f\v]+", " ", cleaned).strip()
 
 
