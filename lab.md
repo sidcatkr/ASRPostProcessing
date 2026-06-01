@@ -78,6 +78,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 실행 중 GPU/VRAM snapshot과 최근 진행 이벤트를 표시한다.
 - ASR 요청에는 post-processing 요청과 별도의 timeout(`asr_request_timeout_s`)을 적용한다.
 - 긴 오디오는 ASR 전 단계에서 audio chunk로 나누어 vLLM ASR endpoint에 순차 요청할 수 있다.
+- chunked ASR에서는 이전 chunk transcript의 최근 일부를 다음 요청에 rolling context로 넣어 긴 발화의 문맥 단절을 줄인다.
 
 ## ASR Audio Chunking 구현
 
@@ -96,8 +97,9 @@ ASR audio chunking은 RAW transcript 후처리 chunking과 다른 단계이다. 
 - `asr_chunk_padding_seconds`: silence-aware chunk 양끝에 붙일 padding. 기본값은 0.5초이다.
 - `asr_silence_threshold_db`: 무음 판정 dB threshold. 기본값은 -35dB이다.
 - `asr_min_silence_seconds`: 무음으로 인정할 최소 길이. 기본값은 0.6초이다.
+- `asr_context_chars`: 다음 ASR chunk 요청에 참고용으로 넣을 이전 transcript의 최근 문자 수. 기본값은 240자이며 0이면 비활성화된다.
 
-chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `TranscriptSegment`로 보존된다. Segment metadata에는 chunk index, audio path, chunk method, speech start/end, 원 ASR 응답 metadata가 들어간다. 따라서 CER/WER뿐 아니라 어떤 chunk 전략에서 오류가 생겼는지도 추적할 수 있다.
+chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `TranscriptSegment`로 보존된다. Segment metadata에는 chunk index, audio path, chunk method, speech start/end, rolling context 길이, 원 ASR 응답 metadata가 들어간다. 따라서 CER/WER뿐 아니라 어떤 chunk 전략과 문맥 조건에서 오류가 생겼는지도 추적할 수 있다.
 
 ## 기존 방식 대비 발전점
 
@@ -113,9 +115,10 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - baseline(`none`), fixed 15초, fixed 30초, silence-aware/VAD-style 30초를 같은 코드 경로에서 비교할 수 있다.
 - silence-aware 전략은 가능한 한 무음 지점에서 chunk를 나누므로 말 중간 절단 위험을 줄인다.
 - padding을 추가해 chunk boundary 근처 음성이 잘리는 문제를 완화한다.
+- 이전 chunk transcript를 bounded rolling context로 전달해 강의식 장문 오디오에서 주제와 문장 흐름이 끊기는 문제를 완화한다.
 - silence detection이 실패해도 fixed chunking으로 fallback하므로 실험 실행이 중단되지 않는다.
 - ASR 전용 timeout을 둬서 후처리 LLM timeout과 ASR timeout을 별도로 조정할 수 있다.
-- UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout을 직접 바꿀 수 있다.
+- UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.
 - chunk별 metadata가 남기 때문에 오류 분석과 재현이 쉬워진다.
 
 ## 실험 비교 축
@@ -126,5 +129,6 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - Fixed 15s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=15`
 - Fixed 30s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=30`
 - Silence-aware 30s: `asr_chunking_strategy=silence`, `asr_chunk_seconds=30`
+- Rolling context off/on: `asr_context_chars=0`과 기본값 `asr_context_chars=240`
 
-이 네 조건을 같은 audio, 같은 keyword/RAG/post-process 설정에서 비교하면 audio chunking 자체가 CER/WER과 timeout 안정성에 주는 영향을 분리해서 볼 수 있다.
+이 조건들을 같은 audio, 같은 keyword/RAG/post-process 설정에서 비교하면 audio chunking과 rolling context가 CER/WER과 timeout 안정성에 주는 영향을 분리해서 볼 수 있다.

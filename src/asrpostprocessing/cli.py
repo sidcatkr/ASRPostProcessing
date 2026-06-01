@@ -156,6 +156,13 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enable-volume-normalization", action="store_true")
     parser.add_argument("--volume-normalization-strength", type=float)
     parser.add_argument("--volume-target-dbfs", type=float)
+    parser.add_argument("--asr-request-timeout-s", type=float)
+    parser.add_argument("--asr-chunking-strategy", choices=["silence", "fixed", "none"])
+    parser.add_argument("--asr-chunk-seconds", type=float)
+    parser.add_argument("--asr-chunk-padding-seconds", type=float)
+    parser.add_argument("--asr-silence-threshold-db", type=float)
+    parser.add_argument("--asr-min-silence-seconds", type=float)
+    parser.add_argument("--asr-context-chars", type=int)
     parser.add_argument("--auto-start-model-servers", action="store_true")
     parser.add_argument("--no-auto-start-model-servers", action="store_true")
     residency_group = parser.add_mutually_exclusive_group()
@@ -181,6 +188,13 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "noise_reduction_strength": args.noise_reduction_strength,
         "volume_normalization_strength": args.volume_normalization_strength,
         "volume_target_dbfs": args.volume_target_dbfs,
+        "asr_request_timeout_s": args.asr_request_timeout_s,
+        "asr_chunking_strategy": args.asr_chunking_strategy,
+        "asr_chunk_seconds": args.asr_chunk_seconds,
+        "asr_chunk_padding_seconds": args.asr_chunk_padding_seconds,
+        "asr_silence_threshold_db": args.asr_silence_threshold_db,
+        "asr_min_silence_seconds": args.asr_min_silence_seconds,
+        "asr_context_chars": args.asr_context_chars,
         "model_residency": args.model_residency,
         "server_shutdown_timeout_s": args.server_shutdown_timeout_s,
     }

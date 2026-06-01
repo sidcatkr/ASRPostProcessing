@@ -11,6 +11,7 @@ asr_chunk_seconds: 30
 asr_chunk_padding_seconds: 0.5
 asr_silence_threshold_db: -35
 asr_min_silence_seconds: 0.6
+asr_context_chars: 240
 auto_start_model_servers: true
 model_residency: parallel
 server_start_timeout_s: 900

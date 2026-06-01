@@ -13,6 +13,7 @@ from asrpostprocessing.adapters.vllm import (
     _asr_request_timeout_s,
     _duration_from_ffmpeg_output,
     _post_chat,
+    _rolling_asr_context,
     _silence_aware_chunk_specs,
 )
 from asrpostprocessing.config import ExperimentConfig
@@ -71,11 +72,20 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertTrue(result.metadata["chunked"])
         self.assertEqual(result.metadata["chunking_strategy"], "fixed")
         self.assertEqual(result.metadata["chunks"][0]["method"], "fixed")
+        self.assertEqual(result.metadata["context_chars"], 240)
+        self.assertEqual(result.metadata["chunks"][0]["previous_context_chars"], 0)
+        self.assertGreater(result.metadata["chunks"][1]["previous_context_chars"], 0)
         self.assertEqual(len(result.segments), 2)
         self.assertEqual(result.segments[1].start_s, 30.0)
+        self.assertEqual(result.segments[1].metadata["previous_context_chars"], len("chunk 1 text"))
         self.assertEqual(len(payloads), 2)
         self.assertTrue(payloads[0]["messages"][0]["content"][1]["audio_url"]["url"].startswith("data:audio/"))
         self.assertIn(";base64", payloads[0]["messages"][0]["content"][1]["audio_url"]["url"])
+        first_instruction = payloads[0]["messages"][0]["content"][0]["text"]
+        second_instruction = payloads[1]["messages"][0]["content"][0]["text"]
+        self.assertNotIn("Previous transcript context", first_instruction)
+        self.assertIn("Previous transcript context", second_instruction)
+        self.assertIn("chunk 1 text", second_instruction)
 
     def test_asr_uses_dedicated_timeout(self):
         response = Mock()
@@ -117,6 +127,12 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(config.asr_chunk_seconds, 30.0)
         self.assertEqual(config.asr_chunk_padding_seconds, 0.5)
         self.assertEqual(config.asr_request_timeout_s, 300.0)
+        self.assertEqual(config.asr_context_chars, 240)
+
+    def test_rolling_asr_context_uses_recent_suffix(self):
+        context = _rolling_asr_context(["abcdef", "ghijkl"], 6)
+
+        self.assertEqual(context, "ghijkl")
 
     def test_none_chunking_strategy_keeps_long_audio_whole(self):
         config = ExperimentConfig(asr_chunking_strategy="none")

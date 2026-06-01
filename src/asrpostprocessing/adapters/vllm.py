@@ -46,14 +46,20 @@ class VLLMChatASRAdapter:
             return self._transcribe_chunks(chunks, config, keyword_instruction)
         return self._transcribe_one(audio_path, config, keyword_instruction)
 
-    def _transcribe_one(self, audio_path: str, config: ExperimentConfig, keyword_instruction: str = "") -> TranscriptResult:
+    def _transcribe_one(
+        self,
+        audio_path: str,
+        config: ExperimentConfig,
+        keyword_instruction: str = "",
+        previous_context: str = "",
+    ) -> TranscriptResult:
         payload = {
             "model": config.asr_model,
             "messages": [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": _asr_instruction(keyword_instruction)},
+                        {"type": "text", "text": _asr_instruction(keyword_instruction, previous_context)},
                         {"type": "audio_url", "audio_url": {"url": _data_url(audio_path)}},
                     ],
                 }
@@ -79,8 +85,15 @@ class VLLMChatASRAdapter:
         segments: List[TranscriptSegment] = []
         chunk_metadata = []
         language = config.language
+        context_chars = max(0, int(getattr(config, "asr_context_chars", 240) or 0))
         for chunk in chunks:
-            result = self._transcribe_one(str(chunk.path), config, keyword_instruction=keyword_instruction)
+            previous_context = _rolling_asr_context(texts, context_chars)
+            result = self._transcribe_one(
+                str(chunk.path),
+                config,
+                keyword_instruction=keyword_instruction,
+                previous_context=previous_context,
+            )
             text = result.text.strip()
             if text:
                 texts.append(text)
@@ -96,6 +109,7 @@ class VLLMChatASRAdapter:
                         "chunk_method": chunk.method,
                         "speech_start_s": chunk.speech_start_s,
                         "speech_end_s": chunk.speech_end_s,
+                        "previous_context_chars": len(previous_context),
                         "asr_metadata": result.metadata,
                     },
                 )
@@ -109,6 +123,7 @@ class VLLMChatASRAdapter:
                     "method": chunk.method,
                     "speech_start_s": chunk.speech_start_s,
                     "speech_end_s": chunk.speech_end_s,
+                    "previous_context_chars": len(previous_context),
                     "text_chars": len(text),
                 }
             )
@@ -122,6 +137,7 @@ class VLLMChatASRAdapter:
                 "chunking_strategy": normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence")),
                 "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 30.0) or 30.0),
                 "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
+                "context_chars": context_chars,
                 "chunks": chunk_metadata,
             },
         )
@@ -157,11 +173,27 @@ class VLLMOpenAIPostProcessAdapter:
         return result
 
 
-def _asr_instruction(keyword_instruction: str) -> str:
+def _asr_instruction(keyword_instruction: str, previous_context: str = "") -> str:
     base = "Transcribe the Korean conversational audio faithfully. Preserve spoken meaning and do not invent content."
+    parts = [base]
+    if previous_context:
+        parts.append(
+            "Previous transcript context for continuity only. "
+            "Do not repeat it unless it is spoken again in the current audio:\n"
+            f"{previous_context}"
+        )
     if keyword_instruction:
-        return base + "\n\n" + keyword_instruction
-    return base
+        parts.append(keyword_instruction)
+    return "\n\n".join(parts)
+
+
+def _rolling_asr_context(texts: List[str], max_chars: int) -> str:
+    if max_chars <= 0 or not texts:
+        return ""
+    context = " ".join(" ".join(text.split()) for text in texts if text.strip()).strip()
+    if len(context) <= max_chars:
+        return context
+    return context[-max_chars:].lstrip()
 
 
 def _postprocess_prompt(
