@@ -113,7 +113,7 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 선행 연구를 읽어볼 거니까")
         self.assertEqual([edit.before for edit in result.edits[-2:]], ["서면 연구를", "사학 연구를"])
 
-    def test_postprocess_keeps_keyword_near_miss_disabled_at_balanced_strength(self):
+    def test_postprocess_applies_keyword_near_miss_at_balanced_strength(self):
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
@@ -133,6 +133,33 @@ class VLLMAdapterTest(unittest.TestCase):
             post_base_url="http://127.0.0.1:18001/v1",
             keywords=["선행 연구"],
             postprocess_strength=0.5,
+        )
+        with patch("requests.post", return_value=response):
+            result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])
+
+        self.assertEqual(result.corrected_text, "선행 연구를 찾아보고 읽어볼 거니까")
+        self.assertEqual(result.edits[-1].before, "서론 연구를")
+
+    def test_postprocess_keeps_keyword_near_miss_disabled_at_conservative_strength(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"corrected_text":"서론 연구를 찾아보고 읽어볼 거니까",'
+                            '"edits":[],"risk":"unchanged","used_context_ids":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+        config = ExperimentConfig(
+            post_backend="vllm_openai",
+            post_base_url="http://127.0.0.1:18001/v1",
+            keywords=["선행 연구"],
+            postprocess_strength=0.25,
         )
         with patch("requests.post", return_value=response):
             result = VLLMOpenAIPostProcessAdapter().correct("서론 연구를 찾아보고 읽어볼 거니까", config, [], [])

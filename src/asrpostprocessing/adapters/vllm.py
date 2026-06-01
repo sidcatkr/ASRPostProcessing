@@ -264,7 +264,7 @@ def _keyword_correction_guidance(keywords: List[str]) -> str:
 
 
 def _apply_keyword_near_miss_corrections(result: CorrectionResult, config: ExperimentConfig) -> CorrectionResult:
-    if float(getattr(config, "postprocess_strength", 0.0) or 0.0) < 0.7:
+    if float(getattr(config, "postprocess_strength", 0.0) or 0.0) < 0.5:
         return result
     keywords = [keyword for keyword in normalize_keywords(config.keywords) if _hangul_count(keyword) >= 2]
     if not keywords or not result.corrected_text:

@@ -76,6 +76,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 전처리 preview에서 volume normalization과 noise reduction 선택 상태를 확인할 수 있다.
 - Volume normalization은 peak를 기준으로 gain을 제한해 ASR 입력 전에 clipping이 새로 생기지 않도록 한다.
 - Keyword Bias, LLM 후처리, RAG, Search를 각각 독립적으로 켜고 끌 수 있다.
+- 기본 balanced 후처리 강도(`postprocess_strength: 0.5`)에서도 keyword list가 제공되면 `사학 연구`/`서면 연구` 같은 가까운 ASR near-miss를 `선행 연구`처럼 등록된 keyword로 교정한다.
 - RAW transcript, corrected transcript, diff, CER/WER 계열 metric, edit list, preprocess 결과, server status를 UI에서 확인할 수 있다.
 - 실행 artifact에는 `asr_quality.json`이 포함되어 chunk별 길이/문자 밀도, preprocessing warning, clipping 여부, 권장 재실험 조건을 확인할 수 있다.
 - CLI `asrpp asr-quality`로 같은 오디오를 여러 ASR chunk/preprocess 조건에서 비교하고 JSON 리포트를 만들 수 있다.
@@ -125,6 +126,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - 이전 chunk transcript를 bounded rolling context로 전달해 강의식 장문 오디오에서 주제와 문장 흐름이 끊기는 문제를 완화한다.
 - 전처리에서 볼륨을 키울 때 peak-limited gain을 사용해 clipped sample이 ASR 품질을 망치는 위험을 줄인다.
 - ASR 결과에 중국어/Han drift가 섞여도 후처리 LLM으로 넘기기 전에 제거하므로, `/tmp/processed.txt`처럼 외국어 artifact가 그럴듯한 한국어 문장으로 번역되는 위험을 줄인다.
+- keyword-guided near-miss 보정을 기본 balanced 강도에서 적용해 `/tmp/processed.txt`에 남아 있던 `사학 연구` 같은 명확한 domain-term 오인식이 후처리 뒤에도 그대로 남는 문제를 줄인다.
 - silence detection이 실패해도 fixed chunking으로 fallback하므로 실험 실행이 중단되지 않는다.
 - ASR 전용 timeout을 둬서 후처리 LLM timeout과 ASR timeout을 별도로 조정할 수 있다.
 - UI에서 chunking strategy, chunk length, padding, silence threshold, minimum silence, ASR timeout, rolling context 길이를 직접 바꿀 수 있다.
