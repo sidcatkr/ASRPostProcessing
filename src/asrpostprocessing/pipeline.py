@@ -245,6 +245,7 @@ class PipelineRunner:
             "asr_silence_threshold_db": float(self.config.asr_silence_threshold_db),
             "asr_min_silence_seconds": float(self.config.asr_min_silence_seconds),
             "asr_context_chars": int(self.config.asr_context_chars),
+            "asr_chunk_parallelism": int(self.config.asr_chunk_parallelism),
             "keyword_bias_enabled": bool(self.config.enable_keyword_bias),
             "keyword_bias_weight": float(self.config.keyword_bias_weight),
             "keywords": sorted(self.config.keywords),

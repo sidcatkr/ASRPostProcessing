@@ -90,6 +90,8 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - ASR 요청에는 post-processing 요청과 별도의 timeout(`asr_request_timeout_s`)을 적용한다.
 - 긴 오디오는 ASR 전 단계에서 audio chunk로 나누어 vLLM ASR endpoint에 순차 요청할 수 있다.
 - chunked ASR에서는 이전 chunk transcript의 최근 일부를 다음 요청에 rolling context로 넣어 긴 발화의 문맥 단절을 줄인다.
+- `asr_chunk_parallelism`을 추가해 `asr_context_chars=0` fast mode에서는 ASR audio chunk를 여러 ASR endpoint에 병렬 요청할 수 있다.
+- rolling context가 켜진 기본 accurate mode에서는 chunk 순서를 보존하기 위해 ASR chunk 병렬화를 자동으로 비활성화한다.
 - L4 x4 서버용 scalable profile(`configs/l4x4.yaml`)을 추가해 GPU 0/1과 GPU 2/3을 각각 ASR→post-processing lane으로 동시에 사용할 수 있다.
 - `pipeline_lanes`, `asr_base_urls`, `post_base_urls`를 config에서 정의할 수 있어 endpoint pool을 2개 이상으로 확장할 수 있다.
 - model server auto-start가 lane-aware로 동작해 하나의 config에서 `asr_lane_a`, `post_lane_a`, `asr_lane_b`, `post_lane_b`를 한 번에 준비한다.
@@ -133,6 +135,7 @@ ASR audio chunking은 RAW transcript 후처리 chunking과 다른 단계이다. 
 - `asr_silence_threshold_db`: 무음 판정 dB threshold. 기본값은 -35dB이다.
 - `asr_min_silence_seconds`: 무음으로 인정할 최소 길이. 기본값은 0.6초이다.
 - `asr_context_chars`: 다음 ASR chunk 요청에 참고용으로 넣을 이전 transcript의 최근 문자 수. 기본값은 240자이며 0이면 비활성화된다.
+- `asr_chunk_parallelism`: rolling context가 0일 때 ASR chunk를 병렬 처리할 worker 수. 기본값은 1이다.
 
 chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `TranscriptSegment`로 보존된다. Segment metadata에는 chunk index, audio path, chunk method, speech start/end, rolling context 길이, 원 ASR 응답 metadata가 들어간다. 따라서 CER/WER뿐 아니라 어떤 chunk 전략과 문맥 조건에서 오류가 생겼는지도 추적할 수 있다.
 
@@ -152,6 +155,8 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - silence-aware 전략은 가능한 한 무음 지점에서 chunk를 나누므로 말 중간 절단 위험을 줄인다.
 - padding을 추가해 chunk boundary 근처 음성이 잘리는 문제를 완화한다.
 - 이전 chunk transcript를 bounded rolling context로 전달해 강의식 장문 오디오에서 주제와 문장 흐름이 끊기는 문제를 완화한다.
+- 처리량 실험에서는 `asr_context_chars=0`, `asr_chunk_parallelism=2` 이상으로 설정해 chunk-level ASR 요청을 endpoint pool에 병렬 분산할 수 있다.
+- ASR chunk 병렬 모드는 rolling context를 사용하지 않으므로 정확도 비교에서는 sequential rolling-context 결과와 별도 조건으로 기록한다.
 - 전처리에서 볼륨을 키울 때 peak-limited gain을 사용해 clipped sample이 ASR 품질을 망치는 위험을 줄인다.
 - ASR 결과에 중국어/Han drift가 섞여도 후처리 LLM으로 넘기기 전에 제거하므로, `/tmp/processed.txt`처럼 외국어 artifact가 그럴듯한 한국어 문장으로 번역되는 위험을 줄인다.
 - keyword-guided near-miss 보정을 기본 balanced 강도에서 적용해 명확한 domain-term 오인식이 후처리 뒤에도 그대로 남는 문제를 줄인다.
@@ -263,5 +268,6 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - Fixed 120s: `asr_chunking_strategy=fixed`, `asr_chunk_seconds=120`
 - Silence-aware 120s: `asr_chunking_strategy=silence`, `asr_chunk_seconds=120`
 - Rolling context off/on: `asr_context_chars=0`과 기본값 `asr_context_chars=240`
+- Fast ASR chunk parallel: `asr_context_chars=0`, `asr_chunk_parallelism=2` 이상
 
 이 조건들을 같은 audio, 같은 keyword/RAG/post-process 설정에서 비교하면 audio chunking과 rolling context가 CER/WER과 timeout 안정성에 주는 영향을 분리해서 볼 수 있다.

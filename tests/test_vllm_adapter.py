@@ -1,3 +1,4 @@
+import json
 import tempfile
 import types
 import unittest
@@ -265,6 +266,48 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(result.segments[1].text, "")
         self.assertEqual(result.metadata["chunks"][1]["text_chars"], 0)
 
+    def test_asr_chunks_can_run_in_parallel_when_context_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "chunk0.wav"
+            second = Path(tmp) / "chunk1.wav"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            chunks = [
+                ASRAudioChunk(path=first, index=0, start_s=0.0, end_s=30.0, method="fixed"),
+                ASRAudioChunk(path=second, index=1, start_s=30.0, end_s=60.0, method="fixed"),
+            ]
+            base_urls = []
+
+            def fake_post(base_url, payload, _timeout_s, _service_name):
+                base_urls.append(base_url)
+                payload_text = json.dumps(payload)
+                content = "first text" if "Zmlyc3Q=" in payload_text else "second text"
+                return {"choices": [{"message": {"content": content}}]}
+
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                asr_base_url="http://127.0.0.1:18000/v1",
+                asr_base_urls=["http://127.0.0.1:18000/v1", "http://127.0.0.1:18002/v1"],
+                asr_chunking_strategy="fixed",
+                asr_chunk_seconds=30.0,
+                asr_context_chars=0,
+                asr_chunk_parallelism=2,
+            )
+            with patch("asrpostprocessing.adapters.vllm._audio_duration_seconds", return_value=75.0), patch(
+                "asrpostprocessing.adapters.vllm._split_audio_for_asr", return_value=chunks
+            ), patch("asrpostprocessing.adapters.vllm._post_chat", side_effect=fake_post):
+                result = VLLMChatASRAdapter().transcribe(str(Path(tmp) / "source.wav"), config)
+
+        self.assertEqual(result.text, "first text\nsecond text")
+        self.assertEqual(result.metadata["execution_mode"], "parallel_context_off")
+        self.assertEqual(result.metadata["asr_chunk_parallelism"], 2)
+        self.assertEqual(result.metadata["endpoint_pool"], ["http://127.0.0.1:18000/v1", "http://127.0.0.1:18002/v1"])
+        self.assertEqual(result.metadata["chunks"][0]["previous_context_chars"], 0)
+        self.assertEqual(result.metadata["chunks"][1]["previous_context_chars"], 0)
+        self.assertEqual(result.metadata["chunks"][0]["asr_base_url"], "http://127.0.0.1:18000/v1")
+        self.assertEqual(result.metadata["chunks"][1]["asr_base_url"], "http://127.0.0.1:18002/v1")
+        self.assertEqual(set(base_urls), {"http://127.0.0.1:18000/v1", "http://127.0.0.1:18002/v1"})
+
     def test_parse_asr_text_treats_empty_qwen_marker_as_empty(self):
         parsed = _parse_asr_text("language None<asr_text>")
 
@@ -379,6 +422,7 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertEqual(config.asr_chunk_padding_seconds, 0.5)
         self.assertEqual(config.asr_request_timeout_s, 300.0)
         self.assertEqual(config.asr_context_chars, 240)
+        self.assertEqual(config.asr_chunk_parallelism, 1)
 
     def test_rolling_asr_context_uses_recent_suffix(self):
         context = _rolling_asr_context(["abcdef", "ghijkl"], 6)

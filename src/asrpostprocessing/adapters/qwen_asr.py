@@ -8,6 +8,7 @@ from asrpostprocessing.schemas import TranscriptResult, TranscriptSegment
 
 from .vllm import (
     ASRAudioChunk,
+    _asr_chunk_parallelism,
     _asr_audio_chunks,
     _asr_instruction,
     _clean_asr_transcript_text,
@@ -80,6 +81,7 @@ class QwenASRPackageAdapter:
         chunk_metadata = []
         language = config.language
         context_chars = max(0, int(getattr(config, "asr_context_chars", 240) or 0))
+        requested_parallelism = _asr_chunk_parallelism(config)
         for chunk in chunks:
             previous_context = _rolling_asr_context(texts, context_chars)
             result = self._transcribe_one(
@@ -132,6 +134,8 @@ class QwenASRPackageAdapter:
                 "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0),
                 "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
                 "context_chars": context_chars,
+                "asr_chunk_parallelism": requested_parallelism,
+                "execution_mode": "sequential_direct_backend",
                 "chunks": chunk_metadata,
             },
         )

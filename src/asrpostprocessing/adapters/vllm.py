@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import mimetypes
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
@@ -96,6 +98,9 @@ class VLLMChatASRAdapter:
         chunk_metadata = []
         language = config.language
         context_chars = max(0, int(getattr(config, "asr_context_chars", 240) or 0))
+        requested_parallelism = _asr_chunk_parallelism(config)
+        if context_chars <= 0 and requested_parallelism > 1 and len(chunks) > 1:
+            return self._transcribe_chunks_parallel(chunks, config, keyword_instruction, requested_parallelism)
         for chunk in chunks:
             previous_context = _rolling_asr_context(texts, context_chars)
             result = self._transcribe_one(
@@ -148,9 +153,102 @@ class VLLMChatASRAdapter:
                 "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0),
                 "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
                 "context_chars": context_chars,
+                "asr_chunk_parallelism": requested_parallelism,
+                "execution_mode": "sequential_rolling_context",
                 "chunks": chunk_metadata,
             },
         )
+
+    def _transcribe_chunks_parallel(
+        self,
+        chunks: List[ASRAudioChunk],
+        config: ExperimentConfig,
+        keyword_instruction: str,
+        requested_parallelism: int,
+    ) -> TranscriptResult:
+        max_workers = min(max(1, requested_parallelism), len(chunks))
+        results: List[Tuple[ASRAudioChunk, TranscriptResult, str]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {
+                executor.submit(self._transcribe_parallel_chunk, chunk, config, keyword_instruction): chunk.index
+                for chunk in chunks
+            }
+            for future in as_completed(future_to_index):
+                results.append(future.result())
+        results.sort(key=lambda item: item[0].index)
+        texts: List[str] = []
+        segments: List[TranscriptSegment] = []
+        chunk_metadata = []
+        language = config.language
+        for chunk, result, endpoint in results:
+            text = result.text.strip()
+            if text:
+                texts.append(text)
+            language = result.language or language
+            metadata = {
+                "chunk_index": chunk.index,
+                "audio_path": str(chunk.path),
+                "chunk_method": chunk.method,
+                "speech_start_s": chunk.speech_start_s,
+                "speech_end_s": chunk.speech_end_s,
+                "previous_context_chars": 0,
+                "asr_base_url": endpoint,
+                "asr_metadata": result.metadata,
+            }
+            segments.append(
+                TranscriptSegment(
+                    text=text,
+                    start_s=chunk.start_s,
+                    end_s=chunk.end_s,
+                    metadata=metadata,
+                )
+            )
+            chunk_metadata.append(
+                {
+                    "index": chunk.index,
+                    "audio_path": str(chunk.path),
+                    "start_s": chunk.start_s,
+                    "end_s": chunk.end_s,
+                    "method": chunk.method,
+                    "speech_start_s": chunk.speech_start_s,
+                    "speech_end_s": chunk.speech_end_s,
+                    "previous_context_chars": 0,
+                    "asr_base_url": endpoint,
+                    "text_chars": len(text),
+                }
+            )
+        return TranscriptResult(
+            language=language,
+            text="\n".join(texts).strip(),
+            segments=segments,
+            metadata={
+                "backend": "vllm_chat",
+                "chunked": True,
+                "chunking_strategy": normalize_asr_chunking_strategy(getattr(config, "asr_chunking_strategy", "silence")),
+                "chunk_seconds": float(getattr(config, "asr_chunk_seconds", 120.0) or 120.0),
+                "chunk_padding_seconds": float(getattr(config, "asr_chunk_padding_seconds", 0.5) or 0.0),
+                "context_chars": 0,
+                "asr_chunk_parallelism": requested_parallelism,
+                "execution_mode": "parallel_context_off",
+                "endpoint_pool": _asr_endpoint_pool(config),
+                "chunks": chunk_metadata,
+            },
+        )
+
+    def _transcribe_parallel_chunk(
+        self,
+        chunk: ASRAudioChunk,
+        config: ExperimentConfig,
+        keyword_instruction: str,
+    ) -> Tuple[ASRAudioChunk, TranscriptResult, str]:
+        chunk_config = _config_for_asr_chunk(config, chunk.index)
+        result = self._transcribe_one(
+            str(chunk.path),
+            chunk_config,
+            keyword_instruction=keyword_instruction,
+            previous_context="",
+        )
+        return chunk, result, chunk_config.asr_base_url
 
 
 class VLLMOpenAIPostProcessAdapter:
@@ -210,6 +308,40 @@ def _rolling_asr_context(texts: List[str], max_chars: int) -> str:
     if len(context) <= max_chars:
         return context
     return context[-max_chars:].lstrip()
+
+
+def _asr_chunk_parallelism(config: ExperimentConfig) -> int:
+    try:
+        return max(1, min(64, int(getattr(config, "asr_chunk_parallelism", 1) or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _config_for_asr_chunk(config: ExperimentConfig, chunk_index: int) -> ExperimentConfig:
+    endpoints = _asr_endpoint_pool(config)
+    if not endpoints:
+        return config
+    chunk_config = copy.deepcopy(config)
+    chunk_config.asr_base_url = endpoints[chunk_index % len(endpoints)]
+    return chunk_config
+
+
+def _asr_endpoint_pool(config: ExperimentConfig) -> List[str]:
+    lane_candidates = [
+        lane
+        for lane in (getattr(config, "pipeline_lanes", []) or [])
+        if isinstance(lane, dict)
+        and str(lane.get("asr_base_url") or "").strip()
+        and (not lane.get("asr_model") or str(lane.get("asr_model")) == config.asr_model)
+    ]
+    endpoints = [str(lane.get("asr_base_url")).strip() for lane in lane_candidates]
+    endpoints.extend(str(item).strip() for item in (getattr(config, "asr_base_urls", []) or []) if str(item).strip())
+    endpoints.append(config.asr_base_url)
+    deduped: List[str] = []
+    for endpoint in endpoints:
+        if endpoint and endpoint not in deduped:
+            deduped.append(endpoint)
+    return deduped
 
 
 def _postprocess_prompt(

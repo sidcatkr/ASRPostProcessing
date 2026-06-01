@@ -271,6 +271,7 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--asr-silence-threshold-db", type=float)
     parser.add_argument("--asr-min-silence-seconds", type=float)
     parser.add_argument("--asr-context-chars", type=int)
+    parser.add_argument("--asr-chunk-parallelism", type=int)
     parser.add_argument("--auto-start-model-servers", action="store_true")
     parser.add_argument("--no-auto-start-model-servers", action="store_true")
     residency_group = parser.add_mutually_exclusive_group()
@@ -315,6 +316,7 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "asr_silence_threshold_db": args.asr_silence_threshold_db,
         "asr_min_silence_seconds": args.asr_min_silence_seconds,
         "asr_context_chars": args.asr_context_chars,
+        "asr_chunk_parallelism": args.asr_chunk_parallelism,
         "model_residency": args.model_residency,
         "server_shutdown_timeout_s": args.server_shutdown_timeout_s,
         "postprocess_parallelism": args.postprocess_parallelism,

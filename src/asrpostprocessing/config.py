@@ -25,6 +25,7 @@ class ExperimentConfig:
     asr_silence_threshold_db: float = -35.0
     asr_min_silence_seconds: float = 0.6
     asr_context_chars: int = 240
+    asr_chunk_parallelism: int = 1
     language: str = "ko"
     auto_start_model_servers: bool = False
     model_residency: str = "parallel"
@@ -119,6 +120,7 @@ class ExperimentConfig:
         config.asr_silence_threshold_db = max(-80.0, min(-10.0, float(config.asr_silence_threshold_db)))
         config.asr_min_silence_seconds = max(0.1, min(5.0, float(config.asr_min_silence_seconds)))
         config.asr_context_chars = max(0, min(2000, int(config.asr_context_chars)))
+        config.asr_chunk_parallelism = max(1, min(64, int(config.asr_chunk_parallelism)))
         config.server_start_timeout_s = max(1.0, float(config.server_start_timeout_s))
         config.server_shutdown_timeout_s = max(1.0, float(config.server_shutdown_timeout_s))
         config.server_gpu_memory_utilization = str(config.server_gpu_memory_utilization or "auto").strip() or "auto"

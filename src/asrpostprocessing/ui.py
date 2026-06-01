@@ -155,6 +155,13 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         step=40,
                         label="ASR rolling context chars",
                     )
+                    asr_chunk_parallelism = gr.Slider(
+                        1,
+                        16,
+                        value=initial_config.asr_chunk_parallelism,
+                        step=1,
+                        label="ASR chunk workers",
+                    )
             with gr.Accordion("Auto Experiment", open=False):
                 with gr.Row():
                     auto_experiment_mode = gr.Checkbox(label="Auto Experiment Mode", value=False)
@@ -343,6 +350,7 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_min_silence_seconds,
                 asr_request_timeout_s,
                 asr_context_chars,
+                asr_chunk_parallelism,
                 auto_experiment_mode,
                 auto_experiment_coverage,
                 auto_experiment_parallelism,
@@ -588,6 +596,7 @@ def run_from_ui(
     asr_min_silence_seconds: float = 0.6,
     asr_request_timeout_s: float = 300.0,
     asr_context_chars: int = 240,
+    asr_chunk_parallelism: int = 1,
     auto_experiment_mode: bool = False,
     auto_experiment_coverage: str = "full_valid",
     auto_experiment_parallelism: int = 1,
@@ -618,6 +627,7 @@ def run_from_ui(
         asr_silence_threshold_db=float(asr_silence_threshold_db or -35.0),
         asr_min_silence_seconds=float(asr_min_silence_seconds or 0.6),
         asr_context_chars=int(asr_context_chars or 0),
+        asr_chunk_parallelism=int(asr_chunk_parallelism or 1),
         auto_start_model_servers=bool(auto_start_model_servers),
         model_residency=model_residency or "parallel",
         server_start_timeout_s=float(server_start_timeout_s),
@@ -721,7 +731,7 @@ def run_from_ui(
             f"Model residency: {config.model_residency}\n"
             f"ASR chunking: {config.asr_chunking_strategy} "
             f"({config.asr_chunk_seconds:g}s, timeout {config.asr_request_timeout_s:g}s, "
-            f"context {config.asr_context_chars} chars)\n"
+            f"context {config.asr_context_chars} chars, workers {config.asr_chunk_parallelism})\n"
             f"{server_lines}"
             f"Output: {output.output_dir}\n"
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"

@@ -9,6 +9,7 @@ asr_request_timeout_s: 600
 asr_chunking_strategy: silence
 asr_chunk_seconds: 120
 asr_context_chars: 360
+asr_chunk_parallelism: 1
 auto_start_model_servers: true
 model_residency: parallel
 server_start_timeout_s: 1200
