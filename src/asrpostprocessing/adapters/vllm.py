@@ -318,7 +318,6 @@ def _keyword_near_miss_replacements(text: str, keywords: List[str]) -> List[Tupl
             if after:
                 replacements.append((start, end, before, after))
                 used_ranges.append((start, end))
-                break
     return sorted(replacements, key=lambda item: item[0])
 
 

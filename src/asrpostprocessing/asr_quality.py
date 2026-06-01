@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .adapters.vllm import _keyword_near_miss_replacements
 from .config import ExperimentConfig
+from .keyword_bias import normalize_keywords
 from .schemas import TranscriptResult
 
 
 def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], config: ExperimentConfig) -> Dict[str, Any]:
     chunk_reports = _chunk_reports(raw)
+    keyword_near_misses = _keyword_near_misses(raw.text or "", config)
     warnings: List[str] = []
     action_items: List[str] = []
 
@@ -38,6 +41,9 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
     if any(chunk["text_chars"] == 0 for chunk in chunk_reports):
         warnings.append("At least one ASR chunk produced empty text.")
         action_items.append("Inspect empty ASR chunks for low-volume speech, silence, noise, or language drift.")
+    if keyword_near_misses:
+        warnings.append("ASR contains keyword near-miss candidate(s).")
+        action_items.append("Enable keyword-guided post-processing or inspect the listed near-miss terms.")
 
     if not action_items:
         action_items.append("If quality is still poor, compare no-preprocess, fixed 120s, and silence-aware 120s ASR runs.")
@@ -54,11 +60,22 @@ def build_asr_quality_report(raw: TranscriptResult, preprocess: Dict[str, Any], 
             "chunk_count": len(chunk_reports),
         },
         "preprocess": _preprocess_summary(preprocess),
+        "keyword_near_misses": keyword_near_misses,
         "chunks": chunk_reports,
         "warnings": _dedupe(warnings),
         "action_items": _dedupe(action_items),
         "note": "Reference-free ASR quality report; CER/WER still require reference text.",
     }
+
+
+def _keyword_near_misses(text: str, config: ExperimentConfig) -> List[Dict[str, Any]]:
+    keywords = [keyword for keyword in normalize_keywords(getattr(config, "keywords", [])) if keyword]
+    if not text or not keywords:
+        return []
+    results = []
+    for start, end, before, after in _keyword_near_miss_replacements(text, keywords):
+        results.append({"before": before, "after": after, "start_char": start, "end_char": end})
+    return results
 
 
 def _chunk_reports(raw: TranscriptResult) -> List[Dict[str, Any]]:

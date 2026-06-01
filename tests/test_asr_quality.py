@@ -69,6 +69,16 @@ class ASRQualityReportTest(unittest.TestCase):
         self.assertTrue(any("empty text" in warning for warning in report["warnings"]))
         self.assertTrue(any("language drift" in action for action in report["action_items"]))
 
+    def test_report_flags_keyword_near_miss_terms(self):
+        raw = TranscriptResult(language="ko", text="여러분이 이제 서면 연구를 찾아보고 읽어볼 거니까")
+        config = ExperimentConfig(keywords=["선행 연구"])
+
+        report = build_asr_quality_report(raw, {"applied": False, "audio_path": "input.wav"}, config)
+
+        self.assertEqual(report["keyword_near_misses"][0]["before"], "서면 연구를")
+        self.assertEqual(report["keyword_near_misses"][0]["after"], "선행 연구를")
+        self.assertTrue(any("keyword near-miss" in warning for warning in report["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
