@@ -162,6 +162,41 @@ class CliTest(unittest.TestCase):
         rag_conditions = [condition for condition in payload["conditions"] if condition["enable_rag"]]
         self.assertEqual({condition["rag_top_k"] for condition in rag_conditions}, {3, 7})
 
+    def test_auto_experiment_preview_accepts_model_axes(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(
+                [
+                    "auto-experiment",
+                    "--asr-backend",
+                    "mock",
+                    "--post-backend",
+                    "mock",
+                    "--enable-noise-reduction",
+                    "--enable-rag",
+                    "--auto-experiment-include-models",
+                    "--auto-experiment-noise-model",
+                    "afftdn",
+                    "--auto-experiment-noise-model",
+                    "deepfilternet2",
+                    "--auto-experiment-rag-embedding-model",
+                    "intfloat/multilingual-e5-base",
+                    "--auto-experiment-rag-embedding-model",
+                    "BAAI/bge-m3",
+                    "--mode",
+                    "full_valid",
+                    "--preview",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["condition_count"], 12)
+        self.assertTrue(payload["model_axis_enabled"])
+        condition_ids = [condition["condition_id"] for condition in payload["conditions"]]
+        self.assertTrue(any("__nmodel_afftdn" in condition_id for condition_id in condition_ids))
+        self.assertTrue(any("__emb_baai_bge_m3" in condition_id for condition_id in condition_ids))
+
 
 if __name__ == "__main__":
     unittest.main()

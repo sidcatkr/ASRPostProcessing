@@ -211,6 +211,17 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         placeholder="Qwen/Qwen3.5-9B, ...",
                     )
                 with gr.Row():
+                    auto_experiment_noise_models = gr.Textbox(
+                        label="Noise models for Auto Experiment",
+                        value=", ".join(initial_config.auto_experiment_noise_models),
+                        placeholder="afftdn, deepfilternet2, deepfilternet2_pf, deepfilternet3, rnnoise",
+                    )
+                    auto_experiment_rag_embedding_models = gr.Textbox(
+                        label="RAG embedding models for Auto Experiment",
+                        value=", ".join(initial_config.auto_experiment_rag_embedding_models),
+                        placeholder="intfloat/multilingual-e5-base, ...",
+                    )
+                with gr.Row():
                     auto_experiment_keyword_weights = gr.Textbox(
                         label="Keyword weight sweep",
                         value=", ".join(str(value) for value in initial_config.auto_experiment_keyword_weights),
@@ -392,6 +403,8 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 auto_experiment_include_models,
                 auto_experiment_asr_models,
                 auto_experiment_post_models,
+                auto_experiment_noise_models,
+                auto_experiment_rag_embedding_models,
                 auto_experiment_keyword_weights,
                 auto_experiment_noise_strengths,
                 auto_experiment_volume_strengths,
@@ -645,6 +658,8 @@ def run_from_ui(
     auto_experiment_include_models: bool = False,
     auto_experiment_asr_models: str = "",
     auto_experiment_post_models: str = "",
+    auto_experiment_noise_models: str = "",
+    auto_experiment_rag_embedding_models: str = "",
     auto_experiment_keyword_weights: str = "",
     auto_experiment_noise_strengths: str = "",
     auto_experiment_volume_strengths: str = "",
@@ -694,6 +709,8 @@ def run_from_ui(
         auto_experiment_include_models=bool(auto_experiment_include_models),
         auto_experiment_asr_models=_split_keywords(auto_experiment_asr_models),
         auto_experiment_post_models=_split_keywords(auto_experiment_post_models),
+        auto_experiment_noise_models=_split_keywords(auto_experiment_noise_models),
+        auto_experiment_rag_embedding_models=_split_keywords(auto_experiment_rag_embedding_models),
         auto_experiment_keyword_weights=_split_float_grid(auto_experiment_keyword_weights),
         auto_experiment_noise_strengths=_split_float_grid(auto_experiment_noise_strengths),
         auto_experiment_volume_strengths=_split_float_grid(auto_experiment_volume_strengths),

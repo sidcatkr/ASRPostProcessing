@@ -54,6 +54,8 @@ class ExperimentConfig:
     auto_experiment_include_models: bool = False
     auto_experiment_asr_models: List[str] = field(default_factory=list)
     auto_experiment_post_models: List[str] = field(default_factory=list)
+    auto_experiment_noise_models: List[str] = field(default_factory=list)
+    auto_experiment_rag_embedding_models: List[str] = field(default_factory=list)
     auto_experiment_keyword_weights: List[float] = field(
         default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS)
     )
@@ -149,6 +151,10 @@ class ExperimentConfig:
         config.post_base_urls = normalize_url_list(config.post_base_urls)
         config.auto_experiment_asr_models = normalize_url_list(config.auto_experiment_asr_models)
         config.auto_experiment_post_models = normalize_url_list(config.auto_experiment_post_models)
+        config.auto_experiment_noise_models = normalize_url_list(config.auto_experiment_noise_models)
+        config.auto_experiment_rag_embedding_models = normalize_url_list(
+            config.auto_experiment_rag_embedding_models
+        )
         config.auto_experiment_keyword_weights = normalize_strength_grid(
             config.auto_experiment_keyword_weights,
             DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS,

@@ -68,6 +68,8 @@ auto_experiment_asr_models:
   - Qwen/Qwen3-ASR-1.7B
 auto_experiment_post_models:
   - Qwen/Qwen3.5-9B
+auto_experiment_noise_models: []
+auto_experiment_rag_embedding_models: []
 auto_experiment_keyword_weights:
   - 0.25
   - 0.5

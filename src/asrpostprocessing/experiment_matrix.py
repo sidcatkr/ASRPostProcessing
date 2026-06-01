@@ -21,9 +21,11 @@ class ConditionSpec:
     enable_rag: bool = False
     enable_search: bool = False
     keyword_bias_weight: Optional[float] = None
+    noise_reduction_model: Optional[str] = None
     noise_reduction_strength: Optional[float] = None
     volume_normalization_strength: Optional[float] = None
     postprocess_strength: Optional[float] = None
+    rag_embedding_model: Optional[str] = None
     rag_strength: Optional[float] = None
     rag_top_k: Optional[int] = None
     search_strength: Optional[float] = None
@@ -38,6 +40,7 @@ class ConditionSpec:
                 f"k={int(self.enable_keyword_bias)}",
                 f"kw={_strength_key(self.keyword_bias_weight) if self.enable_keyword_bias else ''}",
                 f"n={int(self.enable_noise_reduction)}",
+                f"nm={_slug(self.noise_reduction_model) if self.enable_noise_reduction else ''}",
                 f"ns={_strength_key(self.noise_reduction_strength) if self.enable_noise_reduction else ''}",
                 f"v={int(self.enable_volume_normalization)}",
                 f"vs={_strength_key(self.volume_normalization_strength) if self.enable_volume_normalization else ''}",
@@ -54,16 +57,18 @@ def generate_auto_conditions(
     include_search: bool = True,
     mode: str = "full_valid",
     keyword_strengths: Optional[List[float]] = None,
+    noise_models: Optional[List[str]] = None,
     noise_strengths: Optional[List[float]] = None,
     volume_strengths: Optional[List[float]] = None,
     postprocess_strengths: Optional[List[float]] = None,
+    rag_embedding_models: Optional[List[str]] = None,
     rag_strengths: Optional[List[float]] = None,
     rag_top_ks: Optional[List[int]] = None,
     search_strengths: Optional[List[float]] = None,
 ) -> List[ConditionSpec]:
     mode = (mode or "full_valid").strip().lower().replace("-", "_")
     if mode in {"core", "core_ablation", "ablation"}:
-        return _core_ablation_conditions(
+        conditions = _core_ablation_conditions(
             include_keyword_bias,
             include_noise_reduction,
             include_volume_normalization,
@@ -71,13 +76,19 @@ def generate_auto_conditions(
             include_rag,
             include_search,
         )
-    conditions = _full_valid_conditions(
-        include_keyword_bias,
-        include_noise_reduction,
-        include_volume_normalization,
-        include_llm_postprocess,
-        include_rag,
-        include_search,
+    else:
+        conditions = _full_valid_conditions(
+            include_keyword_bias,
+            include_noise_reduction,
+            include_volume_normalization,
+            include_llm_postprocess,
+            include_rag,
+            include_search,
+        )
+    conditions = _model_sweep_conditions(
+        conditions,
+        noise_models=noise_models,
+        rag_embedding_models=rag_embedding_models,
     )
     if mode in {"full_strength", "full_strength_sweep", "strength", "strength_sweep"}:
         return _strength_sweep_conditions(
@@ -285,9 +296,11 @@ def _condition_with_strengths(condition: ConditionSpec, strengths: Dict[str, Any
         enable_rag=condition.enable_rag,
         enable_search=condition.enable_search,
         keyword_bias_weight=strengths.get("keyword_bias_weight"),
+        noise_reduction_model=condition.noise_reduction_model,
         noise_reduction_strength=strengths.get("noise_reduction_strength"),
         volume_normalization_strength=strengths.get("volume_normalization_strength"),
         postprocess_strength=strengths.get("postprocess_strength"),
+        rag_embedding_model=condition.rag_embedding_model,
         rag_strength=strengths.get("rag_strength"),
         rag_top_k=_int_or_none(strengths.get("rag_top_k")),
         search_strength=strengths.get("search_strength"),
@@ -313,6 +326,91 @@ def _strength_key(value: Optional[float]) -> str:
     if value is None:
         return ""
     return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def _model_sweep_conditions(
+    conditions: List[ConditionSpec],
+    noise_models: Optional[List[str]] = None,
+    rag_embedding_models: Optional[List[str]] = None,
+) -> List[ConditionSpec]:
+    expanded: List[ConditionSpec] = []
+    for condition in conditions:
+        axes = []
+        if condition.enable_noise_reduction:
+            values = _model_values(noise_models)
+            if values:
+                axes.append(("noise_reduction_model", values))
+        if condition.enable_rag:
+            values = _model_values(rag_embedding_models)
+            if values:
+                axes.append(("rag_embedding_model", values))
+        if not axes:
+            expanded.append(condition)
+            continue
+        keys = [axis[0] for axis in axes]
+        values = [axis[1] for axis in axes]
+        for combo in itertools.product(*values):
+            expanded.append(_condition_with_model_variants(condition, dict(zip(keys, combo))))
+    return expanded
+
+
+def _condition_with_model_variants(condition: ConditionSpec, models: Dict[str, str]) -> ConditionSpec:
+    suffix_parts = [_model_suffix(key, value) for key, value in models.items()]
+    suffix = "__" + "__".join(suffix_parts)
+    label_suffix = " (" + ", ".join(f"{_model_label(key)}={value}" for key, value in models.items()) + ")"
+    return ConditionSpec(
+        condition_id=f"{condition.condition_id}{suffix}",
+        label=f"{condition.label}{label_suffix}",
+        group=f"{condition.group}_model",
+        enable_keyword_bias=condition.enable_keyword_bias,
+        enable_noise_reduction=condition.enable_noise_reduction,
+        enable_volume_normalization=condition.enable_volume_normalization,
+        enable_llm_postprocess=condition.enable_llm_postprocess,
+        enable_rag=condition.enable_rag,
+        enable_search=condition.enable_search,
+        keyword_bias_weight=condition.keyword_bias_weight,
+        noise_reduction_model=models.get("noise_reduction_model") or condition.noise_reduction_model,
+        noise_reduction_strength=condition.noise_reduction_strength,
+        volume_normalization_strength=condition.volume_normalization_strength,
+        postprocess_strength=condition.postprocess_strength,
+        rag_embedding_model=models.get("rag_embedding_model") or condition.rag_embedding_model,
+        rag_strength=condition.rag_strength,
+        rag_top_k=condition.rag_top_k,
+        search_strength=condition.search_strength,
+    )
+
+
+def _model_values(values: Optional[List[str]]) -> List[str]:
+    if not values:
+        return []
+    deduped: List[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
+
+def _model_suffix(key: str, value: str) -> str:
+    prefixes = {
+        "noise_reduction_model": "nmodel",
+        "rag_embedding_model": "emb",
+    }
+    return f"{prefixes.get(key, key)}_{_slug(value)}"
+
+
+def _model_label(key: str) -> str:
+    labels = {
+        "noise_reduction_model": "noise_model",
+        "rag_embedding_model": "rag_embedding",
+    }
+    return labels.get(key, key)
+
+
+def _slug(value: Optional[str]) -> str:
+    text = str(value or "").strip().lower()
+    chars = [char if char.isalnum() else "_" for char in text]
+    return "_".join(part for part in "".join(chars).split("_") if part)
 
 
 def _strength_values(values: Optional[List[float]], fallback: List[float]) -> List[float]:

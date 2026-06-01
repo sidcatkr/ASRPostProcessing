@@ -309,6 +309,12 @@ def _add_backend_overrides(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auto-experiment-include-models", action="store_true")
     parser.add_argument("--auto-experiment-asr-model", action="append", dest="auto_experiment_asr_models")
     parser.add_argument("--auto-experiment-post-model", action="append", dest="auto_experiment_post_models")
+    parser.add_argument("--auto-experiment-noise-model", action="append", dest="auto_experiment_noise_models")
+    parser.add_argument(
+        "--auto-experiment-rag-embedding-model",
+        action="append",
+        dest="auto_experiment_rag_embedding_models",
+    )
     parser.add_argument("--auto-experiment-keyword-weight", type=float, action="append", dest="auto_experiment_keyword_weights")
     parser.add_argument("--auto-experiment-noise-strength", type=float, action="append", dest="auto_experiment_noise_strengths")
     parser.add_argument("--auto-experiment-volume-strength", type=float, action="append", dest="auto_experiment_volume_strengths")
@@ -355,6 +361,8 @@ def _backend_overrides(args: argparse.Namespace) -> Dict[str, Any]:
         "auto_experiment_parallelism": args.auto_experiment_parallelism,
         "auto_experiment_asr_models": args.auto_experiment_asr_models,
         "auto_experiment_post_models": args.auto_experiment_post_models,
+        "auto_experiment_noise_models": args.auto_experiment_noise_models,
+        "auto_experiment_rag_embedding_models": args.auto_experiment_rag_embedding_models,
         "auto_experiment_keyword_weights": args.auto_experiment_keyword_weights,
         "auto_experiment_noise_strengths": args.auto_experiment_noise_strengths,
         "auto_experiment_volume_strengths": args.auto_experiment_volume_strengths,

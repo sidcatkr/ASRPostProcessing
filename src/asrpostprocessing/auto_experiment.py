@@ -103,9 +103,15 @@ def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_val
         include_search=base_config.enable_search,
         mode=mode,
         keyword_strengths=base_config.auto_experiment_keyword_weights,
+        noise_models=base_config.auto_experiment_noise_models
+        if base_config.auto_experiment_include_models
+        else None,
         noise_strengths=base_config.auto_experiment_noise_strengths,
         volume_strengths=base_config.auto_experiment_volume_strengths,
         postprocess_strengths=base_config.auto_experiment_postprocess_strengths,
+        rag_embedding_models=base_config.auto_experiment_rag_embedding_models
+        if base_config.auto_experiment_include_models
+        else None,
         rag_strengths=base_config.auto_experiment_rag_strengths,
         rag_top_ks=base_config.auto_experiment_rag_top_ks,
         search_strengths=base_config.auto_experiment_search_strengths,
@@ -257,6 +263,8 @@ def _run_condition(
         "noise_reduction_strength": config.noise_reduction_strength,
         "volume_normalization_strength": config.volume_normalization_strength,
         "postprocess_strength": config.postprocess_strength,
+        "rag_embedding_backend": config.rag_embedding_backend if case.condition.enable_rag else "",
+        "rag_embedding_model": config.rag_embedding_model if case.condition.enable_rag else "",
         "rag_strength": config.rag_strength,
         "rag_top_k": config.rag_top_k if case.condition.enable_rag else "",
         "search_strength": config.search_strength,
@@ -318,6 +326,8 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
     elif not config.enable_keyword_bias:
         config.keyword_bias_weight = 0.0
     if config.enable_noise_reduction:
+        if condition.noise_reduction_model:
+            config.noise_reduction_model = condition.noise_reduction_model
         if (config.noise_reduction_model or "none").lower() == "none":
             config.noise_reduction_model = "deepfilternet2"
         if condition.noise_reduction_strength is not None:
@@ -346,6 +356,8 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
         config.rag_strength = 0.0
     if config.enable_rag and condition.rag_top_k is not None:
         config.rag_top_k = condition.rag_top_k
+    if config.enable_rag and condition.rag_embedding_model:
+        config.rag_embedding_model = condition.rag_embedding_model
     if config.enable_search and condition.search_strength is not None:
         config.search_strength = condition.search_strength
     elif config.enable_search and config.search_strength <= 0:
@@ -383,6 +395,8 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "noise_reduction_strength",
         "volume_normalization_strength",
         "postprocess_strength",
+        "rag_embedding_backend",
+        "rag_embedding_model",
         "rag_strength",
         "rag_top_k",
         "search_strength",
@@ -545,6 +559,8 @@ def _error_row(case: ExperimentCase, exc: Exception) -> Dict[str, Any]:
         "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
         "rag_enabled": case.condition.enable_rag,
         "search_enabled": case.condition.enable_search,
+        "noise_reduction_model": case.condition.noise_reduction_model or "",
+        "rag_embedding_model": case.condition.rag_embedding_model or "",
         "rag_top_k": case.condition.rag_top_k or "",
         "error": str(exc),
     }

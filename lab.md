@@ -179,7 +179,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 - ASR cache 덕분에 LLM/RAG/Search/postprocess strength만 다른 조건에서 같은 raw ASR을 반복 생성하지 않는다.
 - preprocess cache 덕분에 DeepFilterNet/RNNoise/volume normalization 결과도 같은 조건에서는 재사용할 수 있다.
 - Auto Experiment는 수동 토글을 없애지 않고, Auto Mode가 켜졌을 때 기존 토글을 "실험에 포함할 축"으로 해석한다. 따라서 사용자가 원하는 축만 켠 상태로 valid matrix를 만들 수 있다.
-- 모델 비교 토글이 꺼져 있으면 현재 선택된 ASR/post model만 사용하고, 켜져 있으면 사용자가 입력한 ASR/post model list를 matrix에 포함한다. 후처리가 꺼진 조건에서는 post model을 중복 축으로 세지 않는다.
+- 모델 비교 토글이 꺼져 있으면 현재 선택된 model만 사용하고, 켜져 있으면 사용자가 입력한 ASR/post/noise/RAG embedding model list를 matrix에 포함한다. 후처리가 꺼진 조건에서는 post model을, noise/RAG가 꺼진 조건에서는 해당 model 축을 중복으로 세지 않는다.
 - 이전에는 RNNoise/BS-RoFormer 이름을 선택해도 실제로는 ffmpeg afftdn이 실행될 수 있었지만, 이제는 실제 backend가 없으면 fallback으로 명시되어 연구 결과에 잘못된 모델명이 기록되지 않는다.
 
 ## L4 x4 실행 구조
@@ -250,7 +250,7 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - pre/ASR modes: none, K, N, V, K+N, K+V, N+V, K+N+V
 - post modes: none, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search
 - total: 8 x 5 = 40 conditions
-- optional model axis: ASR model list x post model list. Post model axis는 LLM post-processing이 켜진 condition에만 적용한다.
+- optional model axis: ASR model list x post model list x noise model list x RAG embedding model list. Post model axis는 LLM post-processing이 켜진 condition에만, noise/RAG model axis는 해당 condition에만 적용한다.
 
 `core_ablation` coverage는 빠른 확인용 subset이다. `full_strength_sweep`은 full valid condition에 active 축별 strength/top-k grid를 추가한다. 기본 grid는 keyword bias `0.25/0.5/0.75/1.0`, noise/volume/post/RAG/Search `0.25/0.5/0.75`, RAG top-k `3/5/8/12`이며, config/CLI/UI에서 grid를 바꿀 수 있다. Strength 값은 condition id, summary CSV, ASR cache group key에 반영되고, RAG top-k는 post/RAG 단계 condition id와 summary CSV에 반영된다.
 

@@ -101,6 +101,31 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertEqual({condition.rag_top_k for condition in rag_conditions}, {3, 7})
         self.assertTrue(any("__topk7" in condition.condition_id for condition in rag_conditions))
 
+    def test_auto_experiment_model_axes_apply_only_to_relevant_conditions(self):
+        conditions = generate_auto_conditions(
+            include_keyword_bias=False,
+            include_noise_reduction=True,
+            include_volume_normalization=False,
+            include_llm_postprocess=True,
+            include_rag=True,
+            include_search=False,
+            mode="full_valid",
+            noise_models=["afftdn", "deepfilternet2"],
+            rag_embedding_models=["intfloat/multilingual-e5-base", "BAAI/bge-m3"],
+        )
+
+        self.assertEqual(len(conditions), 12)
+        noise_conditions = [condition for condition in conditions if condition.enable_noise_reduction]
+        rag_conditions = [condition for condition in conditions if condition.enable_rag]
+        self.assertEqual({condition.noise_reduction_model for condition in noise_conditions}, {"afftdn", "deepfilternet2"})
+        self.assertEqual(
+            {condition.rag_embedding_model for condition in rag_conditions},
+            {"intfloat/multilingual-e5-base", "BAAI/bge-m3"},
+        )
+        self.assertTrue(any("__nmodel_afftdn" in condition.condition_id for condition in noise_conditions))
+        self.assertTrue(any("__emb_baai_bge_m3" in condition.condition_id for condition in rag_conditions))
+        self.assertGreater(len({condition.asr_group_key for condition in conditions}), 2)
+
     def test_l4x4_config_loads_pipeline_lanes(self):
         config = load_config("configs/l4x4.yaml")
         self.assertEqual(config.model_residency, "parallel")
@@ -249,6 +274,47 @@ class AutoExperimentTest(unittest.TestCase):
             with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertIn("rag_top_k", rows[0])
+
+    def test_auto_experiment_applies_rag_embedding_model_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=True,
+                enable_search=False,
+                auto_experiment_include_models=True,
+                auto_experiment_rag_embedding_models=["intfloat/multilingual-e5-base", "BAAI/bge-m3"],
+                auto_experiment_postprocess_strengths=[0.5],
+                auto_experiment_rag_strengths=[0.25],
+                auto_experiment_rag_top_ks=[3],
+                auto_experiment_parallelism=2,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+            )
+
+            report = run_auto_experiment(
+                str(audio),
+                config,
+                reference_text="테스트 전사 문장입니다.",
+                mode="full_strength_sweep",
+            )
+
+            rag_rows = [row for row in report["rows"] if row["rag_enabled"]]
+            self.assertEqual(
+                {row["rag_embedding_model"] for row in rag_rows},
+                {"intfloat/multilingual-e5-base", "BAAI/bge-m3"},
+            )
+            with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertIn("rag_embedding_model", rows[0])
 
 
 if __name__ == "__main__":
