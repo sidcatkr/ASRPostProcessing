@@ -8,6 +8,7 @@ from unittest.mock import patch
 from asrpostprocessing.auto_experiment import run_auto_experiment
 from asrpostprocessing.config import ExperimentConfig, load_config
 from asrpostprocessing.experiment_matrix import generate_auto_conditions
+from asrpostprocessing.schemas import SearchResult
 
 
 class AutoExperimentTest(unittest.TestCase):
@@ -566,6 +567,60 @@ class AutoExperimentTest(unittest.TestCase):
             with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertIn("rag_embedding_model", rows[0])
+
+    def test_auto_experiment_rows_record_rag_and_search_runtime_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                mock_transcript="AlphaTerm 관련 설명입니다.",
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=True,
+                rag_inline_text="AlphaTerm은 프로젝트 핵심 용어입니다.",
+                rag_strength=1.0,
+                rag_top_k=2,
+                enable_search=True,
+                search_provider="endpoint",
+                search_endpoint="https://search.example.test",
+                search_strength=0.8,
+                auto_experiment_parallelism=2,
+                asr_cache_enabled=True,
+                preprocess_cache_enabled=True,
+            )
+            search_result = SearchResult(
+                query="AlphaTerm",
+                title="AlphaTerm reference",
+                url="https://example.test/alpha",
+                snippet="AlphaTerm search context",
+                source="endpoint",
+            )
+            with patch("asrpostprocessing.pipeline.CachedSearchProvider.search", return_value=[search_result]):
+                report = run_auto_experiment(
+                    str(audio),
+                    config,
+                    reference_text="AlphaTerm 관련 설명입니다.",
+                    mode="core_ablation",
+                )
+
+            rag_rows = [row for row in report["rows"] if row["rag_enabled"]]
+            search_rows = [row for row in report["rows"] if row["search_enabled"]]
+            self.assertTrue(rag_rows)
+            self.assertTrue(search_rows)
+            self.assertTrue(all(int(row["rag_context_count"]) >= 1 for row in rag_rows))
+            self.assertTrue(all(int(row["search_result_count"]) == 1 for row in search_rows))
+            self.assertIn("best_methods", report["analysis"])
+            with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertIn("rag_context_count", rows[0])
+            self.assertIn("rag_used_context_count", rows[0])
+            self.assertIn("search_result_count", rows[0])
 
 
 if __name__ == "__main__":

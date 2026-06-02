@@ -802,6 +802,7 @@ def run_from_ui(
             return "", "", "", {}, [], {}, [], f"Auto experiment failed: {exc}", None, "", query_gpu_status()
         metrics_payload = dict(report.get("analysis", {}))
         metrics_payload["strict_audit"] = report.get("audit", {})
+        metrics_payload["best_methods"] = metrics_payload.get("best_methods", [])
         metrics_payload["per_case_cer_wer"] = _auto_experiment_metric_rows(report)
         if not reference:
             metrics_payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
@@ -986,6 +987,7 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
             lines.append(f"<p>Per-case diff artifact: {escape(str(Path(str(output_dir)) / 'diff.html'))}</p>")
     else:
         lines.append("<p>No comparable row is available yet. Check the summary CSV after the run completes.</p>")
+    lines.append(_auto_experiment_best_methods_html(report))
     lines.append(_auto_experiment_audit_html(report))
     lines.append(_auto_experiment_results_table(report))
     lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
@@ -1037,6 +1039,49 @@ def _auto_experiment_audit_html(report: Dict[str, Any]) -> str:
 """
 
 
+def _auto_experiment_best_methods_html(report: Dict[str, Any]) -> str:
+    rows = _auto_experiment_best_method_rows(report)
+    if not rows:
+        return "<p>No best-method summary is available yet.</p>"
+    body = "\n".join(
+        "<tr>"
+        f"<td><span class=\"asrpp-best-badge\">{escape(str(row.get('badge') or 'Best'))}</span></td>"
+        f"<td>{escape(str(row.get('method') or ''))}</td>"
+        f"<td>{escape(str(row.get('case_id') or ''))}</td>"
+        f"<td class=\"metric\">{escape(_format_metric_cell(row.get('cer_normalized_no_space')))}</td>"
+        f"<td class=\"metric\">{escape(_format_metric_cell(row.get('wer_eojeol')))}</td>"
+        f"<td class=\"metric\">{escape(_format_signed_metric_cell(row.get('delta_cer_vs_baseline')))}</td>"
+        f"<td class=\"metric\">{escape(_format_signed_metric_cell(row.get('delta_wer_vs_baseline')))}</td>"
+        f"<td class=\"metric\">{escape(_format_count_cell(row.get('rag_context_count')))}</td>"
+        f"<td class=\"metric\">{escape(_format_count_cell(row.get('search_result_count')))}</td>"
+        "</tr>"
+        for row in rows
+    )
+    return f"""
+<section class="asrpp-best-methods">
+  <h3>Best Methods</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Best</th>
+        <th>Method</th>
+        <th>Case</th>
+        <th>CER</th>
+        <th>WER</th>
+        <th>ΔCER</th>
+        <th>ΔWER</th>
+        <th>RAG Ctx</th>
+        <th>Search Hits</th>
+      </tr>
+    </thead>
+    <tbody>
+      {body}
+    </tbody>
+  </table>
+</section>
+"""
+
+
 def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
     rows = _auto_experiment_metric_rows(report)
     if not rows:
@@ -1051,6 +1096,11 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
   .asrpp-auto-results td.metric {{ font-variant-numeric: tabular-nums; white-space: nowrap; }}
   .asrpp-auto-results td.features {{ min-width: 150px; }}
   .asrpp-auto-results .failed {{ color: #fca5a5; }}
+  .asrpp-best-methods {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
+  .asrpp-best-methods table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  .asrpp-best-methods th, .asrpp-best-methods td {{ padding: 6px 7px; border-top: 1px solid #3f3f46; text-align: left; }}
+  .asrpp-best-badge {{ display: inline-block; border: 1px solid #86efac; color: #86efac; border-radius: 4px; padding: 1px 5px; font-size: 12px; white-space: nowrap; }}
+  .asrpp-best-list {{ display: flex; gap: 4px; flex-wrap: wrap; min-width: 78px; }}
   .asrpp-auto-audit {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
   .asrpp-audit-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 8px 0; }}
   .asrpp-audit-grid div {{ border: 1px solid #3f3f46; border-radius: 4px; padding: 7px 8px; }}
@@ -1069,6 +1119,7 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
     <thead>
       <tr>
         <th>#</th>
+        <th>Best</th>
         <th>Case</th>
         <th>Condition</th>
         <th>Enabled</th>
@@ -1081,6 +1132,8 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
         <th>PRE GPU</th>
         <th>Peak GPU</th>
         <th>ASR Cache</th>
+        <th>RAG Ctx</th>
+        <th>Search Hits</th>
         <th>Risk/Error</th>
       </tr>
     </thead>
@@ -1098,6 +1151,7 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
     return (
         "<tr>"
         f'<td class="metric">{index}</td>'
+        f'<td><span class="asrpp-best-list">{_auto_experiment_best_badge_html(row.get("best_badges"))}</span></td>'
         f"<td>{escape(str(row.get('case_id') or ''))}</td>"
         f"<td>{escape(str(row.get('label') or row.get('condition_id') or ''))}</td>"
         f'<td class="features">{escape(str(row.get("enabled_features") or "baseline"))}</td>'
@@ -1110,6 +1164,8 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
         f'<td class="metric">{escape(str(row.get("preprocess_gpu") or ""))}</td>'
         f'<td class="metric">{escape(str(row.get("peak_gpu_utilization_percent") or ""))}</td>'
         f'<td class="metric">{escape(str(row.get("asr_cache_hit") or ""))}</td>'
+        f'<td class="metric">{escape(str(row.get("rag_context_count") or ""))}</td>'
+        f'<td class="metric">{escape(str(row.get("search_result_count") or ""))}</td>'
         f"<td{risk_class}>{escape(str(risk_or_error))}</td>"
         "</tr>"
     )
@@ -1119,15 +1175,21 @@ def _auto_experiment_metric_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]
     raw_rows = report.get("rows")
     if not isinstance(raw_rows, list):
         return []
-    rows = [_auto_experiment_metric_row(row) for row in raw_rows if isinstance(row, dict)]
+    best_badges = _auto_experiment_best_badges(report)
+    rows = [
+        _auto_experiment_metric_row(row, best_badges.get(str(row.get("case_id") or ""), []))
+        for row in raw_rows
+        if isinstance(row, dict)
+    ]
     return sorted(rows, key=_auto_experiment_metric_sort_key)
 
 
-def _auto_experiment_metric_row(row: Dict[str, Any]) -> Dict[str, Any]:
+def _auto_experiment_metric_row(row: Dict[str, Any], best_badges: Optional[List[str]] = None) -> Dict[str, Any]:
     return {
         "case_id": row.get("case_id") or row.get("condition_id") or "",
         "condition_id": row.get("condition_id") or "",
         "label": row.get("label") or row.get("condition_id") or "",
+        "best_badges": best_badges or [],
         "enabled_features": _auto_experiment_enabled_features(row),
         "cer": _format_metric_cell(row.get("cer_normalized_no_space")),
         "wer": _format_metric_cell(row.get("wer_eojeol")),
@@ -1138,6 +1200,8 @@ def _auto_experiment_metric_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "preprocess_gpu": row.get("preprocess_gpu") or "",
         "peak_gpu_utilization_percent": _format_percent_metric_cell(row.get("peak_gpu_utilization_percent")),
         "asr_cache_hit": row.get("asr_cache_hit") if row.get("asr_cache_hit") not in (None, "") else "",
+        "rag_context_count": _format_count_cell(row.get("rag_context_count")),
+        "search_result_count": _format_count_cell(row.get("search_result_count")),
         "risk": row.get("risk") or "",
         "error": row.get("error") or "",
     }
@@ -1148,6 +1212,56 @@ def _auto_experiment_metric_sort_key(row: Dict[str, Any]) -> Tuple[int, float, f
     wer = _metric_sort_value(row.get("wer"))
     failed = 1 if row.get("error") else 0
     return failed, cer, wer, str(row.get("case_id") or "")
+
+
+def _auto_experiment_best_method_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    analysis = report.get("analysis") if isinstance(report.get("analysis"), dict) else {}
+    methods = analysis.get("best_methods")
+    if isinstance(methods, list) and methods:
+        return [method for method in methods if isinstance(method, dict)]
+    fallback = []
+    for badge, key in [
+        ("Best CER", "best_by_cer"),
+        ("Best WER", "best_by_wer"),
+        ("Best speed/quality", "best_latency_quality_tradeoff"),
+    ]:
+        row = analysis.get(key)
+        if not isinstance(row, dict) or not row:
+            continue
+        fallback.append(
+            {
+                "badge": badge,
+                "case_id": row.get("case_id") or "",
+                "condition_id": row.get("condition_id") or "",
+                "method": _auto_experiment_enabled_features(row),
+                "cer_normalized_no_space": row.get("cer_normalized_no_space"),
+                "wer_eojeol": row.get("wer_eojeol"),
+                "delta_cer_vs_baseline": row.get("delta_cer_vs_baseline"),
+                "delta_wer_vs_baseline": row.get("delta_wer_vs_baseline"),
+                "rag_context_count": row.get("rag_context_count"),
+                "search_result_count": row.get("search_result_count"),
+            }
+        )
+    return fallback
+
+
+def _auto_experiment_best_badges(report: Dict[str, Any]) -> Dict[str, List[str]]:
+    badges: Dict[str, List[str]] = {}
+    for method in _auto_experiment_best_method_rows(report):
+        case_id = str(method.get("case_id") or "")
+        badge = str(method.get("badge") or "")
+        if not case_id or not badge:
+            continue
+        existing = badges.setdefault(case_id, [])
+        if badge not in existing:
+            existing.append(badge)
+    return badges
+
+
+def _auto_experiment_best_badge_html(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    return "".join(f'<span class="asrpp-best-badge">{escape(str(item))}</span>' for item in value if str(item).strip())
 
 
 def _auto_experiment_enabled_features(row: Dict[str, Any]) -> str:
@@ -1183,6 +1297,13 @@ def _format_signed_metric_cell(value: Any) -> str:
 def _format_percent_metric_cell(value: Any) -> str:
     formatted = _format_metric_cell(value)
     return f"{formatted}%" if formatted else ""
+
+
+def _format_count_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    return str(int(number))
 
 
 def _join_audit_values(value: Any) -> str:

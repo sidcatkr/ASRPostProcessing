@@ -328,6 +328,10 @@ class PipelineRunner:
         except Exception as exc:
             self._emit(f"Post-processing chunk {chunk.index + 1}/{total_chunks} failed; using deterministic fallback.")
             result = _fallback_postprocess_result(chunk.text, chunk_config, exc)
+        result.metadata["rag_context_count"] = len(contexts)
+        result.metadata["rag_context_ids"] = [context.context_id for context in contexts]
+        result.metadata["search_result_count"] = len(search_results)
+        result.metadata["search_result_sources"] = sorted({item.source for item in search_results if item.source})
         result.metadata.setdefault("post_base_url", chunk_config.post_base_url)
         return chunk.index, chunk, result
 

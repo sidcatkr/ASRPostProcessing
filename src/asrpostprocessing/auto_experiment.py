@@ -352,6 +352,7 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str
         key=lambda row: _metric(row, "wer_eojeol"),
         default=None,
     )
+    best_latency_quality_tradeoff = _best_latency_quality_tradeoff(comparable, best_by_cer)
     baseline = next((row for row in comparable if row.get("condition_id") == "baseline"), None)
     baseline_cer = _metric(baseline or {}, "cer_normalized_no_space")
     worse_than_baseline = []
@@ -363,7 +364,8 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str
     result = {
         "best_by_cer": best_by_cer,
         "best_by_wer": best_by_wer,
-        "best_latency_quality_tradeoff": _best_latency_quality_tradeoff(comparable, best_by_cer),
+        "best_latency_quality_tradeoff": best_latency_quality_tradeoff,
+        "best_methods": _best_method_summary(best_by_cer, best_by_wer, best_latency_quality_tradeoff),
         "baseline": baseline,
         "worse_than_baseline": worse_than_baseline,
         "effect_summary": _auto_effect_summary(rows),
@@ -507,6 +509,8 @@ def _run_condition(
     if not isinstance(vllm_delta, dict):
         vllm_delta = {}
     post_output_tokens = _post_output_tokens(output.correction.metadata)
+    rag_context_count = _postprocess_metadata_sum(output.correction.metadata, "rag_context_count")
+    search_result_count = _postprocess_metadata_sum(output.correction.metadata, "search_result_count")
     postprocess_latency_ms = _metric(timings, "postprocess_latency_ms")
     latency_ms = _metric(timings, "latency_ms") or _metric(metrics, "latency_ms")
     vllm_total_tokens = _metric(vllm_delta, "total_tokens")
@@ -540,6 +544,9 @@ def _run_condition(
         "rag_strength": config.rag_strength,
         "rag_top_k": config.rag_top_k if case.condition.enable_rag else "",
         "search_strength": config.search_strength,
+        "rag_context_count": rag_context_count,
+        "rag_used_context_count": len(output.correction.used_context_ids),
+        "search_result_count": search_result_count,
         "planned_asr_cache_group_key": _asr_cache_group_key(case),
         "asr_cache_key": asr_cache.get("key") if isinstance(asr_cache, dict) else "",
         "asr_cache_hit": asr_cache.get("hit") if isinstance(asr_cache, dict) else "",
@@ -698,6 +705,9 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "rag_strength",
         "rag_top_k",
         "search_strength",
+        "rag_context_count",
+        "rag_used_context_count",
+        "search_result_count",
         "planned_asr_cache_group_key",
         "asr_cache_key",
         "asr_cache_hit",
@@ -780,6 +790,65 @@ def _best_latency_quality_tradeoff(
         ),
         default=best_row,
     )
+
+
+def _best_method_summary(
+    best_by_cer: Optional[Dict[str, Any]],
+    best_by_wer: Optional[Dict[str, Any]],
+    best_latency_quality_tradeoff: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    candidates = [
+        ("Best CER", "cer_normalized_no_space", best_by_cer),
+        ("Best WER", "wer_eojeol", best_by_wer),
+        ("Best speed/quality", "latency_ms", best_latency_quality_tradeoff),
+    ]
+    methods: List[Dict[str, Any]] = []
+    for badge, metric_key, row in candidates:
+        if not row:
+            continue
+        methods.append(
+            {
+                "badge": badge,
+                "metric_key": metric_key,
+                "case_id": row.get("case_id") or "",
+                "condition_id": row.get("condition_id") or "",
+                "label": row.get("label") or "",
+                "method": _method_label(row),
+                "cer_normalized_no_space": row.get("cer_normalized_no_space"),
+                "wer_eojeol": row.get("wer_eojeol"),
+                "delta_cer_vs_baseline": row.get("delta_cer_vs_baseline"),
+                "delta_wer_vs_baseline": row.get("delta_wer_vs_baseline"),
+                "latency_ms": row.get("latency_ms"),
+                "rag_context_count": row.get("rag_context_count"),
+                "rag_used_context_count": row.get("rag_used_context_count"),
+                "search_result_count": row.get("search_result_count"),
+            }
+        )
+    return methods
+
+
+def _method_label(row: Dict[str, Any]) -> str:
+    features = []
+    feature_map = [
+        ("keyword_bias_enabled", "Keyword"),
+        ("noise_reduction_enabled", "Noise"),
+        ("volume_normalization_enabled", "Volume"),
+        ("llm_postprocess_enabled", "LLM"),
+        ("rag_enabled", "RAG"),
+        ("search_enabled", "Search"),
+    ]
+    for key, label in feature_map:
+        if _truthy(row.get(key)):
+            features.append(label)
+    return " + ".join(features) if features else "Baseline"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _auto_effect_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -867,6 +936,22 @@ def _post_output_tokens(metadata: Dict[str, Any]) -> Optional[int]:
         except (TypeError, ValueError):
             continue
     return total if found else None
+
+
+def _postprocess_metadata_sum(metadata: Dict[str, Any], key: str) -> int:
+    total = 0
+    for chunk in metadata.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_metadata = chunk.get("metadata")
+        if not isinstance(chunk_metadata, dict):
+            continue
+        value = chunk_metadata.get(key)
+        try:
+            total += int(value)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 def _metric_or_blank(values: Dict[str, Any], key: str) -> float | str:

@@ -11,6 +11,7 @@ from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
+from asrpostprocessing.schemas import CorrectionResult, SearchResult
 from asrpostprocessing.ui import (
     NOISE_REDUCTION_MODEL_CHOICES,
     _apply_runtime_saturation,
@@ -45,7 +46,22 @@ class ParserPipelineUiTest(unittest.TestCase):
     def test_auto_experiment_html_lists_each_case_cer_wer_readably(self):
         report = {
             "summary_csv": "/tmp/auto_experiment_summary.csv",
-            "analysis": {"best_by_cer": {"case_id": "case-b", "cer_normalized_no_space": 0.1, "wer_eojeol": 0.2}},
+            "analysis": {
+                "best_by_cer": {"case_id": "case-b", "cer_normalized_no_space": 0.1, "wer_eojeol": 0.2},
+                "best_methods": [
+                    {
+                        "badge": "Best CER",
+                        "case_id": "case-b",
+                        "method": "Keyword + LLM",
+                        "cer_normalized_no_space": 0.1,
+                        "wer_eojeol": 0.2,
+                        "delta_cer_vs_baseline": 0.2,
+                        "delta_wer_vs_baseline": 0.2,
+                        "rag_context_count": 0,
+                        "search_result_count": 0,
+                    }
+                ],
+            },
             "audit": {
                 "verdict": "valid",
                 "row_count": 2,
@@ -87,6 +103,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                     "preprocess_gpu": "0",
                     "peak_gpu_utilization_percent": 80,
                     "asr_cache_hit": False,
+                    "rag_context_count": 0,
+                    "search_result_count": 0,
                     "risk": "unchanged",
                 },
                 {
@@ -104,6 +122,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                     "preprocess_gpu": "1",
                     "peak_gpu_utilization_percent": 98.5,
                     "asr_cache_hit": True,
+                    "rag_context_count": 0,
+                    "search_result_count": 0,
                     "risk": "low",
                 },
             ],
@@ -112,6 +132,8 @@ class ParserPipelineUiTest(unittest.TestCase):
         html = _auto_experiment_diff_html(report, "기준 문장")
 
         self.assertIn("Auto Experiment CER/WER by condition", html)
+        self.assertIn("Best Methods", html)
+        self.assertIn("Best CER", html)
         self.assertIn("Keyword + LLM", html)
         self.assertIn("Baseline", html)
         self.assertIn("0.1000", html)
@@ -124,10 +146,68 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("PRE GPU", html)
         self.assertIn("Peak GPU", html)
         self.assertIn("ASR Cache", html)
+        self.assertIn("RAG Ctx", html)
+        self.assertIn("Search Hits", html)
         self.assertIn("http://127.0.0.1:18000/v1", html)
         self.assertIn("http://127.0.0.1:18001/v1", html)
         self.assertIn("98.5000%", html)
         self.assertLess(html.index("case-b"), html.index("case-a"))
+
+    def test_pipeline_passes_rag_and_search_evidence_to_postprocessor(self):
+        class CapturingPostprocessor:
+            def __init__(self):
+                self.contexts = []
+                self.search_results = []
+
+            def correct(self, chunk_text, config, contexts, search_results):
+                self.contexts = list(contexts)
+                self.search_results = list(search_results)
+                return CorrectionResult(
+                    corrected_text=chunk_text,
+                    risk="low",
+                    used_context_ids=[context.context_id for context in self.contexts],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            postprocessor = CapturingPostprocessor()
+            config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                mock_transcript="AlphaTerm 관련 설명입니다.",
+                enable_llm_postprocess=True,
+                enable_rag=True,
+                rag_inline_text="AlphaTerm은 프로젝트 핵심 용어입니다.",
+                rag_strength=1.0,
+                rag_top_k=2,
+                enable_search=True,
+                search_provider="endpoint",
+                search_endpoint="https://search.example.test",
+                search_strength=0.8,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+            search_result = SearchResult(
+                query="AlphaTerm",
+                title="AlphaTerm reference",
+                url="https://example.test/alpha",
+                snippet="AlphaTerm search context",
+                source="endpoint",
+            )
+            with patch("asrpostprocessing.pipeline.build_postprocess_adapter", return_value=postprocessor), patch(
+                "asrpostprocessing.pipeline.CachedSearchProvider.search", return_value=[search_result]
+            ):
+                output = PipelineRunner(config).run(str(audio), run_id="rag-search-test")
+
+        self.assertTrue(postprocessor.contexts)
+        self.assertIn("AlphaTerm", postprocessor.contexts[0].text)
+        self.assertEqual(len(postprocessor.search_results), 1)
+        chunk_metadata = output.correction.metadata["chunks"][0]["metadata"]
+        self.assertGreaterEqual(chunk_metadata["rag_context_count"], 1)
+        self.assertEqual(chunk_metadata["search_result_count"], 1)
+        self.assertEqual(chunk_metadata["search_result_sources"], ["endpoint"])
+        self.assertTrue(output.correction.used_context_ids)
 
     def test_auto_experiment_blank_model_inputs_use_configured_model_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
