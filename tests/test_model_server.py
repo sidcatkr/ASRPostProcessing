@@ -17,6 +17,7 @@ from asrpostprocessing.model_server import (
     _runtime_options_for_spec,
     _server_specs,
     _start_process,
+    _wait_until_ready,
     ensure_model_servers,
     stop_model_servers,
 )
@@ -437,6 +438,21 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual(statuses[0].status, "stopped_unmanaged")
         signal_pid.assert_called_once_with(123, signal.SIGTERM)
         self.assertTrue(any("Stopping unmanaged asr_stage_0" in message for message in messages))
+
+    def test_wait_until_ready_emits_progress_heartbeat(self):
+        config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
+        spec = _server_specs(config)[0]
+        process = Mock()
+        process.poll.return_value = None
+        messages = []
+
+        with patch("asrpostprocessing.model_server._endpoint_ready", side_effect=[False, True]), patch(
+            "asrpostprocessing.model_server.time.time", side_effect=[0.0, 0.0, 31.0, 32.0]
+        ), patch("asrpostprocessing.model_server.time.sleep"):
+            _wait_until_ready(spec, 120.0, process, messages.append)
+
+        self.assertTrue(any("Still waiting for asr model server" in message for message in messages))
+        self.assertTrue(any("elapsed 31s" in message for message in messages))
 
 
 if __name__ == "__main__":

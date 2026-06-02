@@ -74,6 +74,8 @@ _LOCK = threading.Lock()
 _PROCESSES: Dict[str, subprocess.Popen] = {}
 _ADAPTIVE_START_RETRY_SCALES = (0.85, 0.70, 0.55)
 _NEAR_FULL_CAPACITY_SCALE = 0.98
+_READY_WAIT_POLL_INTERVAL_S = 3.0
+_READY_WAIT_STATUS_INTERVAL_S = 30.0
 
 
 def ensure_model_servers(
@@ -732,8 +734,15 @@ def _with_nvidia_library_paths(current: str) -> str:
     return os.pathsep.join(merged)
 
 
-def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional[subprocess.Popen]) -> None:
-    deadline = time.time() + timeout_s
+def _wait_until_ready(
+    spec: ModelServerSpec,
+    timeout_s: float,
+    process: Optional[subprocess.Popen],
+    status_callback: Optional[StatusCallback] = None,
+) -> None:
+    started_at = time.time()
+    deadline = started_at + timeout_s
+    next_status_at = started_at + _READY_WAIT_STATUS_INTERVAL_S
     while time.time() < deadline:
         if _endpoint_ready(spec.base_url, spec.model):
             return
@@ -743,7 +752,17 @@ def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional
                 f"{spec.name} model server exited before becoming ready. "
                 f"pid={process.pid}, returncode={process.returncode}, log={spec.log_path}\n{tail}"
             )
-        time.sleep(3.0)
+        now = time.time()
+        if now >= next_status_at:
+            _emit(
+                status_callback,
+                f"Still waiting for {spec.name} model server at {spec.base_url}; "
+                f"elapsed {_format_wait_duration(now - started_at)}, "
+                f"timeout in {_format_wait_duration(max(0.0, deadline - now))}.",
+            )
+            while next_status_at <= now:
+                next_status_at += _READY_WAIT_STATUS_INTERVAL_S
+        time.sleep(_READY_WAIT_POLL_INTERVAL_S)
     raise RuntimeError(
         f"{spec.name} model server did not become ready within {timeout_s:.0f}s at {spec.base_url}. "
         f"Check log: {spec.log_path}"
@@ -758,7 +777,7 @@ def _wait_until_ready_with_adaptive_retries(
     attempt = 0
     while True:
         try:
-            _wait_until_ready(item.spec, timeout_s, item.process)
+            _wait_until_ready(item.spec, timeout_s, item.process, status_callback)
             return item
         except RuntimeError as exc:
             if not _should_retry_adaptive_start(item.spec, attempt, exc):
@@ -786,6 +805,14 @@ def _wait_until_ready_with_adaptive_retries(
                 runtime_options,
             )
             attempt += 1
+
+
+def _format_wait_duration(seconds: float) -> str:
+    whole_seconds = max(0, int(seconds))
+    minutes, remainder = divmod(whole_seconds, 60)
+    if minutes:
+        return f"{minutes}m {remainder}s"
+    return f"{remainder}s"
 
 
 def _should_retry_adaptive_start(spec: ModelServerSpec, attempt: int, exc: RuntimeError) -> bool:
