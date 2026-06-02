@@ -262,24 +262,29 @@ def _start_stage_replicas_scalable(
     pairs = _stage_server_pairs_for_config(managed_config)
     if not pairs:
         raise RuntimeError(f"No configured {stage} stage replicas are available.")
-    active_pairs: List[Tuple[str, str]] = []
-    active_names: List[str] = []
-    for index, (base_url, gpu) in enumerate(pairs):
-        spec_name = f"{stage}_stage_{index}"
-        try:
-            ensure_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
-        except Exception as exc:
-            _emit(
+    _emit(status_callback, f"Launching {stage} stage replicas concurrently across {len(pairs)} configured GPU(s).")
+    active: List[Tuple[int, str, str, str]] = []
+    max_workers = max(1, len(pairs))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _ensure_one_stage_replica,
+                managed_config,
+                stage,
+                index,
+                base_url,
+                gpu,
                 status_callback,
-                f"Skipping {spec_name} on GPU {gpu} at {base_url}; startup failed and scalable mode will use remaining replicas: {exc}",
             )
-            try:
-                stop_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
-            except Exception as cleanup_exc:
-                _emit(status_callback, f"Cleanup for failed {spec_name} reported: {cleanup_exc}")
-            continue
-        active_pairs.append((base_url, gpu))
-        active_names.append(spec_name)
+            for index, (base_url, gpu) in enumerate(pairs)
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                active.append(result)
+    active.sort(key=lambda item: item[0])
+    active_pairs = [(base_url, gpu) for _index, _spec_name, base_url, gpu in active]
+    active_names = [spec_name for _index, spec_name, _base_url, _gpu in active]
     if not active_pairs:
         raise RuntimeError(f"No {stage} stage replicas became ready. Check GPU VRAM usage and model server logs.")
     _restrict_stage_worker_pool(worker_config, active_pairs)
@@ -289,6 +294,30 @@ def _start_stage_replicas_scalable(
         + ", ".join(f"{base_url} on GPU {gpu}" for base_url, gpu in active_pairs),
     )
     return active_names
+
+
+def _ensure_one_stage_replica(
+    managed_config: ExperimentConfig,
+    stage: str,
+    index: int,
+    base_url: str,
+    gpu: str,
+    status_callback: Optional[StatusCallback],
+) -> Optional[Tuple[int, str, str, str]]:
+    spec_name = f"{stage}_stage_{index}"
+    try:
+        ensure_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
+    except Exception as exc:
+        _emit(
+            status_callback,
+            f"Skipping {spec_name} on GPU {gpu} at {base_url}; startup failed and scalable mode will use remaining replicas: {exc}",
+        )
+        try:
+            stop_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
+        except Exception as cleanup_exc:
+            _emit(status_callback, f"Cleanup for failed {spec_name} reported: {cleanup_exc}")
+        return None
+    return (index, spec_name, base_url, gpu)
 
 
 def _stage_server_pairs_for_config(config: ExperimentConfig) -> List[Tuple[str, str]]:

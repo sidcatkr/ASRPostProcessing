@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 from unittest.mock import patch
 
-from asrpostprocessing.auto_experiment import run_auto_experiment
+from asrpostprocessing.auto_experiment import _start_stage_replicas_scalable, run_auto_experiment
 from asrpostprocessing.config import ExperimentConfig, load_config
 from asrpostprocessing.experiment_matrix import generate_auto_conditions
 from asrpostprocessing.schemas import SearchResult
@@ -415,22 +415,55 @@ class AutoExperimentTest(unittest.TestCase):
                 run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
 
             self.assertEqual(
-                events,
-                [
-                    ("ensure", ("asr_stage_0",), True),
-                    ("ensure", ("asr_stage_1",), True),
-                    ("ensure", ("asr_stage_2",), True),
-                    ("ensure", ("asr_stage_3",), True),
-                    ("prime", 2, False),
-                    ("stop", ("asr_stage_0", "asr_stage_1", "asr_stage_2", "asr_stage_3"), True),
-                    ("ensure", ("post_stage_0",), True),
-                    ("ensure", ("post_stage_1",), True),
-                    ("ensure", ("post_stage_2",), True),
-                    ("ensure", ("post_stage_3",), True),
-                    ("run", 2, False),
-                    ("stop", ("post_stage_0", "post_stage_1", "post_stage_2", "post_stage_3"), True),
-                ],
+                {item[1] for item in events if item[0] == "ensure" and item[1][0].startswith("asr_stage_")},
+                {("asr_stage_0",), ("asr_stage_1",), ("asr_stage_2",), ("asr_stage_3",)},
             )
+            self.assertEqual(
+                {item[1] for item in events if item[0] == "ensure" and item[1][0].startswith("post_stage_")},
+                {("post_stage_0",), ("post_stage_1",), ("post_stage_2",), ("post_stage_3",)},
+            )
+            self.assertIn(("prime", 2, False), events)
+            self.assertIn(("run", 2, False), events)
+            self.assertIn(("stop", ("asr_stage_0", "asr_stage_1", "asr_stage_2", "asr_stage_3"), True), events)
+            self.assertIn(("stop", ("post_stage_0", "post_stage_1", "post_stage_2", "post_stage_3"), True), events)
+
+    def test_stage_replicas_startup_launches_replicas_concurrently(self):
+        config = ExperimentConfig(
+            asr_backend="vllm_chat",
+            post_backend="vllm_openai",
+            model_residency="stage_replicas",
+            auto_start_model_servers=True,
+            stage_server_base_urls=[
+                "http://stage-0/v1",
+                "http://stage-1/v1",
+                "http://stage-2/v1",
+                "http://stage-3/v1",
+            ],
+            stage_server_gpus=["0", "1", "2", "3"],
+            preprocess_gpus=["0", "1", "2", "3"],
+        )
+        worker_config = ExperimentConfig(
+            stage_server_base_urls=list(config.stage_server_base_urls),
+            stage_server_gpus=list(config.stage_server_gpus),
+            preprocess_gpus=list(config.preprocess_gpus),
+        )
+        barrier = threading.Barrier(4)
+        started = []
+
+        def fake_ensure(config, status_callback=None, names=None):
+            started.append(tuple(names or ()))
+            barrier.wait(timeout=2)
+            return []
+
+        with patch("asrpostprocessing.auto_experiment.ensure_model_servers", side_effect=fake_ensure):
+            active_names = _start_stage_replicas_scalable(config, worker_config, "post", None)
+
+        self.assertEqual(active_names, ["post_stage_0", "post_stage_1", "post_stage_2", "post_stage_3"])
+        self.assertEqual(
+            set(started),
+            {("post_stage_0",), ("post_stage_1",), ("post_stage_2",), ("post_stage_3",)},
+        )
+        self.assertEqual(worker_config.stage_server_base_urls, config.stage_server_base_urls)
 
     def test_stage_replicas_auto_experiment_skips_failed_post_gpu(self):
         with tempfile.TemporaryDirectory() as tmp:
