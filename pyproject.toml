@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
+  "ninja>=1.11",
   "qwen-asr>=0.0.6",
   "vllm[audio]>=0.22",
   "bitsandbytes>=0.49",

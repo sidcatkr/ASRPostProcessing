@@ -19,6 +19,16 @@ class DoctorTest(unittest.TestCase):
         nvidia_check = next(check for check in checks if check.name == "nvidia-smi")
         self.assertIn(nvidia_check.status, {"ok", "fail"})
 
+    def test_auto_start_vllm_checks_ninja_for_flashinfer_jit(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="vllm_chat",
+            post_backend="vllm_openai",
+        )
+        checks = run_doctor(config)
+        names = [check.name for check in checks]
+        self.assertIn("ninja", names)
+
     def test_preprocess_doctor_checks_ffmpeg_without_command_template(self):
         config = ExperimentConfig(
             asr_backend="mock",

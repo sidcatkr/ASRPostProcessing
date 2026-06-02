@@ -47,6 +47,7 @@ def run_doctor(config: ExperimentConfig, check_endpoints: bool = False) -> List[
             checks.append(_check_package("qwen_asr", required=True))
         if auto_start_asr or auto_start_post:
             checks.append(_check_package("vllm", required=True))
+            checks.append(_check_python_env_executable("ninja", "vLLM FlashInfer JIT requires ninja"))
         if auto_start_post:
             checks.append(_check_vllm_executable())
     if config.asr_backend.startswith("qwen_asr"):
@@ -110,6 +111,16 @@ def _check_vllm_executable() -> DoctorCheck:
     if sibling.exists():
         return DoctorCheck("vllm", "ok", str(sibling))
     return DoctorCheck("vllm", "fail", "not found on PATH or next to the active Python executable")
+
+
+def _check_python_env_executable(name: str, missing_detail: str) -> DoctorCheck:
+    executable = shutil.which(name)
+    if executable:
+        return DoctorCheck(name, "ok", executable)
+    sibling = Path(sys.executable).with_name(name)
+    if sibling.exists():
+        return DoctorCheck(name, "ok", str(sibling))
+    return DoctorCheck(name, "fail", f"not found on PATH or next to the active Python executable; {missing_detail}")
 
 
 def _check_output_dirs(config: ExperimentConfig) -> DoctorCheck:

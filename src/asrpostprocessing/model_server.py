@@ -381,6 +381,7 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = spec.gpu
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env["PATH"] = _with_python_executable_dir(env.get("PATH", ""))
     env["LD_LIBRARY_PATH"] = _with_nvidia_library_paths(env.get("LD_LIBRARY_PATH", ""))
     env["VLLM_CACHE_ROOT"] = _vllm_cache_root(spec)
     gpu_memory_utilization = _gpu_memory_utilization_for_spec(spec)
@@ -538,6 +539,16 @@ def _format_gpu_memory_utilization(value: float) -> str:
 
 def _vllm_cache_root(spec: ModelServerSpec) -> str:
     return str(Path(spec.log_path).parent / "vllm_cache" / _safe_name(spec.name))
+
+
+def _with_python_executable_dir(current: str) -> str:
+    python_dir = str(Path(sys.executable).parent)
+    existing = [part for part in current.split(os.pathsep) if part]
+    merged: List[str] = []
+    for path in [python_dir] + existing:
+        if path and path not in merged:
+            merged.append(path)
+    return os.pathsep.join(merged)
 
 
 def _with_nvidia_library_paths(current: str) -> str:

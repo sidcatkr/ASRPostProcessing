@@ -1,4 +1,5 @@
 import tempfile
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -85,11 +86,14 @@ class ModelServerTest(unittest.TestCase):
                         _PROCESSES.pop(f"{spec.name}:{spec.base_url}", None)
 
             commands = [call.args[0] for call in popen.call_args_list]
+            envs = [call.kwargs["env"] for call in popen.call_args_list]
             self.assertIn("asrpostprocessing.qwen_asr_serve_compat", commands[0])
             self.assertIn(Path(sys.executable).name, commands[0])
             self.assertIn("vllm", commands[1])
             self.assertNotIn("{python}", commands[0])
             self.assertNotIn("{vllm}", commands[1])
+            self.assertEqual(envs[0]["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent))
+            self.assertEqual(envs[1]["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent))
 
     def test_ready_endpoints_are_not_started(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="vllm_openai")
