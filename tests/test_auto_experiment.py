@@ -417,14 +417,102 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertEqual(
                 events,
                 [
-                    ("ensure", ("asr",), True),
+                    ("ensure", ("asr_stage_0",), True),
+                    ("ensure", ("asr_stage_1",), True),
+                    ("ensure", ("asr_stage_2",), True),
+                    ("ensure", ("asr_stage_3",), True),
                     ("prime", 2, False),
-                    ("stop", ("asr",), True),
-                    ("ensure", ("post",), True),
+                    ("stop", ("asr_stage_0", "asr_stage_1", "asr_stage_2", "asr_stage_3"), True),
+                    ("ensure", ("post_stage_0",), True),
+                    ("ensure", ("post_stage_1",), True),
+                    ("ensure", ("post_stage_2",), True),
+                    ("ensure", ("post_stage_3",), True),
                     ("run", 2, False),
-                    ("stop", ("post",), True),
+                    ("stop", ("post_stage_0", "post_stage_1", "post_stage_2", "post_stage_3"), True),
                 ],
             )
+
+    def test_stage_replicas_auto_experiment_skips_failed_post_gpu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                post_backend="vllm_openai",
+                model_residency="stage_replicas",
+                auto_start_model_servers=True,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=False,
+                enable_noise_reduction=False,
+                enable_volume_normalization=False,
+                enable_llm_postprocess=True,
+                enable_rag=False,
+                enable_search=False,
+                stage_server_base_urls=[
+                    "http://stage-0/v1",
+                    "http://stage-1/v1",
+                    "http://stage-2/v1",
+                    "http://stage-3/v1",
+                ],
+                stage_server_gpus=["0", "1", "2", "3"],
+                preprocess_gpus=["0", "1", "2", "3"],
+            )
+            events = []
+            run_stage_urls = []
+            run_preprocess_gpus = []
+
+            def fake_ensure(config, status_callback=None, names=None):
+                names_tuple = tuple(names or ())
+                events.append(("ensure", names_tuple))
+                if names_tuple == ("post_stage_0",):
+                    raise RuntimeError("GPU 0 has insufficient free VRAM")
+                return []
+
+            def fake_stop(config, status_callback=None, names=None):
+                events.append(("stop", tuple(names or ())))
+                return []
+
+            def fake_prime(audio_path, base_config, cases, reference_text, rag_inline_text, status_callback):
+                events.append(("prime", tuple(base_config.stage_server_base_urls), tuple(base_config.preprocess_gpus)))
+
+            def fake_run(audio_path, base_config, indexed_cases, reference_text, rag_inline_text, status_callback):
+                run_stage_urls.extend(base_config.stage_server_base_urls)
+                run_preprocess_gpus.extend(base_config.preprocess_gpus)
+                return [
+                    {
+                        "case_id": case.case_id,
+                        "condition_id": case.condition.condition_id,
+                        "label": case.condition.label,
+                        "group": case.condition.group,
+                        "asr_model": case.asr_model,
+                        "post_model": case.post_model,
+                        "asr_base_url": base_config.stage_server_base_urls[0],
+                        "post_base_url": base_config.stage_server_base_urls[0],
+                        "preprocess_gpu": base_config.preprocess_gpus[0],
+                        "model_residency": base_config.model_residency,
+                        "planned_asr_cache_group_key": case.condition.asr_group_key,
+                        "asr_cache_key": case.condition.asr_group_key,
+                        "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+                        "cer_normalized_no_space": 0.0,
+                        "wer_eojeol": 0.0,
+                        "error": "",
+                    }
+                    for _, case in indexed_cases
+                ]
+
+            with patch("asrpostprocessing.auto_experiment.ensure_model_servers", side_effect=fake_ensure), patch(
+                "asrpostprocessing.auto_experiment.stop_model_servers", side_effect=fake_stop
+            ), patch("asrpostprocessing.auto_experiment._prime_asr_groups", side_effect=fake_prime), patch(
+                "asrpostprocessing.auto_experiment._run_conditions_parallel", side_effect=fake_run
+            ):
+                report = run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
+
+            self.assertIn(("ensure", ("post_stage_0",)), events)
+            self.assertIn(("stop", ("post_stage_0",)), events)
+            self.assertEqual(run_stage_urls, ["http://stage-1/v1", "http://stage-2/v1", "http://stage-3/v1"])
+            self.assertEqual(run_preprocess_gpus, ["1", "2", "3"])
+            self.assertEqual(report["analysis"]["num_failed_rows"], 0)
 
     def test_auto_experiment_can_expand_model_axis(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -216,17 +216,28 @@ def _run_stage_replicas_auto_experiment(
     worker_config = copy.deepcopy(managed_config)
     worker_config.auto_start_model_servers = False
 
-    _emit(status_callback, "Starting ASR replicas on all stage GPUs.")
-    ensure_model_servers(managed_config, status_callback=status_callback, names=["asr"])
+    _emit(status_callback, "Starting ASR replicas on scalable stage GPUs.")
+    asr_active_names = _start_stage_replicas_scalable(
+        managed_config,
+        worker_config,
+        "asr",
+        status_callback,
+    )
     try:
         _prime_asr_groups(audio_path, worker_config, cases, reference_text, rag_inline_text, status_callback)
     finally:
         _emit(status_callback, "Stopping ASR replicas before post-processing stage.")
-        stop_model_servers(managed_config, status_callback=status_callback, names=["asr"])
+        stop_model_servers(managed_config, status_callback=status_callback, names=asr_active_names)
 
+    post_active_names: List[str] = []
     if _has_postprocess_cases(cases):
-        _emit(status_callback, "Starting post-processing replicas on all stage GPUs.")
-        ensure_model_servers(managed_config, status_callback=status_callback, names=["post"])
+        _emit(status_callback, "Starting post-processing replicas on scalable stage GPUs.")
+        post_active_names = _start_stage_replicas_scalable(
+            managed_config,
+            worker_config,
+            "post",
+            status_callback,
+        )
     try:
         return _run_conditions_parallel(
             audio_path,
@@ -239,7 +250,62 @@ def _run_stage_replicas_auto_experiment(
     finally:
         if _has_postprocess_cases(cases):
             _emit(status_callback, "Stopping post-processing replicas.")
-            stop_model_servers(managed_config, status_callback=status_callback, names=["post"])
+            stop_model_servers(managed_config, status_callback=status_callback, names=post_active_names)
+
+
+def _start_stage_replicas_scalable(
+    managed_config: ExperimentConfig,
+    worker_config: ExperimentConfig,
+    stage: str,
+    status_callback: Optional[StatusCallback],
+) -> List[str]:
+    pairs = _stage_server_pairs_for_config(managed_config)
+    if not pairs:
+        raise RuntimeError(f"No configured {stage} stage replicas are available.")
+    active_pairs: List[Tuple[str, str]] = []
+    active_names: List[str] = []
+    for index, (base_url, gpu) in enumerate(pairs):
+        spec_name = f"{stage}_stage_{index}"
+        try:
+            ensure_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
+        except Exception as exc:
+            _emit(
+                status_callback,
+                f"Skipping {spec_name} on GPU {gpu} at {base_url}; startup failed and scalable mode will use remaining replicas: {exc}",
+            )
+            try:
+                stop_model_servers(managed_config, status_callback=status_callback, names=[spec_name])
+            except Exception as cleanup_exc:
+                _emit(status_callback, f"Cleanup for failed {spec_name} reported: {cleanup_exc}")
+            continue
+        active_pairs.append((base_url, gpu))
+        active_names.append(spec_name)
+    if not active_pairs:
+        raise RuntimeError(f"No {stage} stage replicas became ready. Check GPU VRAM usage and model server logs.")
+    _restrict_stage_worker_pool(worker_config, active_pairs)
+    _emit(
+        status_callback,
+        f"Scalable {stage} stage active replicas: "
+        + ", ".join(f"{base_url} on GPU {gpu}" for base_url, gpu in active_pairs),
+    )
+    return active_names
+
+
+def _stage_server_pairs_for_config(config: ExperimentConfig) -> List[Tuple[str, str]]:
+    base_urls = [str(url).strip() for url in (getattr(config, "stage_server_base_urls", []) or []) if str(url).strip()]
+    gpus = [str(gpu).strip() for gpu in (getattr(config, "stage_server_gpus", []) or []) if str(gpu).strip()]
+    count = min(len(base_urls), len(gpus))
+    return [(base_urls[index], gpus[index]) for index in range(count)]
+
+
+def _restrict_stage_worker_pool(config: ExperimentConfig, active_pairs: List[Tuple[str, str]]) -> None:
+    config.stage_server_base_urls = [base_url for base_url, _ in active_pairs]
+    config.stage_server_gpus = [gpu for _, gpu in active_pairs]
+    config.preprocess_gpus = [gpu for _, gpu in active_pairs]
+    if active_pairs:
+        config.asr_base_url = active_pairs[0][0]
+        config.post_base_url = active_pairs[0][0]
+        config.preprocess_gpu = active_pairs[0][1]
 
 
 def _prime_asr_groups(
