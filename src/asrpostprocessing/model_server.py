@@ -58,10 +58,21 @@ class _PendingServer:
     process: Optional[subprocess.Popen]
     final_status: str
     detail: str
+    runtime_options: "_ServerRuntimeOptions"
+
+
+@dataclass
+class _ServerRuntimeOptions:
+    gpu_memory_utilization: str
+    max_model_len: int
+    max_num_seqs: int
+    max_num_batched_tokens: int
+    detail: str = ""
 
 
 _LOCK = threading.Lock()
 _PROCESSES: Dict[str, subprocess.Popen] = {}
+_ADAPTIVE_START_RETRY_SCALES = (0.85, 0.70, 0.55)
 
 
 def ensure_model_servers(
@@ -84,7 +95,7 @@ def ensure_model_servers(
             else:
                 pending.append(status)
     for item in pending:
-        _wait_until_ready(item.spec, float(config.server_start_timeout_s), item.process)
+        item = _wait_until_ready_with_adaptive_retries(item, float(config.server_start_timeout_s), status_callback)
         statuses.append(
             ModelServerStatus(
                 item.spec.name,
@@ -359,8 +370,11 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
             "the process that is using the port."
         )
 
+    runtime_options = _runtime_options_for_spec(spec)
+    if runtime_options.detail:
+        _emit(status_callback, f"{spec.name} launch profile: {runtime_options.detail}")
     try:
-        process = _start_process(spec)
+        process = _start_process(spec, runtime_options)
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"Cannot auto-start {spec.name} model server because executable was not found: {exc.filename}. "
@@ -368,14 +382,17 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
         ) from exc
     _PROCESSES[key] = process
     _emit(status_callback, f"Started {spec.name} model server pid={process.pid}; waiting for {spec.base_url}")
-    return _PendingServer(spec, process, "started", "server started and became ready")
+    return _PendingServer(spec, process, "started", "server started and became ready", runtime_options)
 
 
 def _process_key(spec: ModelServerSpec) -> str:
     return f"{spec.name}:{spec.base_url}"
 
 
-def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
+def _start_process(
+    spec: ModelServerSpec,
+    runtime_options: Optional[_ServerRuntimeOptions] = None,
+) -> subprocess.Popen:
     Path(spec.log_path).parent.mkdir(parents=True, exist_ok=True)
     log_file = open(spec.log_path, "ab")
     env = os.environ.copy()
@@ -384,7 +401,7 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
     env["PATH"] = _with_python_executable_dir(env.get("PATH", ""))
     env["LD_LIBRARY_PATH"] = _with_nvidia_library_paths(env.get("LD_LIBRARY_PATH", ""))
     env["VLLM_CACHE_ROOT"] = _vllm_cache_root(spec)
-    gpu_memory_utilization = _gpu_memory_utilization_for_spec(spec)
+    runtime_options = runtime_options or _runtime_options_for_spec(spec)
 
     try:
         if spec.command_template:
@@ -395,12 +412,16 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
                 base_url=spec.base_url,
                 gpu=spec.gpu,
                 log_path=spec.log_path,
-                gpu_memory_utilization=gpu_memory_utilization,
+                gpu_memory_utilization=runtime_options.gpu_memory_utilization,
+                max_model_len=runtime_options.max_model_len,
+                max_num_seqs=runtime_options.max_num_seqs,
+                max_num_batched_tokens=runtime_options.max_num_batched_tokens,
                 vllm_cache_root=env["VLLM_CACHE_ROOT"],
                 python=shlex.quote(sys.executable),
                 python_dir=shlex.quote(str(Path(sys.executable).parent)),
                 vllm=shlex.quote(_vllm_executable()),
             )
+            command = _apply_runtime_options_to_command(command, runtime_options)
             return subprocess.Popen(
                 command,
                 shell=True,
@@ -411,7 +432,7 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
             )
 
         return subprocess.Popen(
-            _default_command(spec),
+            _default_command(spec, runtime_options),
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,
@@ -421,8 +442,11 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
         log_file.close()
 
 
-def _default_command(spec: ModelServerSpec) -> List[str]:
-    gpu_memory_utilization = _gpu_memory_utilization_for_spec(spec)
+def _default_command(
+    spec: ModelServerSpec,
+    runtime_options: Optional[_ServerRuntimeOptions] = None,
+) -> List[str]:
+    runtime_options = runtime_options or _runtime_options_for_spec(spec)
     if spec.stage == "asr":
         return [
             sys.executable,
@@ -434,9 +458,9 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
             "--port",
             str(spec.port),
             "--gpu-memory-utilization",
-            gpu_memory_utilization,
+            runtime_options.gpu_memory_utilization,
             "--max-model-len",
-            "65536",
+            str(runtime_options.max_model_len),
             "--attention-backend",
             "TRITON_ATTN",
             "--enforce-eager",
@@ -452,7 +476,7 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--dtype",
         "float16",
         "--max-model-len",
-        "2048",
+        str(runtime_options.max_model_len),
         "--language-model-only",
         "--quantization",
         "bitsandbytes",
@@ -462,11 +486,11 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--attention-backend",
         "TRITON_ATTN",
         "--gpu-memory-utilization",
-        gpu_memory_utilization,
+        runtime_options.gpu_memory_utilization,
         "--max-num-seqs",
-        "1",
+        str(runtime_options.max_num_seqs),
         "--max-num-batched-tokens",
-        "2048",
+        str(runtime_options.max_num_batched_tokens),
     ]
 
 
@@ -481,22 +505,72 @@ def _vllm_executable() -> str:
 
 
 def _gpu_memory_utilization_for_spec(spec: ModelServerSpec) -> str:
+    return _runtime_options_for_spec(spec).gpu_memory_utilization
+
+
+def _runtime_options_for_spec(spec: ModelServerSpec, retry_scale: float = 1.0) -> _ServerRuntimeOptions:
     requested = str(spec.gpu_memory_utilization or "auto").strip().lower()
+    max_model_len = _adaptive_int_option(spec, "--max-model-len", _default_max_model_len(spec.stage))
+    max_num_seqs = _adaptive_int_option(spec, "--max-num-seqs", _default_max_num_seqs(spec.stage))
+    max_num_batched_tokens = _adaptive_int_option(
+        spec,
+        "--max-num-batched-tokens",
+        _default_max_num_batched_tokens(spec.stage),
+    )
     if requested not in {"auto", "adaptive"}:
-        return requested
-    ratios = _free_memory_ratios(spec.gpu, spec.gpu_memory_reserved_mb)
-    if not ratios:
-        return _format_gpu_memory_utilization(spec.gpu_memory_utilization_max)
-    ratio = min(spec.gpu_memory_utilization_max, min(ratios))
-    ratio = max(0.05, min(0.99, ratio))
-    return _format_gpu_memory_utilization(ratio)
+        return _ServerRuntimeOptions(
+            requested,
+            max_model_len,
+            max_num_seqs,
+            max_num_batched_tokens,
+        )
+    snapshots = _free_memory_snapshots(spec.gpu, spec.gpu_memory_reserved_mb)
+    if not snapshots:
+        return _ServerRuntimeOptions(
+            _format_gpu_memory_utilization(spec.gpu_memory_utilization_max),
+            max_model_len,
+            max_num_seqs,
+            max_num_batched_tokens,
+            "nvidia-smi unavailable; using configured max GPU memory utilization",
+        )
+    raw_ratio = min(snapshot[3] for snapshot in snapshots)
+    capped_ratio = min(spec.gpu_memory_utilization_max, raw_ratio)
+    ratio = max(0.05, min(0.99, capped_ratio * max(0.05, min(1.0, retry_scale))))
+    capacity_scale = max(0.05, min(1.0, ratio / max(0.05, spec.gpu_memory_utilization_max)))
+    max_model_len = _scale_capacity(max_model_len, _minimum_max_model_len(spec.stage, max_model_len), capacity_scale, 1024)
+    max_num_seqs = _scale_capacity(max_num_seqs, 1, capacity_scale, 1)
+    max_num_batched_tokens = _scale_capacity(
+        max_num_batched_tokens,
+        _minimum_max_num_batched_tokens(max_num_batched_tokens),
+        capacity_scale,
+        256,
+    )
+    snapshot_summary = "; ".join(
+        f"GPU{index} free {free_mb:.0f}/{total_mb:.0f} MiB after {spec.gpu_memory_reserved_mb} MiB reserve"
+        for index, total_mb, free_mb, _ratio in snapshots
+    )
+    return _ServerRuntimeOptions(
+        _format_gpu_memory_utilization(ratio),
+        max_model_len,
+        max_num_seqs,
+        max_num_batched_tokens,
+        (
+            f"{snapshot_summary}; gpu-memory-utilization={_format_gpu_memory_utilization(ratio)}, "
+            f"max-model-len={max_model_len}, max-num-seqs={max_num_seqs}, "
+            f"max-num-batched-tokens={max_num_batched_tokens}"
+        ),
+    )
 
 
 def _free_memory_ratios(gpu: str, reserved_mb: int) -> List[float]:
+    return [snapshot[3] for snapshot in _free_memory_snapshots(gpu, reserved_mb)]
+
+
+def _free_memory_snapshots(gpu: str, reserved_mb: int) -> List[Tuple[str, float, float, float]]:
     executable = shutil.which("nvidia-smi")
     if not executable:
         return []
-    ratios: List[float] = []
+    snapshots: List[Tuple[str, float, float, float]] = []
     for index in _gpu_indices(gpu):
         try:
             result = subprocess.run(
@@ -524,8 +598,9 @@ def _free_memory_ratios(gpu: str, reserved_mb: int) -> List[float]:
             except ValueError:
                 continue
             if total_mb > 0:
-                ratios.append(max(0.0, (free_mb - float(reserved_mb)) / total_mb))
-    return ratios
+                reserved_free_mb = max(0.0, free_mb - float(reserved_mb))
+                snapshots.append((index, total_mb, reserved_free_mb, reserved_free_mb / total_mb))
+    return snapshots
 
 
 def _gpu_indices(gpu: str) -> List[str]:
@@ -535,6 +610,70 @@ def _gpu_indices(gpu: str) -> List[str]:
 
 def _format_gpu_memory_utilization(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _adaptive_int_option(spec: ModelServerSpec, option: str, default: int) -> int:
+    if spec.command_template:
+        value = _command_option_int(spec.command_template, option)
+        if value is not None:
+            return value
+    return default
+
+
+def _command_option_int(command_template: str, option: str) -> Optional[int]:
+    match = re.search(rf"{re.escape(option)}(?:=|\s+)(\d+)", command_template)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _apply_runtime_options_to_command(command: str, runtime_options: _ServerRuntimeOptions) -> str:
+    replacements = {
+        "--max-model-len": str(runtime_options.max_model_len),
+        "--max-num-seqs": str(runtime_options.max_num_seqs),
+        "--max-num-batched-tokens": str(runtime_options.max_num_batched_tokens),
+    }
+    for option, value in replacements.items():
+        command = _replace_command_option(command, option, value)
+    return command
+
+
+def _replace_command_option(command: str, option: str, value: str) -> str:
+    pattern = rf"({re.escape(option)}(?:=|\s+))\S+"
+    return re.sub(pattern, lambda match: match.group(1) + value, command)
+
+
+def _scale_capacity(max_value: int, min_value: int, scale: float, step: int) -> int:
+    max_value = max(1, int(max_value))
+    min_value = max(1, min(int(min_value), max_value))
+    value = max(min_value, int(max_value * scale))
+    if step > 1:
+        value = max(min_value, (value // step) * step)
+    return min(max_value, value)
+
+
+def _default_max_model_len(stage: str) -> int:
+    return 65536 if stage == "asr" else 2048
+
+
+def _default_max_num_seqs(stage: str) -> int:
+    return 1
+
+
+def _default_max_num_batched_tokens(stage: str) -> int:
+    return 2048
+
+
+def _minimum_max_model_len(stage: str, max_value: int) -> int:
+    minimum = 8192 if stage == "asr" else 2048
+    return min(max_value, minimum)
+
+
+def _minimum_max_num_batched_tokens(max_value: int) -> int:
+    return min(max_value, 2048)
 
 
 def _vllm_cache_root(spec: ModelServerSpec) -> str:
@@ -583,6 +722,76 @@ def _wait_until_ready(spec: ModelServerSpec, timeout_s: float, process: Optional
         f"{spec.name} model server did not become ready within {timeout_s:.0f}s at {spec.base_url}. "
         f"Check log: {spec.log_path}"
     )
+
+
+def _wait_until_ready_with_adaptive_retries(
+    item: _PendingServer,
+    timeout_s: float,
+    status_callback: Optional[StatusCallback],
+) -> _PendingServer:
+    attempt = 0
+    while True:
+        try:
+            _wait_until_ready(item.spec, timeout_s, item.process)
+            return item
+        except RuntimeError as exc:
+            if not _should_retry_adaptive_start(item.spec, attempt, exc):
+                raise
+            _unregister_process(item.spec, item.process)
+            if item.process is not None and item.process.poll() is None:
+                _signal_process_group(item.process, signal.SIGTERM)
+            _wait_until_port_closed(item.spec, min(timeout_s, 10.0), status_callback)
+            retry_scale = _ADAPTIVE_START_RETRY_SCALES[attempt]
+            runtime_options = _runtime_options_for_spec(item.spec, retry_scale=retry_scale)
+            _emit(
+                status_callback,
+                f"{item.spec.name} model server failed with the current VRAM profile; "
+                f"retrying on GPU {item.spec.gpu} with smaller capacity: {runtime_options.detail}",
+            )
+            process = _start_process(item.spec, runtime_options)
+            with _LOCK:
+                _PROCESSES[_process_key(item.spec)] = process
+            _emit(status_callback, f"Restarted {item.spec.name} model server pid={process.pid}; waiting for {item.spec.base_url}")
+            item = _PendingServer(
+                item.spec,
+                process,
+                "started",
+                "server started and became ready after adaptive VRAM retry",
+                runtime_options,
+            )
+            attempt += 1
+
+
+def _should_retry_adaptive_start(spec: ModelServerSpec, attempt: int, exc: RuntimeError) -> bool:
+    if attempt >= len(_ADAPTIVE_START_RETRY_SCALES):
+        return False
+    requested = str(spec.gpu_memory_utilization or "auto").strip().lower()
+    if requested not in {"auto", "adaptive"}:
+        return False
+    message = str(exc).lower()
+    if "exited before becoming ready" not in message:
+        return False
+    resource_markers = (
+        "engine core initialization failed",
+        "failed core proc",
+        "cuda",
+        "memory",
+        "out of memory",
+        "oom",
+        "kv cache",
+        "cache blocks",
+    )
+    return any(marker in message for marker in resource_markers)
+
+
+def _unregister_process(spec: ModelServerSpec, process: Optional[subprocess.Popen]) -> None:
+    if process is None:
+        return
+    key = _process_key(spec)
+    with _LOCK:
+        registered = _PROCESSES.get(key)
+        if registered is process:
+            _PROCESSES.pop(key, None)
 
 
 def _stop_process(

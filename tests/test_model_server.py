@@ -8,10 +8,12 @@ from unittest.mock import Mock, patch
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.model_server import (
     _PROCESSES,
+    _ServerRuntimeOptions,
     _default_command,
     _gpu_memory_utilization_for_spec,
     _models_payload_contains,
     _models_payload_model_ids,
+    _runtime_options_for_spec,
     _server_specs,
     _start_process,
     ensure_model_servers,
@@ -203,6 +205,39 @@ class ModelServerTest(unittest.TestCase):
         ):
             self.assertEqual(_gpu_memory_utilization_for_spec(spec), "0.9")
 
+    def test_adaptive_runtime_reduces_template_capacity_for_busy_gpu(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="mock",
+            post_backend="vllm_openai",
+            post_server_command=(
+                "{vllm} serve {model} --gpu-memory-utilization {gpu_memory_utilization} "
+                "--max-model-len 8192 --max-num-seqs 8 --max-num-batched-tokens 16384"
+            ),
+            server_gpu_memory_utilization="auto",
+            server_gpu_memory_utilization_max=0.9,
+            server_gpu_memory_reserved_mb=256,
+        )
+        spec = _server_specs(config)[0]
+        completed = Mock(returncode=0, stdout="24570, 20300\n")
+        with patch("asrpostprocessing.model_server.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "asrpostprocessing.model_server.subprocess.run", return_value=completed
+        ), patch("asrpostprocessing.model_server.subprocess.Popen") as popen:
+            runtime = _runtime_options_for_spec(spec)
+            process = Mock()
+            process.pid = 123
+            popen.return_value = process
+            _start_process(spec, runtime)
+
+        self.assertAlmostEqual(float(runtime.gpu_memory_utilization), (20300 - 256) / 24570, places=4)
+        self.assertLess(runtime.max_model_len, 8192)
+        self.assertLess(runtime.max_num_seqs, 8)
+        self.assertLess(runtime.max_num_batched_tokens, 16384)
+        command = popen.call_args.args[0]
+        self.assertIn("--max-model-len 7168", command)
+        self.assertIn("--max-num-seqs 7", command)
+        self.assertIn("--max-num-batched-tokens 14848", command)
+
     def test_open_non_model_port_fails_fast(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
         with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
@@ -235,6 +270,47 @@ class ModelServerTest(unittest.TestCase):
             statuses = ensure_model_servers(config, names=["asr"])
         self.assertEqual([item.name for item in statuses], ["asr"])
         start_process.assert_not_called()
+
+    def test_adaptive_start_retries_with_smaller_capacity(self):
+        config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
+        spec = _server_specs(config)[0]
+        first_process = Mock()
+        first_process.pid = 123
+        first_process.poll.return_value = 1
+        second_process = Mock()
+        second_process.pid = 456
+        second_process.poll.return_value = None
+        first_runtime = _ServerRuntimeOptions("0.8", 32768, 1, 2048, "first profile")
+        second_runtime = _ServerRuntimeOptions("0.6", 24576, 1, 2048, "second profile")
+        messages = []
+        key = f"{spec.name}:{spec.base_url}"
+        try:
+            with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
+                "asrpostprocessing.model_server._tcp_port_open", return_value=False
+            ), patch(
+                "asrpostprocessing.model_server._runtime_options_for_spec",
+                side_effect=[first_runtime, second_runtime],
+            ), patch(
+                "asrpostprocessing.model_server._start_process",
+                side_effect=[first_process, second_process],
+            ) as start_process, patch(
+                "asrpostprocessing.model_server._wait_until_ready",
+                side_effect=[
+                    RuntimeError("asr model server exited before becoming ready. Engine core initialization failed"),
+                    None,
+                ],
+            ), patch(
+                "asrpostprocessing.model_server._wait_until_port_closed", return_value=True
+            ):
+                statuses = ensure_model_servers(config, status_callback=messages.append, names=["asr"])
+        finally:
+            _PROCESSES.pop(key, None)
+
+        self.assertEqual(statuses[0].status, "started")
+        self.assertEqual(statuses[0].pid, 456)
+        self.assertEqual(start_process.call_args_list[0].args[1], first_runtime)
+        self.assertEqual(start_process.call_args_list[1].args[1], second_runtime)
+        self.assertTrue(any("retrying on GPU" in message for message in messages))
 
     def test_stop_model_servers_terminates_managed_process(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
