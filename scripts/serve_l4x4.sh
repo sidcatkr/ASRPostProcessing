@@ -8,12 +8,14 @@ STAGE_GPUS="${STAGE_GPUS:-0,1,2,3}"
 STAGE_PORTS="${STAGE_PORTS:-18000,18001,18002,18003}"
 ASR_MAX_MODEL_LEN="${ASR_MAX_MODEL_LEN:-65536}"
 POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-8192}"
+PYTHON_BIN="${PYTHON_BIN:-${ASRPP_PY:-python}}"
 POST_MAX_NUM_SEQS="${POST_MAX_NUM_SEQS:-8}"
 POST_MAX_BATCHED_TOKENS="${POST_MAX_BATCHED_TOKENS:-16384}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-auto}"
 GPU_MEMORY_UTILIZATION_MAX="${GPU_MEMORY_UTILIZATION_MAX:-0.90}"
 GPU_MEMORY_RESERVED_MB="${GPU_MEMORY_RESERVED_MB:-256}"
 VLLM_CACHE_ROOT_BASE="${VLLM_CACHE_ROOT_BASE:-outputs/model_servers_l4x4/vllm_cache}"
+VLLM_BIN="${VLLM_BIN:-}"
 
 for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
   if [[ -d "$libdir" ]]; then
@@ -73,6 +75,25 @@ cache_root_for() {
   printf '%s/%s_gpu%s_port%s\n' "$VLLM_CACHE_ROOT_BASE" "$stage" "$gpu" "$port"
 }
 
+vllm_bin() {
+  if [[ -n "$VLLM_BIN" ]]; then
+    printf '%s\n' "$VLLM_BIN"
+    return
+  fi
+  "$PYTHON_BIN" - <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+executable = shutil.which("vllm")
+if executable:
+    print(executable)
+else:
+    sibling = Path(sys.executable).with_name("vllm")
+    print(sibling if sibling.exists() else "vllm")
+PY
+}
+
 start_asr() {
   local gpu="$1"
   local port="$2"
@@ -81,7 +102,7 @@ start_asr() {
   gpu_memory="$(gpu_memory_utilization "$gpu")"
   cache_root="$(cache_root_for asr "$gpu" "$port")"
   mkdir -p "$cache_root"
-  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" python -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
+  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" "$PYTHON_BIN" -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
     --host 0.0.0.0 \
     --port "$port" \
     --gpu-memory-utilization "$gpu_memory" \
@@ -96,7 +117,7 @@ start_post() {
   gpu_memory="$(gpu_memory_utilization "$gpu")"
   cache_root="$(cache_root_for post "$gpu" "$port")"
   mkdir -p "$cache_root"
-  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" vllm serve "$POST_MODEL" \
+  CUDA_VISIBLE_DEVICES="$gpu" VLLM_CACHE_ROOT="$cache_root" "$(vllm_bin)" serve "$POST_MODEL" \
     --host 0.0.0.0 \
     --port "$port" \
     --dtype bfloat16 \

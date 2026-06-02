@@ -1,4 +1,5 @@
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -11,6 +12,7 @@ from asrpostprocessing.model_server import (
     _models_payload_contains,
     _models_payload_model_ids,
     _server_specs,
+    _start_process,
     ensure_model_servers,
     stop_model_servers,
 )
@@ -40,7 +42,7 @@ class ModelServerTest(unittest.TestCase):
             self.assertEqual(asr_command[1:3], ["-m", "asrpostprocessing.qwen_asr_serve_compat"])
             self.assertIn("--gpu-memory-utilization", asr_command)
             self.assertIn("--max-model-len", asr_command)
-            self.assertIn("32768", asr_command)
+            self.assertIn("65536", asr_command)
             self.assertIn("--attention-backend", asr_command)
             self.assertIn("TRITON_ATTN", asr_command)
             self.assertIn("--enforce-eager", asr_command)
@@ -54,6 +56,40 @@ class ModelServerTest(unittest.TestCase):
             self.assertIn("--attention-backend", post_command)
             self.assertIn("TRITON_ATTN", post_command)
             self.assertIn("--max-num-seqs", post_command)
+
+    def test_custom_command_templates_can_use_active_python_and_vllm_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = ExperimentConfig(
+                auto_start_model_servers=True,
+                asr_backend="vllm_chat",
+                post_backend="vllm_openai",
+                server_log_dir=str(Path(tmp) / "logs"),
+                asr_server_command="{python} -m asrpostprocessing.qwen_asr_serve_compat {model}",
+                post_server_command="{vllm} serve {model}",
+            )
+            specs = _server_specs(config)
+
+            with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
+                "asrpostprocessing.model_server._tcp_port_open", return_value=False
+            ), patch("asrpostprocessing.model_server._gpu_memory_utilization_for_spec", return_value="0.9"), patch(
+                "asrpostprocessing.model_server.subprocess.Popen"
+            ) as popen, patch("asrpostprocessing.model_server.shutil.which", return_value=None):
+                process = Mock()
+                process.pid = 123
+                popen.return_value = process
+                for spec in specs:
+                    _PROCESSES.pop(f"{spec.name}:{spec.base_url}", None)
+                    try:
+                        _start_process(spec)
+                    finally:
+                        _PROCESSES.pop(f"{spec.name}:{spec.base_url}", None)
+
+            commands = [call.args[0] for call in popen.call_args_list]
+            self.assertIn("asrpostprocessing.qwen_asr_serve_compat", commands[0])
+            self.assertIn(Path(sys.executable).name, commands[0])
+            self.assertIn("vllm", commands[1])
+            self.assertNotIn("{python}", commands[0])
+            self.assertNotIn("{vllm}", commands[1])
 
     def test_ready_endpoints_are_not_started(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="vllm_openai")

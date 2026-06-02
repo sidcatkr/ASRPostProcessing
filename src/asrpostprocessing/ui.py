@@ -304,12 +304,12 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                 asr_server_command = gr.Textbox(
                     value=initial_config.asr_server_command,
                     label="Custom ASR server command",
-                    placeholder="Leave empty to use python -m asrpostprocessing.qwen_asr_serve_compat {model}",
+                    placeholder="Leave empty to use the default command; custom commands can use {python}, {vllm}, {model}",
                 )
                 post_server_command = gr.Textbox(
                     value=initial_config.post_server_command,
                     label="Custom post-processing server command",
-                    placeholder="Leave empty to use the Qwen3.5 vLLM command",
+                    placeholder="Leave empty to use the default command; custom commands can use {python}, {vllm}, {model}",
                 )
             with gr.Row():
                 asr_backend = gr.Dropdown(
@@ -689,15 +689,21 @@ def run_from_ui(
     *,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> RunOutput:
-    config_values = _config_from_ui_state(base_config_state).to_dict()
+    base_config = _config_from_ui_state(base_config_state)
+    selected_asr_model = _text_or_default(asr_model, base_config.asr_model)
+    selected_post_model = _text_or_default(post_model, base_config.post_model)
+    selected_asr_base_url = _text_or_default(asr_base_url, base_config.asr_base_url)
+    selected_post_base_url = _text_or_default(post_base_url, base_config.post_base_url)
+    include_model_axis = bool(auto_experiment_include_models)
+    config_values = base_config.to_dict()
     config_values.update(
         {
-            "asr_model": asr_model or "Qwen/Qwen3-ASR-1.7B",
-            "post_model": post_model or "Qwen/Qwen3.5-9B",
+            "asr_model": selected_asr_model,
+            "post_model": selected_post_model,
             "asr_backend": asr_backend,
             "post_backend": post_backend,
-            "asr_base_url": asr_base_url or "http://127.0.0.1:18000/v1",
-            "post_base_url": post_base_url or "http://127.0.0.1:18001/v1",
+            "asr_base_url": selected_asr_base_url,
+            "post_base_url": selected_post_base_url,
             "asr_request_timeout_s": float(asr_request_timeout_s or 300.0),
             "asr_chunking_strategy": asr_chunking_strategy or "silence",
             "asr_chunk_seconds": float(asr_chunk_seconds or 120.0),
@@ -723,9 +729,21 @@ def run_from_ui(
             "postprocess_parallelism": int(postprocess_parallelism or 1),
             "auto_experiment_parallelism": int(auto_experiment_parallelism or 1),
             "auto_experiment_saturate_lanes": bool(auto_experiment_saturate_lanes),
-            "auto_experiment_include_models": bool(auto_experiment_include_models),
-            "auto_experiment_asr_models": _split_keywords(auto_experiment_asr_models),
-            "auto_experiment_post_models": _split_keywords(auto_experiment_post_models),
+            "auto_experiment_include_models": include_model_axis,
+            "auto_experiment_asr_models": _auto_experiment_model_grid(
+                auto_experiment_asr_models,
+                base_config.auto_experiment_asr_models,
+                selected_asr_model,
+                bool(auto_experiment_mode),
+                include_model_axis,
+            ),
+            "auto_experiment_post_models": _auto_experiment_model_grid(
+                auto_experiment_post_models,
+                base_config.auto_experiment_post_models,
+                selected_post_model,
+                bool(auto_experiment_mode),
+                include_model_axis,
+            ),
             "auto_experiment_noise_models": _split_keywords(auto_experiment_noise_models),
             "auto_experiment_rag_embedding_models": _split_keywords(auto_experiment_rag_embedding_models),
             "auto_experiment_keyword_weights": _split_float_grid(auto_experiment_keyword_weights),
@@ -1352,6 +1370,29 @@ def _canonical_noise_reduction_model(value: str) -> str:
 
 def _split_keywords(value: str) -> List[str]:
     return [item.strip() for item in (value or "").replace("\n", ",").split(",") if item.strip()]
+
+
+def _text_or_default(value: str, fallback: str) -> str:
+    return str(value).strip() if str(value or "").strip() else str(fallback or "").strip()
+
+
+def _auto_experiment_model_grid(
+    value: str,
+    configured_values: List[str],
+    selected_model: str,
+    auto_mode: bool,
+    include_models: bool,
+) -> List[str]:
+    models = _split_keywords(value)
+    if not models and auto_mode and include_models:
+        models = [str(item).strip() for item in configured_values if str(item).strip()]
+        if selected_model:
+            models.append(selected_model)
+    deduped: List[str] = []
+    for model in models:
+        if model and model not in deduped:
+            deduped.append(model)
+    return deduped
 
 
 def _split_float_grid(value: str) -> List[float]:

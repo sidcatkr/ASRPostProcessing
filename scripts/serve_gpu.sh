@@ -9,6 +9,8 @@ ASR_GPU="${ASR_GPU:-0}"
 POST_GPU="${POST_GPU:-1}"
 ASR_MAX_MODEL_LEN="${ASR_MAX_MODEL_LEN:-32768}"
 POST_MAX_MODEL_LEN="${POST_MAX_MODEL_LEN:-2048}"
+PYTHON_BIN="${PYTHON_BIN:-${ASRPP_PY:-python}}"
+VLLM_BIN="${VLLM_BIN:-}"
 
 for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
   if [[ -d "$libdir" ]]; then
@@ -16,8 +18,27 @@ for libdir in "${CONDA_PREFIX:-}/lib/python"*/site-packages/nvidia/cu13/lib; do
   fi
 done
 
+vllm_bin() {
+  if [[ -n "$VLLM_BIN" ]]; then
+    printf '%s\n' "$VLLM_BIN"
+    return
+  fi
+  "$PYTHON_BIN" - <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+executable = shutil.which("vllm")
+if executable:
+    print(executable)
+else:
+    sibling = Path(sys.executable).with_name("vllm")
+    print(sibling if sibling.exists() else "vllm")
+PY
+}
+
 if [[ "${1:-}" == "asr" ]]; then
-  CUDA_VISIBLE_DEVICES="$ASR_GPU" python -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
+  CUDA_VISIBLE_DEVICES="$ASR_GPU" "$PYTHON_BIN" -m asrpostprocessing.qwen_asr_serve_compat "$ASR_MODEL" \
     --host 0.0.0.0 \
     --port "$ASR_PORT" \
     --gpu-memory-utilization 0.7 \
@@ -25,7 +46,7 @@ if [[ "${1:-}" == "asr" ]]; then
     --attention-backend TRITON_ATTN \
     --enforce-eager
 elif [[ "${1:-}" == "post" ]]; then
-  CUDA_VISIBLE_DEVICES="$POST_GPU" vllm serve "$POST_MODEL" \
+  CUDA_VISIBLE_DEVICES="$POST_GPU" "$(vllm_bin)" serve "$POST_MODEL" \
     --host 0.0.0.0 \
     --port "$POST_PORT" \
     --dtype float16 \

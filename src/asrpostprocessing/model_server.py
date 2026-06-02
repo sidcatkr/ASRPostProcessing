@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import shlex
 import shutil
 import site
 import socket
@@ -395,6 +396,9 @@ def _start_process(spec: ModelServerSpec) -> subprocess.Popen:
                 log_path=spec.log_path,
                 gpu_memory_utilization=gpu_memory_utilization,
                 vllm_cache_root=env["VLLM_CACHE_ROOT"],
+                python=shlex.quote(sys.executable),
+                python_dir=shlex.quote(str(Path(sys.executable).parent)),
+                vllm=shlex.quote(_vllm_executable()),
             )
             return subprocess.Popen(
                 command,
@@ -431,13 +435,13 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
             "--gpu-memory-utilization",
             gpu_memory_utilization,
             "--max-model-len",
-            "32768",
+            "65536",
             "--attention-backend",
             "TRITON_ATTN",
             "--enforce-eager",
         ]
     return [
-        "vllm",
+        _vllm_executable(),
         "serve",
         spec.model,
         "--host",
@@ -463,6 +467,16 @@ def _default_command(spec: ModelServerSpec) -> List[str]:
         "--max-num-batched-tokens",
         "2048",
     ]
+
+
+def _vllm_executable() -> str:
+    executable = shutil.which("vllm")
+    if executable:
+        return executable
+    sibling = Path(sys.executable).with_name("vllm")
+    if sibling.exists():
+        return str(sibling)
+    return "vllm"
 
 
 def _gpu_memory_utilization_for_spec(spec: ModelServerSpec) -> str:

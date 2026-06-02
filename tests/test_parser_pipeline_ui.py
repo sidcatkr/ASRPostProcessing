@@ -82,6 +82,95 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("+0.2000", html)
         self.assertLess(html.index("case-b"), html.index("case-a"))
 
+    def test_auto_experiment_blank_model_inputs_use_configured_model_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            captured = {}
+            base_config = ExperimentConfig(
+                asr_backend="mock",
+                post_backend="mock",
+                asr_model="base-asr",
+                post_model="base-post",
+                auto_experiment_asr_models=["strong-asr-a", "strong-asr-b"],
+                auto_experiment_post_models=["strong-post-a", "strong-post-b"],
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+            )
+
+            def fake_run_auto_experiment(*, audio_path, base_config, reference_text, rag_inline_text, mode, status_callback=None):
+                captured["audio_path"] = audio_path
+                captured["config"] = base_config
+                captured["reference_text"] = reference_text
+                captured["mode"] = mode
+                return {
+                    "run_id": "auto-test",
+                    "mode": mode,
+                    "condition_count": 0,
+                    "summary_csv": str(Path(tmp) / "summary.csv"),
+                    "analysis_json": str(Path(tmp) / "analysis.json"),
+                    "output_dir": str(Path(tmp) / "outputs"),
+                    "analysis": {},
+                    "rows": [],
+                }
+
+            with patch("asrpostprocessing.ui.run_auto_experiment", side_effect=fake_run_auto_experiment):
+                *_unused, status, _preprocessed_audio, _html, _gpu = run_from_ui(
+                    audio_path=str(audio),
+                    large_audio_file=None,
+                    reference_text="기준 문장입니다.",
+                    reference_file=None,
+                    enable_keyword_bias=False,
+                    keyword_bias_weight=0.0,
+                    keywords="",
+                    enable_noise_reduction=False,
+                    noise_reduction_model="none",
+                    noise_reduction_strength=0.0,
+                    enable_volume_normalization=False,
+                    volume_normalization_strength=0.0,
+                    volume_target_dbfs=-20.0,
+                    enable_llm=True,
+                    postprocess_strength=0.5,
+                    enable_rag=False,
+                    rag_strength=0.0,
+                    rag_top_k=5,
+                    rag_text="",
+                    rag_files=None,
+                    enable_search=False,
+                    search_strength=0.0,
+                    search_provider="duckduckgo",
+                    search_endpoint="",
+                    asr_model="",
+                    post_model="",
+                    asr_base_url="",
+                    post_base_url="",
+                    auto_start_model_servers=False,
+                    server_start_timeout_s=60,
+                    server_log_dir=str(Path(tmp) / "server_logs"),
+                    asr_server_gpu="0",
+                    post_server_gpu="1",
+                    asr_server_host="127.0.0.1",
+                    post_server_host="127.0.0.1",
+                    asr_server_command="",
+                    post_server_command="",
+                    asr_backend="mock",
+                    post_backend="mock",
+                    auto_experiment_mode=True,
+                    auto_experiment_coverage="full_valid",
+                    auto_experiment_include_models=True,
+                    auto_experiment_asr_models="",
+                    auto_experiment_post_models="",
+                    base_config_state=base_config.to_dict(),
+                )
+
+            config = captured["config"]
+            self.assertEqual(config.asr_model, "base-asr")
+            self.assertEqual(config.post_model, "base-post")
+            self.assertEqual(config.auto_experiment_asr_models, ["strong-asr-a", "strong-asr-b", "base-asr"])
+            self.assertEqual(config.auto_experiment_post_models, ["strong-post-a", "strong-post-b", "base-post"])
+            self.assertEqual(captured["mode"], "full_valid")
+            self.assertIn("Auto Experiment ID: auto-test", status)
+
     def test_pipeline_mock_end_to_end_and_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "sample.wav"
