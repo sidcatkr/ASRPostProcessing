@@ -78,7 +78,15 @@ def run_auto_experiment(
     rows.sort(key=lambda row: str(row.get("case_id") or row.get("condition_id", "")))
     _annotate_baseline_deltas(rows)
     summary_path = output_dir / "auto_experiment_summary.csv"
-    analysis = analyze_auto_experiment(rows)
+    audit = build_experiment_audit(
+        rows,
+        expected_condition_ids=[condition.condition_id for condition in conditions],
+        expected_case_ids=[case.case_id for case in cases],
+        expected_asr_cache_group_count=preview["asr_cache_group_count"],
+        reference_text=reference_text,
+        mode=mode,
+    )
+    analysis = analyze_auto_experiment(rows, audit=audit)
     analysis_path = output_dir / "auto_experiment_analysis.json"
     manifest_path = output_dir / "auto_experiment_conditions.json"
     _write_summary_csv(summary_path, rows)
@@ -94,6 +102,7 @@ def run_auto_experiment(
         "condition_count": len(conditions),
         "case_count": len(cases),
         "asr_cache_group_count": preview["asr_cache_group_count"],
+        "audit": audit,
         "elapsed_s": time.time() - started,
         "summary_csv": str(summary_path),
         "analysis_json": str(analysis_path),
@@ -118,10 +127,13 @@ def _run_conditions_parallel(
         futures = {}
         for index, case in indexed_cases:
             config = _config_for_case(base_config, case, index)
-            futures[executor.submit(_run_condition, audio_path, config, case, reference_text, rag_inline_text)] = case
+            futures[executor.submit(_run_condition, audio_path, config, case, reference_text, rag_inline_text)] = (
+                case,
+                config,
+            )
         for future in as_completed(futures):
-            case = futures[future]
-            rows.append(_condition_row_from_future(future, case, status_callback))
+            case, config = futures[future]
+            rows.append(_condition_row_from_future(future, case, status_callback, config))
     return rows
 
 
@@ -183,10 +195,10 @@ def _run_conditions_after_asr_cache_ready(
                                 reference_text,
                                 rag_inline_text,
                             )
-                        ] = condition_case
+                        ] = (condition_case, config)
                     continue
-                case = pending_conditions.pop(future)
-                rows.append(_condition_row_from_future(future, case, status_callback))
+                case, config = pending_conditions.pop(future)
+                rows.append(_condition_row_from_future(future, case, status_callback, config))
     return rows
 
 
@@ -272,12 +284,19 @@ def _has_postprocess_cases(cases: List[ExperimentCase]) -> bool:
     return any(case.condition.enable_llm_postprocess for case in cases)
 
 
-def _condition_row_from_future(future, case: ExperimentCase, status_callback: Optional[StatusCallback]) -> Dict[str, Any]:
+def _condition_row_from_future(
+    future,
+    case: ExperimentCase,
+    status_callback: Optional[StatusCallback],
+    config: Optional[ExperimentConfig] = None,
+) -> Dict[str, Any]:
     try:
         row = future.result()
         _emit(status_callback, f"Auto case complete: {case.case_id}.")
     except Exception as exc:
         row = _error_row(case, exc)
+        if config is not None:
+            row.update(_routing_payload(config))
         _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
     return row
 
@@ -325,7 +344,7 @@ def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_val
     }
 
 
-def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     comparable = [row for row in rows if _metric(row, "cer_normalized_no_space") is not None]
     best_by_cer = min(comparable, key=lambda row: _metric(row, "cer_normalized_no_space"), default=None)
     best_by_wer = min(
@@ -341,7 +360,7 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             value = _metric(row, "cer_normalized_no_space")
             if value is not None and value > baseline_cer:
                 worse_than_baseline.append(row)
-    return {
+    result = {
         "best_by_cer": best_by_cer,
         "best_by_wer": best_by_wer,
         "best_latency_quality_tradeoff": _best_latency_quality_tradeoff(comparable, best_by_cer),
@@ -351,6 +370,99 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "num_rows": len(rows),
         "num_comparable_rows": len(comparable),
         "num_failed_rows": len([row for row in rows if row.get("error")]),
+    }
+    if audit is not None:
+        result["audit"] = audit
+    return result
+
+
+def build_experiment_audit(
+    rows: List[Dict[str, Any]],
+    expected_condition_ids: List[str],
+    expected_case_ids: List[str],
+    expected_asr_cache_group_count: int,
+    reference_text: Optional[str],
+    mode: str,
+) -> Dict[str, Any]:
+    failed_rows = [row for row in rows if row.get("error")]
+    cer_wer_rows = [
+        row
+        for row in rows
+        if _metric(row, "cer_normalized_no_space") is not None and _metric(row, "wer_eojeol") is not None
+    ]
+    baseline_rows = [row for row in cer_wer_rows if row.get("condition_id") == "baseline"]
+    expected_conditions = {str(condition_id) for condition_id in expected_condition_ids if condition_id}
+    expected_cases = {str(case_id) for case_id in expected_case_ids if case_id}
+    condition_ids = {str(row.get("condition_id") or "") for row in rows if row.get("condition_id")}
+    case_ids = {str(row.get("case_id") or "") for row in rows if row.get("case_id")}
+    missing_conditions = sorted(expected_conditions - condition_ids)
+    extra_conditions = sorted(condition_ids - expected_conditions)
+    missing_cases = sorted(expected_cases - case_ids)
+    extra_cases = sorted(case_ids - expected_cases)
+    planned_asr_cache_groups = {
+        str(row.get("planned_asr_cache_group_key") or row.get("asr_cache_key") or "")
+        for row in rows
+        if row.get("planned_asr_cache_group_key") or row.get("asr_cache_key")
+    }
+    actual_asr_cache_groups = {str(row.get("asr_cache_key") or "") for row in rows if row.get("asr_cache_key")}
+    observed_asr_urls = sorted({str(row.get("asr_base_url") or "") for row in rows if row.get("asr_base_url")})
+    observed_post_urls = sorted({str(row.get("post_base_url") or "") for row in rows if row.get("post_base_url")})
+    observed_preprocess_gpus = sorted({str(row.get("preprocess_gpu") or "") for row in rows if row.get("preprocess_gpu")})
+    baseline = min(baseline_rows, key=lambda row: _metric(row, "cer_normalized_no_space") or 999999.0, default=None)
+    best_cer_row = min(cer_wer_rows, key=lambda row: _metric(row, "cer_normalized_no_space") or 999999.0, default=None)
+    best_wer_row = min(cer_wer_rows, key=lambda row: _metric(row, "wer_eojeol") or 999999.0, default=None)
+    baseline_cer = _metric(baseline or {}, "cer_normalized_no_space")
+    baseline_wer = _metric(baseline or {}, "wer_eojeol")
+    best_cer = _metric(best_cer_row or {}, "cer_normalized_no_space")
+    best_wer = _metric(best_wer_row or {}, "wer_eojeol")
+    best_cer_improvement = _sub_or_none(baseline_cer, best_cer)
+    best_wer_improvement = _sub_or_none(baseline_wer, best_wer)
+    expected_case_count = len(expected_cases)
+    expected_condition_count = len(expected_conditions)
+    gates = {
+        "reference_provided": bool(reference_text),
+        "all_expected_cases_finished": len(rows) == expected_case_count and not missing_cases and not extra_cases,
+        "condition_coverage_complete": not missing_conditions and not extra_conditions,
+        "no_failed_cases": not failed_rows,
+        "baseline_present": bool(baseline_rows),
+        "cer_wer_available_for_all_rows": bool(reference_text) and len(cer_wer_rows) == len(rows),
+        "asr_cache_groups_observed": len(planned_asr_cache_groups) >= min(expected_asr_cache_group_count, expected_case_count),
+    }
+    strict_valid = all(gates.values())
+    return {
+        "mode": mode,
+        "strict_valid": strict_valid,
+        "gates": gates,
+        "verdict": "valid" if strict_valid else "incomplete",
+        "row_count": len(rows),
+        "expected_case_count": expected_case_count,
+        "missing_case_ids": missing_cases,
+        "extra_case_ids": extra_cases,
+        "failed_count": len(failed_rows),
+        "cer_wer_row_count": len(cer_wer_rows),
+        "expected_condition_count": expected_condition_count,
+        "observed_condition_count": len(condition_ids),
+        "missing_condition_ids": missing_conditions,
+        "extra_condition_ids": extra_conditions,
+        "expected_asr_cache_group_count": expected_asr_cache_group_count,
+        "observed_asr_cache_group_count": len(planned_asr_cache_groups),
+        "actual_asr_cache_key_count": len(actual_asr_cache_groups),
+        "reference_char_count": len(reference_text or ""),
+        "baseline_case_id": baseline.get("case_id") if baseline else "",
+        "baseline_cer_normalized_no_space": baseline_cer,
+        "baseline_wer_eojeol": baseline_wer,
+        "best_cer_case_id": best_cer_row.get("case_id") if best_cer_row else "",
+        "best_cer_normalized_no_space": best_cer,
+        "best_cer_improvement_vs_baseline": best_cer_improvement,
+        "best_wer_case_id": best_wer_row.get("case_id") if best_wer_row else "",
+        "best_wer_eojeol": best_wer,
+        "best_wer_improvement_vs_baseline": best_wer_improvement,
+        "observed_asr_base_urls": observed_asr_urls,
+        "observed_post_base_urls": observed_post_urls,
+        "observed_preprocess_gpus": observed_preprocess_gpus,
+        "peak_gpu_utilization_percent": _max_metric(rows, "peak_gpu_utilization_percent"),
+        "peak_vram_mb": _max_metric(rows, "peak_vram_mb"),
+        "conclusion": _strict_conclusion(strict_valid, best_cer_improvement, best_wer_improvement),
     }
 
 
@@ -409,6 +521,7 @@ def _run_condition(
         "group": case.condition.group,
         "asr_model": config.asr_model,
         "post_model": config.post_model,
+        **_routing_payload(config),
         "run_id": output.run_id,
         "output_dir": output.output_dir,
         "keyword_bias_enabled": case.condition.enable_keyword_bias,
@@ -427,6 +540,7 @@ def _run_condition(
         "rag_strength": config.rag_strength,
         "rag_top_k": config.rag_top_k if case.condition.enable_rag else "",
         "search_strength": config.search_strength,
+        "planned_asr_cache_group_key": _asr_cache_group_key(case),
         "asr_cache_key": asr_cache.get("key") if isinstance(asr_cache, dict) else "",
         "asr_cache_hit": asr_cache.get("hit") if isinstance(asr_cache, dict) else "",
         "preprocess_cache_hit": preprocess_cache,
@@ -545,6 +659,15 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
     return config
 
 
+def _routing_payload(config: ExperimentConfig) -> Dict[str, Any]:
+    return {
+        "asr_base_url": config.asr_base_url,
+        "post_base_url": config.post_base_url,
+        "preprocess_gpu": config.preprocess_gpu,
+        "model_residency": config.model_residency,
+    }
+
+
 def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     fieldnames = [
         "case_id",
@@ -553,6 +676,10 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "group",
         "asr_model",
         "post_model",
+        "asr_base_url",
+        "post_base_url",
+        "preprocess_gpu",
+        "model_residency",
         "run_id",
         "output_dir",
         "keyword_bias_enabled",
@@ -571,6 +698,7 @@ def _write_summary_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "rag_strength",
         "rag_top_k",
         "search_strength",
+        "planned_asr_cache_group_key",
         "asr_cache_key",
         "asr_cache_hit",
         "preprocess_cache_hit",
@@ -690,6 +818,36 @@ def _effect_payload(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _sub_or_none(left: Optional[float], right: Optional[float]) -> Optional[float]:
+    if left is None or right is None:
+        return None
+    return left - right
+
+
+def _max_metric(rows: List[Dict[str, Any]], key: str) -> Optional[float]:
+    values = [_metric(row, key) for row in rows]
+    numeric = [value for value in values if value is not None]
+    return max(numeric, default=None)
+
+
+def _strict_conclusion(
+    strict_valid: bool,
+    best_cer_improvement: Optional[float],
+    best_wer_improvement: Optional[float],
+) -> str:
+    if not strict_valid:
+        return "Not enough evidence for a strict conclusion. Check failed or missing audit gates."
+    cer_improved = best_cer_improvement is not None and best_cer_improvement > 0.0
+    wer_improved = best_wer_improvement is not None and best_wer_improvement > 0.0
+    if cer_improved and wer_improved:
+        return "Strictly comparable run completed; at least one condition improves both CER and WER over baseline."
+    if cer_improved:
+        return "Strictly comparable run completed; best condition improves CER, but WER did not improve over baseline."
+    if wer_improved:
+        return "Strictly comparable run completed; best condition improves WER, but CER did not improve over baseline."
+    return "Strictly comparable run completed; no condition improved CER/WER over baseline."
+
+
 def _post_output_tokens(metadata: Dict[str, Any]) -> Optional[int]:
     total = 0
     found = False
@@ -724,6 +882,7 @@ def _error_row(case: ExperimentCase, exc: Exception) -> Dict[str, Any]:
         "group": case.condition.group,
         "asr_model": case.asr_model,
         "post_model": case.post_model,
+        "planned_asr_cache_group_key": _asr_cache_group_key(case),
         "keyword_bias_enabled": case.condition.enable_keyword_bias,
         "noise_reduction_enabled": case.condition.enable_noise_reduction,
         "volume_normalization_enabled": case.condition.enable_volume_normalization,

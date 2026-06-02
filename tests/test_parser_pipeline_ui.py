@@ -46,6 +46,33 @@ class ParserPipelineUiTest(unittest.TestCase):
         report = {
             "summary_csv": "/tmp/auto_experiment_summary.csv",
             "analysis": {"best_by_cer": {"case_id": "case-b", "cer_normalized_no_space": 0.1, "wer_eojeol": 0.2}},
+            "audit": {
+                "verdict": "valid",
+                "row_count": 2,
+                "expected_case_count": 2,
+                "failed_count": 0,
+                "cer_wer_row_count": 2,
+                "baseline_cer_normalized_no_space": 0.3,
+                "best_cer_improvement_vs_baseline": 0.2,
+                "best_wer_improvement_vs_baseline": 0.2,
+                "observed_asr_cache_group_count": 2,
+                "expected_asr_cache_group_count": 2,
+                "peak_gpu_utilization_percent": 98.5,
+                "peak_vram_mb": 20480,
+                "observed_asr_base_urls": ["http://127.0.0.1:18000/v1"],
+                "observed_post_base_urls": ["http://127.0.0.1:18001/v1"],
+                "observed_preprocess_gpus": ["0", "1"],
+                "conclusion": "Strictly comparable run completed.",
+                "gates": {
+                    "reference_provided": True,
+                    "all_expected_cases_finished": True,
+                    "condition_coverage_complete": True,
+                    "no_failed_cases": True,
+                    "baseline_present": True,
+                    "cer_wer_available_for_all_rows": True,
+                    "asr_cache_groups_observed": True,
+                },
+            },
             "rows": [
                 {
                     "case_id": "case-a",
@@ -55,6 +82,11 @@ class ParserPipelineUiTest(unittest.TestCase):
                     "wer_eojeol": 0.4,
                     "delta_cer_vs_baseline": 0.0,
                     "delta_wer_vs_baseline": 0.0,
+                    "asr_base_url": "http://127.0.0.1:18000/v1",
+                    "post_base_url": "http://127.0.0.1:18001/v1",
+                    "preprocess_gpu": "0",
+                    "peak_gpu_utilization_percent": 80,
+                    "asr_cache_hit": False,
                     "risk": "unchanged",
                 },
                 {
@@ -67,6 +99,11 @@ class ParserPipelineUiTest(unittest.TestCase):
                     "wer_eojeol": 0.2,
                     "delta_cer_vs_baseline": 0.2,
                     "delta_wer_vs_baseline": 0.2,
+                    "asr_base_url": "http://127.0.0.1:18000/v1",
+                    "post_base_url": "http://127.0.0.1:18001/v1",
+                    "preprocess_gpu": "1",
+                    "peak_gpu_utilization_percent": 98.5,
+                    "asr_cache_hit": True,
                     "risk": "low",
                 },
             ],
@@ -80,6 +117,16 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("0.1000", html)
         self.assertIn("0.2000", html)
         self.assertIn("+0.2000", html)
+        self.assertIn("Strict Experiment Audit", html)
+        self.assertIn("PASS", html)
+        self.assertIn("ASR URL", html)
+        self.assertIn("Post URL", html)
+        self.assertIn("PRE GPU", html)
+        self.assertIn("Peak GPU", html)
+        self.assertIn("ASR Cache", html)
+        self.assertIn("http://127.0.0.1:18000/v1", html)
+        self.assertIn("http://127.0.0.1:18001/v1", html)
+        self.assertIn("98.5000%", html)
         self.assertLess(html.index("case-b"), html.index("case-a"))
 
     def test_auto_experiment_blank_model_inputs_use_configured_model_candidates(self):

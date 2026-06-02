@@ -801,6 +801,7 @@ def run_from_ui(
         except Exception as exc:
             return "", "", "", {}, [], {}, [], f"Auto experiment failed: {exc}", None, "", query_gpu_status()
         metrics_payload = dict(report.get("analysis", {}))
+        metrics_payload["strict_audit"] = report.get("audit", {})
         metrics_payload["per_case_cer_wer"] = _auto_experiment_metric_rows(report)
         if not reference:
             metrics_payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
@@ -985,10 +986,55 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
             lines.append(f"<p>Per-case diff artifact: {escape(str(Path(str(output_dir)) / 'diff.html'))}</p>")
     else:
         lines.append("<p>No comparable row is available yet. Check the summary CSV after the run completes.</p>")
+    lines.append(_auto_experiment_audit_html(report))
     lines.append(_auto_experiment_results_table(report))
     lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
     lines.append("</div>")
     return "\n".join(lines)
+
+
+def _auto_experiment_audit_html(report: Dict[str, Any]) -> str:
+    audit = report.get("audit")
+    if not isinstance(audit, dict):
+        analysis = report.get("analysis") if isinstance(report.get("analysis"), dict) else {}
+        audit = analysis.get("audit") if isinstance(analysis.get("audit"), dict) else {}
+    if not audit:
+        return "<p>Strict audit unavailable for this run.</p>"
+    gates = audit.get("gates") if isinstance(audit.get("gates"), dict) else {}
+    gate_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(_audit_gate_label(key))}</td>"
+        f'<td class="{escape(_audit_gate_class(value))}">{escape(_audit_gate_value(value))}</td>'
+        "</tr>"
+        for key, value in gates.items()
+    )
+    return f"""
+<section class="asrpp-auto-audit">
+  <h3>Strict Experiment Audit</h3>
+  <div class="asrpp-audit-grid">
+    <div><span>Verdict</span><strong>{escape(str(audit.get("verdict") or "unknown"))}</strong></div>
+    <div><span>Rows</span><strong>{escape(str(audit.get("row_count", "")))}/{escape(str(audit.get("expected_case_count", "")))}</strong></div>
+    <div><span>Failed</span><strong>{escape(str(audit.get("failed_count", "")))}</strong></div>
+    <div><span>CER/WER Rows</span><strong>{escape(str(audit.get("cer_wer_row_count", "")))}</strong></div>
+    <div><span>Baseline CER</span><strong>{escape(_format_metric_cell(audit.get("baseline_cer_normalized_no_space")))}</strong></div>
+    <div><span>Best CER Δ</span><strong>{escape(_format_signed_metric_cell(audit.get("best_cer_improvement_vs_baseline")))}</strong></div>
+    <div><span>Best WER Δ</span><strong>{escape(_format_signed_metric_cell(audit.get("best_wer_improvement_vs_baseline")))}</strong></div>
+    <div><span>ASR Cache Groups</span><strong>{escape(str(audit.get("observed_asr_cache_group_count", "")))}/{escape(str(audit.get("expected_asr_cache_group_count", "")))}</strong></div>
+    <div><span>Actual ASR Cache Keys</span><strong>{escape(str(audit.get("actual_asr_cache_key_count", "")))}</strong></div>
+    <div><span>Peak GPU</span><strong>{escape(_format_percent_metric_cell(audit.get("peak_gpu_utilization_percent")))}</strong></div>
+    <div><span>Peak VRAM MB</span><strong>{escape(_format_metric_cell(audit.get("peak_vram_mb")))}</strong></div>
+    <div class="asrpp-audit-wide"><span>ASR URLs</span><strong>{escape(_join_audit_values(audit.get("observed_asr_base_urls")))}</strong></div>
+    <div class="asrpp-audit-wide"><span>Post URLs</span><strong>{escape(_join_audit_values(audit.get("observed_post_base_urls")))}</strong></div>
+    <div><span>PRE GPUs</span><strong>{escape(_join_audit_values(audit.get("observed_preprocess_gpus")))}</strong></div>
+  </div>
+  <p>{escape(str(audit.get("conclusion") or ""))}</p>
+  <table class="asrpp-audit-gates">
+    <tbody>
+      {gate_rows}
+    </tbody>
+  </table>
+</section>
+"""
 
 
 def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
@@ -1005,6 +1051,17 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
   .asrpp-auto-results td.metric {{ font-variant-numeric: tabular-nums; white-space: nowrap; }}
   .asrpp-auto-results td.features {{ min-width: 150px; }}
   .asrpp-auto-results .failed {{ color: #fca5a5; }}
+  .asrpp-auto-audit {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
+  .asrpp-audit-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 8px 0; }}
+  .asrpp-audit-grid div {{ border: 1px solid #3f3f46; border-radius: 4px; padding: 7px 8px; }}
+  .asrpp-audit-grid span {{ display: block; color: #a1a1aa; font-size: 12px; }}
+  .asrpp-audit-grid strong {{ display: block; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }}
+  .asrpp-audit-grid .asrpp-audit-wide {{ grid-column: span 2; }}
+  .asrpp-audit-gates {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }}
+  .asrpp-audit-gates td {{ padding: 5px 6px; border-top: 1px solid #3f3f46; }}
+  .asrpp-audit-pass {{ color: #86efac; }}
+  .asrpp-audit-fail {{ color: #fca5a5; }}
+  .asrpp-route {{ max-width: 150px; overflow-wrap: anywhere; font-size: 12px; color: #d4d4d8; }}
 </style>
 <h3>Auto Experiment CER/WER by condition</h3>
 <div class="asrpp-auto-results">
@@ -1019,6 +1076,11 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
         <th>WER</th>
         <th>ΔCER vs baseline</th>
         <th>ΔWER vs baseline</th>
+        <th>ASR URL</th>
+        <th>Post URL</th>
+        <th>PRE GPU</th>
+        <th>Peak GPU</th>
+        <th>ASR Cache</th>
         <th>Risk/Error</th>
       </tr>
     </thead>
@@ -1043,6 +1105,11 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
         f'<td class="metric">{escape(str(row.get("wer") or "n/a"))}</td>'
         f'<td class="metric">{escape(str(row.get("delta_cer_vs_baseline") or "n/a"))}</td>'
         f'<td class="metric">{escape(str(row.get("delta_wer_vs_baseline") or "n/a"))}</td>'
+        f'<td class="asrpp-route">{escape(str(row.get("asr_base_url") or ""))}</td>'
+        f'<td class="asrpp-route">{escape(str(row.get("post_base_url") or ""))}</td>'
+        f'<td class="metric">{escape(str(row.get("preprocess_gpu") or ""))}</td>'
+        f'<td class="metric">{escape(str(row.get("peak_gpu_utilization_percent") or ""))}</td>'
+        f'<td class="metric">{escape(str(row.get("asr_cache_hit") or ""))}</td>'
         f"<td{risk_class}>{escape(str(risk_or_error))}</td>"
         "</tr>"
     )
@@ -1066,6 +1133,11 @@ def _auto_experiment_metric_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "wer": _format_metric_cell(row.get("wer_eojeol")),
         "delta_cer_vs_baseline": _format_signed_metric_cell(row.get("delta_cer_vs_baseline")),
         "delta_wer_vs_baseline": _format_signed_metric_cell(row.get("delta_wer_vs_baseline")),
+        "asr_base_url": row.get("asr_base_url") or "",
+        "post_base_url": row.get("post_base_url") or "",
+        "preprocess_gpu": row.get("preprocess_gpu") or "",
+        "peak_gpu_utilization_percent": _format_percent_metric_cell(row.get("peak_gpu_utilization_percent")),
+        "asr_cache_hit": row.get("asr_cache_hit") if row.get("asr_cache_hit") not in (None, "") else "",
         "risk": row.get("risk") or "",
         "error": row.get("error") or "",
     }
@@ -1106,6 +1178,38 @@ def _format_signed_metric_cell(value: Any) -> str:
     if number is None:
         return ""
     return f"{number:+.4f}"
+
+
+def _format_percent_metric_cell(value: Any) -> str:
+    formatted = _format_metric_cell(value)
+    return f"{formatted}%" if formatted else ""
+
+
+def _join_audit_values(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value if str(item).strip()) or ""
+    return str(value or "")
+
+
+def _audit_gate_label(key: str) -> str:
+    labels = {
+        "reference_provided": "Reference provided",
+        "all_expected_cases_finished": "All expected cases finished",
+        "condition_coverage_complete": "Condition coverage complete",
+        "no_failed_cases": "No failed cases",
+        "baseline_present": "Baseline present",
+        "cer_wer_available_for_all_rows": "CER/WER available for all rows",
+        "asr_cache_groups_observed": "ASR cache groups observed",
+    }
+    return labels.get(key, key.replace("_", " ").strip().title())
+
+
+def _audit_gate_class(value: Any) -> str:
+    return "asrpp-audit-pass" if _truthy(value) else "asrpp-audit-fail"
+
+
+def _audit_gate_value(value: Any) -> str:
+    return "PASS" if _truthy(value) else "FAIL"
 
 
 def _metric_sort_value(value: Any) -> float:

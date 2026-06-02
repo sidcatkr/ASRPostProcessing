@@ -172,6 +172,11 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertGreaterEqual(report["condition_count"], 3)
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
             self.assertIn("effect_summary", report["analysis"])
+            self.assertIn("audit", report)
+            self.assertTrue(report["audit"]["strict_valid"])
+            self.assertEqual(report["audit"]["failed_count"], 0)
+            self.assertEqual(report["audit"]["row_count"], report["case_count"])
+            self.assertEqual(report["analysis"]["audit"]["verdict"], "valid")
             with Path(report["summary_csv"]).open(newline="", encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertTrue(rows)
@@ -179,6 +184,11 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertIn("asr_latency_ms", rows[0])
             self.assertIn("vllm_total_tokens", rows[0])
             self.assertIn("preprocess_cache_hit", rows[0])
+            self.assertIn("asr_base_url", rows[0])
+            self.assertIn("post_base_url", rows[0])
+            self.assertIn("preprocess_gpu", rows[0])
+            self.assertIn("model_residency", rows[0])
+            self.assertIn("planned_asr_cache_group_key", rows[0])
 
     def test_auto_experiment_starts_ready_conditions_before_all_asr_groups_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,6 +324,11 @@ class AutoExperimentTest(unittest.TestCase):
                     "group": case.condition.group,
                     "asr_model": case.asr_model,
                     "post_model": case.post_model,
+                    "asr_base_url": condition_config.asr_base_url,
+                    "post_base_url": condition_config.post_base_url,
+                    "preprocess_gpu": condition_config.preprocess_gpu,
+                    "model_residency": condition_config.model_residency,
+                    "asr_cache_key": case.condition.asr_group_key,
                     "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
                     "cer_normalized_no_space": 0.0,
                     "wer_eojeol": 0.0,
@@ -323,11 +338,16 @@ class AutoExperimentTest(unittest.TestCase):
             with patch("asrpostprocessing.auto_experiment._prime_one_asr_group"), patch(
                 "asrpostprocessing.auto_experiment._run_condition", side_effect=fake_run_condition
             ):
-                run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
+                report = run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
 
             self.assertEqual({item[0] for item in seen}, {"http://stage-0/v1", "http://stage-1/v1", "http://stage-2/v1", "http://stage-3/v1"})
             self.assertEqual({item[0] for item in seen}, {item[1] for item in seen})
             self.assertEqual({item[2] for item in seen}, {"0", "1", "2", "3"})
+            self.assertEqual(
+                set(report["audit"]["observed_asr_base_urls"]),
+                {"http://stage-0/v1", "http://stage-1/v1", "http://stage-2/v1", "http://stage-3/v1"},
+            )
+            self.assertEqual(set(report["audit"]["observed_preprocess_gpus"]), {"0", "1", "2", "3"})
 
     def test_stage_replicas_auto_experiment_reloads_all_gpu_stage_servers(self):
         with tempfile.TemporaryDirectory() as tmp:
