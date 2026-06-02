@@ -17,8 +17,8 @@ server_log_dir: outputs/model_servers_l4x4
 asr_server_gpu: "2"
 post_server_gpu: "3"
 server_gpu_memory_utilization: auto
-server_gpu_memory_utilization_max: 0.90
-server_gpu_memory_reserved_mb: 256
+server_gpu_memory_utilization_max: 0.99
+server_gpu_memory_reserved_mb: 0
 asr_server_command: >-
   exec {python} -m asrpostprocessing.qwen_asr_serve_compat {model}
   --host {host}
@@ -33,12 +33,12 @@ post_server_command: >-
   --max-model-len 8192
   --language-model-only
   --gpu-memory-utilization {gpu_memory_utilization}
-  --max-num-seqs 8
-  --max-num-batched-tokens 16384
-postprocess_parallelism: 4
+  --max-num-seqs 16
+  --max-num-batched-tokens 32768
+postprocess_parallelism: 8
 sweep_parallelism: 1
 sweep_saturate_lanes: false
-auto_experiment_parallelism: 4
+auto_experiment_parallelism: 8
 auto_experiment_saturate_lanes: true
 auto_experiment_include_models: false
 asr_cache_enabled: true

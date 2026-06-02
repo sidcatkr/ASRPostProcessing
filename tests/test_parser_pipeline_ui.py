@@ -11,7 +11,7 @@ from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
-from asrpostprocessing.schemas import CorrectionResult, SearchResult
+from asrpostprocessing.schemas import CorrectionResult, SearchResult, TranscriptResult
 from asrpostprocessing.ui import (
     NOISE_REDUCTION_MODEL_CHOICES,
     _apply_runtime_saturation,
@@ -152,6 +152,39 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:18001/v1", html)
         self.assertIn("98.5000%", html)
         self.assertLess(html.index("case-b"), html.index("case-a"))
+
+    def test_auto_experiment_html_adds_collapsible_character_diff_per_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case_dir = Path(tmp) / "case-a"
+            case_dir.mkdir()
+            (case_dir / "raw_transcript.txt").write_text("불련 코드와 포물 작성", encoding="utf-8")
+            (case_dir / "corrected_transcript.txt").write_text("Boolean 코드와 for문 작성", encoding="utf-8")
+            report = {
+                "summary_csv": str(Path(tmp) / "auto_experiment_summary.csv"),
+                "analysis": {},
+                "audit": {},
+                "rows": [
+                    {
+                        "case_id": "volume__llm_rag_search_model_6e0874dd",
+                        "condition_id": "volume__llm_rag_search",
+                        "label": "Volume + LLM + RAG + Search",
+                        "output_dir": str(case_dir),
+                        "cer_normalized_no_space": 0.1,
+                        "wer_eojeol": 0.2,
+                        "error": "",
+                    }
+                ],
+            }
+
+            html = _auto_experiment_diff_html(report, "Boolean 코드와 for문 작성")
+
+        self.assertIn("asrpp-case-diff", html)
+        self.assertIn("<summary>Diff</summary>", html)
+        self.assertIn("Character-level diff", html)
+        self.assertIn("asrpp-diff-delete", html)
+        self.assertIn("asrpp-diff-insert", html)
+        self.assertIn("Boolean", html)
+        self.assertIn("for", html)
 
     def test_pipeline_passes_rag_and_search_evidence_to_postprocessor(self):
         class CapturingPostprocessor:
@@ -409,6 +442,83 @@ class ParserPipelineUiTest(unittest.TestCase):
                 "http://stage-2/v1",
             ],
         )
+
+    def test_stage_replicas_single_run_skips_failed_gpu_replicas(self):
+        class FakeASR:
+            def __init__(self, seen_config):
+                self.seen_config = seen_config
+
+            def transcribe(self, audio_path, config, keyword_instruction=""):
+                self.seen_config["asr_urls"] = list(config.stage_server_base_urls)
+                self.seen_config["asr_base_url"] = config.asr_base_url
+                return TranscriptResult(
+                    language="ko",
+                    text="첫 번째 청크입니다. 두 번째 청크입니다. 세 번째 청크입니다. 네 번째 청크입니다.",
+                )
+
+        class FakePostprocessor:
+            def __init__(self, seen_config):
+                self.seen_config = seen_config
+
+            def correct(self, chunk_text, config, contexts, search_results):
+                self.seen_config.setdefault("post_urls", []).append(config.post_base_url)
+                return CorrectionResult(corrected_text=chunk_text, risk="low")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            seen = {}
+            ensure_calls = []
+            stop_calls = []
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                post_backend="vllm_openai",
+                model_residency="stage_replicas",
+                auto_start_model_servers=True,
+                enable_llm_postprocess=True,
+                chunk_max_chars=12,
+                chunk_overlap=0,
+                postprocess_parallelism=4,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                stage_server_base_urls=[
+                    "http://stage-0/v1",
+                    "http://stage-1/v1",
+                    "http://stage-2/v1",
+                    "http://stage-3/v1",
+                ],
+                stage_server_gpus=["0", "1", "2", "3"],
+                preprocess_gpus=["0", "1", "2", "3"],
+            )
+
+            def fake_ensure(_config, status_callback=None, names=None):
+                names_tuple = tuple(names or ())
+                ensure_calls.append(names_tuple)
+                if names_tuple in {("asr_stage_0",), ("post_stage_2",)}:
+                    raise RuntimeError("simulated busy GPU")
+                name = names_tuple[0]
+                return [ModelServerStatus(name=name, base_url="http://ready", status="ready", detail="test")]
+
+            def fake_stop(_config, status_callback=None, names=None):
+                stop_calls.append(tuple(names or ()))
+                return [ModelServerStatus(name=str(names[0]), base_url="http://stopped", status="stopped", detail="test")]
+
+            with patch("asrpostprocessing.pipeline.ensure_model_servers", side_effect=fake_ensure), patch(
+                "asrpostprocessing.pipeline.stop_model_servers", side_effect=fake_stop
+            ), patch("asrpostprocessing.pipeline.build_asr_adapter", return_value=FakeASR(seen)), patch(
+                "asrpostprocessing.pipeline.build_postprocess_adapter", return_value=FakePostprocessor(seen)
+            ):
+                output = PipelineRunner(config).run(str(audio), run_id="stage-skip-test")
+
+        self.assertEqual(output.raw.text, "첫 번째 청크입니다. 두 번째 청크입니다. 세 번째 청크입니다. 네 번째 청크입니다.")
+        self.assertEqual(seen["asr_urls"], ["http://stage-1/v1", "http://stage-2/v1", "http://stage-3/v1"])
+        self.assertEqual(seen["asr_base_url"], "http://stage-1/v1")
+        self.assertNotIn("http://stage-2/v1", seen["post_urls"])
+        self.assertTrue({"http://stage-0/v1", "http://stage-1/v1", "http://stage-3/v1"}.issubset(set(seen["post_urls"])))
+        self.assertIn(("asr_stage_0",), ensure_calls)
+        self.assertIn(("post_stage_2",), ensure_calls)
+        self.assertIn(("asr_stage_1", "asr_stage_2", "asr_stage_3"), stop_calls)
+        self.assertIn(("post_stage_0", "post_stage_1", "post_stage_3"), stop_calls)
 
     def test_pipeline_falls_back_when_postprocess_chunk_fails(self):
         class FailingPostprocessor:

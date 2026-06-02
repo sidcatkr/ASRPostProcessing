@@ -6,7 +6,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .adapters import build_asr_adapter, build_postprocess_adapter
 from .asr_quality import build_asr_quality_report, build_correction_quality_report
@@ -69,6 +69,8 @@ class PipelineRunner:
         self.config = config
         self.config.model_residency = normalize_model_residency(self.config.model_residency)
         self.status_callback = status_callback
+        self._stage_replica_base_state: Optional[Dict[str, Any]] = None
+        self._stage_replica_active_names: Dict[str, List[str]] = {}
 
     def run(
         self,
@@ -106,7 +108,7 @@ class PipelineRunner:
 
         if self._stage_scoped_model_residency():
             self._emit("Starting ASR model server.")
-            server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["asr"]))
+            server_statuses.extend(self._start_stage_model("asr"))
         try:
             self._emit(f"Sending audio to ASR backend {self.config.asr_backend}.")
             stage_started = time.time()
@@ -198,7 +200,7 @@ class PipelineRunner:
         rag_index = build_rag_index(self.config) if self.config.enable_rag else None
         if self._stage_scoped_model_residency():
             self._emit("Starting post-processing model server.")
-            server_statuses.extend(status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=["post"]))
+            server_statuses.extend(self._start_stage_model("post"))
         try:
             corrected_chunks, all_edits, all_context_ids, chunk_metadata = self._postprocess_chunks(chunks, rag_index)
         finally:
@@ -385,10 +387,125 @@ class PipelineRunner:
     def _stage_scoped_model_residency(self) -> bool:
         return self.config.model_residency in {"sequential", "stage_replicas"}
 
+    def _start_stage_model(self, name: str) -> List[Dict[str, Any]]:
+        if self.config.model_residency == "stage_replicas":
+            return self._start_stage_replicas_scalable(name)
+        return [status.to_dict() for status in ensure_model_servers(self.config, status_callback=self._emit, names=[name])]
+
+    def _start_stage_replicas_scalable(self, stage: str) -> List[Dict[str, Any]]:
+        self._restore_stage_replica_base_state()
+        pairs = self._stage_server_pairs()
+        if not pairs:
+            raise RuntimeError(f"No configured {stage} stage replicas are available.")
+        self._emit(f"Launching {stage} stage replicas concurrently across {len(pairs)} configured GPU(s).")
+        status_dicts: List[Dict[str, Any]] = []
+        active: List[Tuple[int, str, str, str]] = []
+        startup_config = self._stage_replica_startup_config()
+        with ThreadPoolExecutor(max_workers=max(1, len(pairs))) as executor:
+            futures = {
+                executor.submit(ensure_model_servers, startup_config, self._emit, [f"{stage}_stage_{index}"]): (
+                    index,
+                    f"{stage}_stage_{index}",
+                    base_url,
+                    gpu,
+                )
+                for index, (base_url, gpu) in enumerate(pairs)
+            }
+            for future in as_completed(futures):
+                index, spec_name, base_url, gpu = futures[future]
+                try:
+                    statuses = future.result()
+                except Exception as exc:
+                    self._emit(
+                        f"Skipping {spec_name} on GPU {gpu} at {base_url}; startup failed and scalable mode will use remaining replicas: {exc}"
+                    )
+                    try:
+                        status_dicts.extend(
+                            status.to_dict()
+                            for status in stop_model_servers(startup_config, status_callback=self._emit, names=[spec_name])
+                        )
+                    except Exception as cleanup_exc:
+                        self._emit(f"Cleanup for failed {spec_name} reported: {cleanup_exc}")
+                    continue
+                status_dicts.extend(status.to_dict() for status in statuses)
+                active.append((index, spec_name, base_url, gpu))
+        active.sort(key=lambda item: item[0])
+        if not active:
+            raise RuntimeError(f"No {stage} stage replicas became ready. Check GPU VRAM usage and model server logs.")
+        self._stage_replica_active_names[stage] = [spec_name for _index, spec_name, _base_url, _gpu in active]
+        self._restrict_stage_replicas([(base_url, gpu) for _index, _spec_name, base_url, gpu in active], stage)
+        self._emit(
+            f"Scalable {stage} stage active replicas: "
+            + ", ".join(f"{base_url} on GPU {gpu}" for _index, _spec_name, base_url, gpu in active)
+        )
+        return status_dicts
+
+    def _stage_replica_startup_config(self) -> ExperimentConfig:
+        self._snapshot_stage_replica_base_state()
+        startup_config = copy.deepcopy(self.config)
+        self._apply_stage_replica_base_state(startup_config)
+        return startup_config
+
+    def _snapshot_stage_replica_base_state(self) -> None:
+        if self._stage_replica_base_state is not None:
+            return
+        self._stage_replica_base_state = {
+            "stage_server_base_urls": list(self.config.stage_server_base_urls),
+            "stage_server_gpus": list(self.config.stage_server_gpus),
+            "preprocess_gpus": list(self.config.preprocess_gpus),
+            "asr_base_url": self.config.asr_base_url,
+            "post_base_url": self.config.post_base_url,
+            "preprocess_gpu": self.config.preprocess_gpu,
+        }
+
+    def _restore_stage_replica_base_state(self) -> None:
+        self._snapshot_stage_replica_base_state()
+        self._apply_stage_replica_base_state(self.config)
+
+    def _apply_stage_replica_base_state(self, config: ExperimentConfig) -> None:
+        state = self._stage_replica_base_state or {}
+        config.stage_server_base_urls = list(state.get("stage_server_base_urls") or [])
+        config.stage_server_gpus = list(state.get("stage_server_gpus") or [])
+        config.preprocess_gpus = list(state.get("preprocess_gpus") or [])
+        config.asr_base_url = str(state.get("asr_base_url") or config.asr_base_url)
+        config.post_base_url = str(state.get("post_base_url") or config.post_base_url)
+        config.preprocess_gpu = str(state.get("preprocess_gpu") or config.preprocess_gpu)
+
+    def _stage_server_pairs(self) -> List[Tuple[str, str]]:
+        base_urls = [str(item).strip() for item in self.config.stage_server_base_urls if str(item).strip()]
+        gpus = [str(item).strip() for item in self.config.stage_server_gpus if str(item).strip()]
+        count = min(len(base_urls), len(gpus))
+        return [(base_urls[index], gpus[index]) for index in range(count)]
+
+    def _restrict_stage_replicas(self, active_pairs: List[Tuple[str, str]], stage: str) -> None:
+        self.config.stage_server_base_urls = [base_url for base_url, _gpu in active_pairs]
+        self.config.stage_server_gpus = [gpu for _base_url, gpu in active_pairs]
+        self.config.preprocess_gpus = [gpu for _base_url, gpu in active_pairs]
+        if active_pairs:
+            if stage == "asr":
+                self.config.asr_base_url = active_pairs[0][0]
+            else:
+                self.config.post_base_url = active_pairs[0][0]
+            self.config.preprocess_gpu = active_pairs[0][1]
+
     def _release_stage_model(self, name: str) -> List[Dict[str, Any]]:
         statuses: List[Dict[str, Any]] = []
         if self.config.auto_start_model_servers:
-            statuses.extend(status.to_dict() for status in stop_model_servers(self.config, status_callback=self._emit, names=[name]))
+            if self.config.model_residency == "stage_replicas":
+                names = self._stage_replica_active_names.pop(name, [name])
+                statuses.extend(
+                    status.to_dict()
+                    for status in stop_model_servers(
+                        self._stage_replica_startup_config(),
+                        status_callback=self._emit,
+                        names=names,
+                    )
+                )
+                self._restore_stage_replica_base_state()
+            else:
+                statuses.extend(
+                    status.to_dict() for status in stop_model_servers(self.config, status_callback=self._emit, names=[name])
+                )
         if name == "asr":
             self._clear_direct_asr_cache()
         return statuses

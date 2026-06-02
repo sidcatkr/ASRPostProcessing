@@ -36,10 +36,46 @@
 
 ### 2.1.1 오디오 제작용 테스트 문장
 
-아래 문장을 그대로 읽어서 오디오를 만들고, Reference transcript에는 같은 문장을 붙여 넣는다.
+아래 문장을 그대로 읽어서 오디오를 만들고, Reference transcript에는 같은 문장을 붙여 넣는다. 짧은 문장만 사용하면 CER/WER 분모가 작아져 0.n% 단위 차이가 과소평가될 수 있으므로, 최소한 일반 길이 이상을 사용하고 본 실험에서는 긴 낭독 또는 매우 긴 낭독을 사용한다.
+
+짧은 sanity check:
 
 ```text
 오늘 실험에서는 Qwen3-ASR 1.7B와 Qwen3.5 9B 후처리 모델을 함께 사용한다. GPU 0번부터 3번까지 유휴 자원 없이 병렬 처리하고, DeepFilterNet2, RNNoise, BS-RoFormer 전처리 후보를 비교한다. 키워드 바이어스는 씨에스지피유투, 하드코딩 금지, 자동 실험, 청크 병합, 알에이지 검색을 포함한다. 원문과 교정문 사이의 diff가 화면에 보여야 하며, 기준 전사문이 있으면 CER과 WER 값이 반드시 계산되어야 한다. 잡음이 있는 긴 오디오에서도 같은 문장을 반복하지 말고, 숫자 18000번 포트와 7860번 포트를 정확히 구분한다.
+```
+
+일반 길이 reference:
+
+```text
+오늘 실험에서는 Qwen3-ASR 1.7B와 Qwen3.5 9B 후처리 모델을 함께 사용한다. 목표는 raw ASR 결과에 전처리, keyword bias, LLM 후처리, RAG, Search를 적용했을 때 CER과 WER이 실제로 낮아지는지 확인하는 것이다. 서버는 GPU 0번부터 GPU 3번까지 네 장의 NVIDIA L40을 사용하며, ASR stage와 post-processing stage는 각각 모든 GPU replica를 활용한다. 전처리 후보에는 DeepFilterNet2, DeepFilterNet3, RNNoise, BS-RoFormer, FFmpeg afftdn이 포함된다. 키워드 목록에는 씨에스지피유투, 자동 실험, 하드코딩 금지, 청크 병합, 알에이지 검색, 브이엘엘엠, 포트 18000번, 포트 7860번을 넣는다. 사용자는 Gradio 화면에서 각 조건의 CER/WER뿐 아니라 raw transcript와 corrected transcript 사이의 글자 단위 diff를 펼쳐서 확인한다. 이 문장은 일반적인 연구 실험 설명 길이에 맞춰 작성되었으며, 숫자, 영어 모델명, 한국어 기술 용어, 발음이 헷갈리는 외래어를 함께 포함한다.
+```
+
+긴 낭독 reference:
+
+```text
+이번 실험의 핵심 목적은 한국어 대화 음성에서 발생하는 ASR 오류를 체계적으로 분석하고, 전처리와 후처리 조합이 실제 품질 개선으로 이어지는지 검증하는 것이다. 먼저 baseline 조건에서는 keyword bias, noise reduction, volume normalization, LLM post-processing, RAG, Search를 모두 끄고 raw transcript만 생성한다. 그 다음 keyword bias only, noise reduction only, volume normalization only, LLM only, LLM plus RAG, LLM plus Search, LLM plus RAG plus Search 조건을 차례대로 실행한다. 모든 조건은 같은 reference transcript를 사용하며, 각 조건의 CER과 WER을 baseline과 비교한다. 단순히 숫자가 낮아졌는지만 보는 것이 아니라, 어떤 단어가 수정되었고 어떤 문장이 새로 왜곡되었는지도 함께 확인한다.
+
+실험 오디오는 깨끗한 음성, 약한 팬 소음이 섞인 음성, 배경 음악이 작게 깔린 음성, 마이크 입력이 낮은 음성, 발화 속도가 빠른 음성, 문장 사이 휴지가 긴 음성으로 나누어 준비한다. 기술 용어는 Qwen3-ASR, Qwen3.5, DeepFilterNet2, RNNoise, BS-RoFormer, vLLM, CUDA_VISIBLE_DEVICES, tensor parallel, stage replica, cache priming, chunk merge, CER, WER, RAG, Search를 포함한다. 한국어 발음으로는 큐웬 쓰리 에이에스알, 큐웬 삼점오, 딥필터넷 투, 알엔노이즈, 비에스 로포머, 브이엘엘엠, 쿠다 비저블 디바이시스, 텐서 패러럴, 스테이지 레플리카, 캐시 프라이밍, 청크 머지, 씨이에알, 더블유이에알, 알에이지, 서치를 함께 말한다.
+
+성능 검증에서는 GPU가 단순히 메모리만 예약하고 놀고 있는 상태를 성공으로 보지 않는다. ASR stage에서는 네 개의 ASR replica가 모두 준비되어야 하며, 긴 오디오를 여러 chunk로 나누어 각 endpoint에 병렬 요청을 보내야 한다. Post-processing stage에서도 텍스트 chunk를 충분히 잘게 나누고 postprocess_parallelism을 높여 모든 post LLM replica가 요청을 받도록 한다. 만약 GPU 0번에 다른 사용자의 Python process가 4GB 정도 VRAM을 사용하고 있다면, 이 실험 시스템은 GPU 0번을 포기하지 않고 남은 VRAM에 맞는 serving profile을 계산해야 한다. 반대로 GPU 0번이 비어 있으면 다음 실행에서 최대 memory utilization과 최대 batch capacity를 사용해야 한다.
+
+최종 결과 화면에서는 각 condition의 CER, WER, delta CER, delta WER, ASR endpoint, post endpoint, preprocess GPU, peak GPU utilization, peak VRAM, ASR cache hit 여부를 확인한다. 또한 volume__llm_rag_search_model_6e0874dd 같은 case identifier 오른쪽에는 접힌 diff 버튼이 있어야 한다. 사용자가 그 버튼을 누르면 raw transcript와 corrected transcript 사이의 변경점이 글자 단위로 표시되어야 한다. 예를 들어 불련이 Boolean으로 바뀌거나 포물이 for문으로 바뀌는 경우, 전체 문단을 하나의 변경 블록으로 칠하지 말고 실제로 바뀐 글자 주변만 세밀하게 표시해야 한다. 이 방식은 모델이 의미를 보존했는지, 도메인 용어만 고쳤는지, 또는 RAG와 Search 때문에 새로운 환각을 넣었는지 판단하는 데 필요하다.
+```
+
+매우 긴 낭독 reference:
+
+```text
+본 실험은 README에 정의된 ASR post-processing pipeline을 실제 서버 환경에서 재현하고 검증하기 위한 절차이다. 오디오는 Gradio UI에 업로드하고, reference transcript는 이 문단 전체를 그대로 붙여 넣는다. 실험자는 먼저 모든 기능을 끈 baseline을 실행하여 raw transcript와 CER/WER을 기록한다. 이후 자동 실험 모드를 켜고 keyword bias, noise reduction, volume normalization, LLM post-processing, RAG, Search의 가능한 조합을 실행한다. full_valid 모드에서는 유효한 기능 조합을 빠짐없이 평가하고, full_strength_sweep 모드에서는 keyword bias weight, noise reduction strength, volume normalization strength, postprocess strength, RAG strength, RAG top-k, search strength를 여러 단계로 바꾸어 sweet spot을 찾는다.
+
+테스트 문장에는 일반 대화체와 기술 설명체를 모두 포함한다. 예를 들어 회의 참가자가 "오늘은 씨에스지피유투 서버에서 자동 실험을 돌리고, 포트 7860번의 Gradio UI와 포트 18000번부터 18003번까지의 vLLM endpoint를 확인하겠습니다"라고 말한다. 다른 참가자는 "Qwen3-ASR 1.7B가 긴 오디오를 silence-aware chunking으로 나누고, Qwen3.5 9B가 후처리 chunk를 받아 도메인 용어를 보정합니다"라고 답한다. 또 다른 참가자는 "DeepFilterNet2와 RNNoise는 잡음 제거 효과가 다를 수 있고, BS-RoFormer는 긴 시간 흐름의 음성 분리에 강점이 있지만 실제 backend 연결 여부를 확인해야 합니다"라고 덧붙인다. 이러한 문장은 ASR이 숫자, 포트, 영어 모델명, 한국어 발음, 하이픈, 약어를 얼마나 정확히 처리하는지 확인하기 위해 필요하다.
+
+정량 평가에서는 reference transcript가 반드시 있어야 한다. Reference가 없으면 CER과 WER은 계산되지 않으며, corrected transcript가 좋아 보이더라도 엄격한 결론을 내릴 수 없다. Reference가 있을 때는 raw CER, corrected CER, raw WER, corrected WER, delta CER, delta WER을 모두 기록한다. delta 값이 양수이면 corrected transcript가 baseline보다 좋아졌다는 뜻이고, delta 값이 음수이면 후처리가 오히려 악화되었다는 뜻이다. 그러나 숫자만으로는 충분하지 않다. 예를 들어 LLM이 "브이엘엘엠"을 "vLLM"으로 바꾸는 것은 좋은 수정일 수 있지만, "실험 조건을 비교한다"를 "모든 조건이 성공했다"로 바꾸면 의미 왜곡이다. 따라서 각 method별 diff를 반드시 열어 보고, 실제 변경된 단어와 문장 단위를 확인해야 한다.
+
+서버 성능 평가에서는 모든 가용 GPU를 적극적으로 사용한다. 네 장의 L40이 비어 있다면 ASR stage는 네 개의 ASR replica를 동시에 띄우고, post-processing stage는 네 개의 post LLM replica를 동시에 띄운다. Auto Experiment는 condition worker를 충분히 늘려 요청 큐가 비지 않도록 하며, 일반 Run도 stage replica pool에 맞춰 ASR chunk parallelism과 postprocess parallelism을 보정한다. GPU acceleration이 가능한 전처리 backend는 CUDA_VISIBLE_DEVICES를 통해 preprocess GPU pool에 분산한다. 특정 GPU에 외부 process가 떠 있으면 그 process를 종료하지 않는다. 대신 nvidia-smi에서 확인한 free VRAM을 기준으로 gpu-memory-utilization, max-model-len, max-num-seqs, max-num-batched-tokens를 계산하여 남은 자원을 사용한다. 이 정책은 특정 PID나 GPU 번호를 하드코딩하지 않고, 실행 시점의 실제 서버 상태를 기준으로 동작해야 한다.
+
+실험자는 결과를 해석할 때 다음 질문을 순서대로 확인한다. 첫째, baseline 대비 CER/WER이 개선되었는가. 둘째, 개선된 조건이 여러 오디오 유형에서도 반복되는가. 셋째, keyword bias가 도메인 용어를 정확히 살렸는가. 넷째, noise reduction이 잡음을 줄였지만 음성을 손상시키지는 않았는가. 다섯째, volume normalization이 작은 음성을 키웠지만 clipping을 만들지는 않았는가. 여섯째, LLM post-processing이 ASR 오류만 고치고 원래 의미를 유지했는가. 일곱째, RAG와 Search가 실제 context를 보완했는가, 아니면 새로운 잘못된 정보를 넣었는가. 여덟째, 각 method의 diff에서 변경된 글자와 단어가 사람이 납득할 수 있는 수준인가.
+
+이 reference는 실험 결과가 너무 쉽게 0퍼센트 근처로 떨어지는 문제를 피하기 위해 길게 작성되었다. 짧은 문장 하나로만 테스트하면 한두 글자 차이가 전체 CER/WER에 과도하게 반영되거나 반대로 조건 간 차이가 거의 보이지 않는다. 긴 reference를 사용하면 모델명, 포트 번호, GPU 번호, 기술 용어, 일반 문장, 긴 문맥, 반복되지 않는 표현이 함께 평가된다. 따라서 오디오 제작자는 이 문단을 끊지 말고 자연스럽게 읽되, 문장 사이에 적절한 휴지를 둔다. 실험자는 같은 reference를 그대로 붙여 넣고, Auto Experiment가 생성한 모든 case의 diff와 CER/WER을 함께 확인한다.
 ```
 
 검증 포인트는 다음과 같다.

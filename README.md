@@ -79,15 +79,16 @@ Gradio UI의 primary ASR/POST GPU와 URL 입력값은 단일 서버 fallback이�
 
 `auto_experiment_saturate_lanes`가 켜져 있으면 Auto Experiment뿐 아니라 일반 Run에서도 stage/pipeline lane 수를 기준으로 ASR chunk worker, postprocess worker, condition worker를 자동 보정한다. ASR rolling context가 꺼져 있는 처리량 우선 설정에서는 audio chunk가 모든 ASR endpoint에 분산된다.
 
-`server_gpu_memory_utilization: auto`는 GPU별 현재 free VRAM을 기준으로 vLLM memory fraction을 계산한다. 특정 GPU에 다른 process가 VRAM 일부를 쓰고 있어도 해당 GPU를 포기하지 않고, command의 `--max-model-len`, `--max-num-seqs`, `--max-num-batched-tokens`를 free VRAM 비율에 맞춰 줄여 같은 GPU에서 더 작은 serving profile로 기동한다. 시작 중 resource pressure로 vLLM engine 초기화가 실패하면 같은 GPU에서 더 작은 profile로 재시도한 뒤, 그래도 안 될 때만 해당 replica를 제외한다.
+`server_gpu_memory_utilization: auto`는 GPU별 현재 free VRAM을 기준으로 vLLM memory fraction을 계산한다. L4 x4 profile은 성능 우선으로 빈 GPU에서는 `server_gpu_memory_utilization_max: 0.99`까지 사용하며, Xorg/CUDA 기본 사용량처럼 거의 빈 GPU에서 발생하는 작은 free VRAM 차이만으로 `--max-model-len`, `--max-num-seqs`, `--max-num-batched-tokens`를 낮추지 않는다. 특정 GPU에 다른 process가 VRAM 일부를 쓰고 있어도 해당 GPU를 포기하지 않고, 실제 VRAM 압박이 있을 때만 command capacity를 free VRAM 비율에 맞춰 줄여 같은 GPU에서 더 작은 serving profile로 기동한다. 시작 중 resource pressure로 vLLM engine 초기화가 실패하면 같은 GPU에서 더 작은 profile로 재시도한 뒤, 그래도 안 될 때만 해당 replica를 제외한다. 이 scalable skip/restrict 정책은 Auto Experiment와 일반 Run의 `stage_replicas` 실행에 모두 적용된다.
 
 Gradio로 업로드한 큰 오디오 파일은 `upload_cache_enabled: true`일 때 `upload_cache_dir` 아래 content-addressed cache로 고정된다. 같은 파일을 다시 실행하면 Gradio 임시 업로드 경로가 아니라 cache hit 경로를 사용하므로 큰 파일 재전송, 임시 파일 삭제, 반복 실행 I/O 낭비를 줄일 수 있다.
 
 ### 서버 띄우기
 
-이미 열려 있는 tmux session을 사용한다.
+이미 열려 있는 tmux session을 사용한다. 자동화나 원격 작업 중에는 `tmux attach-session -t csgpu2`로 붙지 말고, 세션을 유지한 채 명령만 보낸다.
 
-    tmux attach -t csgpu2
+    tmux send-keys -t csgpu2:0.0 'cd ~/hcilabs/ASRPostProcessing' C-m
+    tmux capture-pane -t csgpu2:0.0 -p -S -80
 
 repo root에서 conda/env를 활성화한 뒤 UI를 실행한다. 모델 서버는 Run 또는 Auto Experiment가 시작될 때 stage별로 자동 실행된다.
 

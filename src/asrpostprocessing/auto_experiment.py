@@ -349,11 +349,16 @@ def _prime_asr_groups(
     if not grouped:
         return
     workers = min(len(grouped), _effective_asr_worker_count(base_config))
-    _emit(status_callback, f"Priming ASR cache for {len(grouped)} group(s) with {workers} all-GPU ASR worker(s).")
+    scheduled_groups = _scheduled_asr_prime_groups(base_config, grouped)
+    gpu_preprocess_count = len([group for group in scheduled_groups if group[3] is not None])
+    preprocess_gpu_count = len(_preprocess_gpus(base_config))
+    detail = ""
+    if gpu_preprocess_count and preprocess_gpu_count:
+        detail = f"; {gpu_preprocess_count} GPU preprocess group(s) round-robin across {preprocess_gpu_count} preprocess GPU(s)"
+    _emit(status_callback, f"Priming ASR cache for {len(grouped)} group(s) with {workers} all-GPU ASR worker(s){detail}.")
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
-        for group_index, indexed_cases in enumerate(grouped.values()):
-            case = indexed_cases[0][1]
+        for group_index, indexed_cases, case, preprocess_index in scheduled_groups:
             futures[
                 executor.submit(
                     _prime_one_asr_group,
@@ -364,6 +369,7 @@ def _prime_asr_groups(
                     reference_text,
                     rag_inline_text,
                     status_callback,
+                    preprocess_index,
                 )
             ] = case
         for future in as_completed(futures):
@@ -377,6 +383,33 @@ def _prime_asr_groups(
 
 def _has_postprocess_cases(cases: List[ExperimentCase]) -> bool:
     return any(case.condition.enable_llm_postprocess for case in cases)
+
+
+def _scheduled_asr_prime_groups(
+    config: ExperimentConfig,
+    grouped: Dict[str, List[Tuple[int, ExperimentCase]]],
+) -> List[Tuple[int, List[Tuple[int, ExperimentCase]], ExperimentCase, Optional[int]]]:
+    scheduled: List[Tuple[int, List[Tuple[int, ExperimentCase]], ExperimentCase, Optional[int]]] = []
+    preprocess_index = 0
+    for group_index, indexed_cases in enumerate(grouped.values()):
+        case = indexed_cases[0][1]
+        group_preprocess_index: Optional[int] = None
+        if _case_uses_gpu_preprocess(config, case):
+            group_preprocess_index = preprocess_index
+            preprocess_index += 1
+        scheduled.append((group_index, indexed_cases, case, group_preprocess_index))
+    return scheduled
+
+
+def _case_uses_gpu_preprocess(config: ExperimentConfig, case: ExperimentCase) -> bool:
+    if not _preprocess_gpus(config):
+        return False
+    if not case.condition.enable_noise_reduction:
+        return False
+    model = str(case.condition.noise_reduction_model or config.noise_reduction_model or "").strip().lower()
+    if not model:
+        model = "deepfilternet2"
+    return model not in {"none", "afftdn", "ffmpeg_afftdn", "basic", "built-in", "built_in", "denoise", "volume"}
 
 
 def _condition_row_from_future(
@@ -579,8 +612,9 @@ def _prime_one_asr_group(
     reference_text: Optional[str],
     rag_inline_text: str,
     status_callback: Optional[StatusCallback],
+    preprocess_index: Optional[int] = None,
 ) -> None:
-    config = _config_for_case(base_config, case, index)
+    config = _config_for_case(base_config, case, index, preprocess_index=preprocess_index)
     config.enable_llm_postprocess = False
     PipelineRunner(config, status_callback=status_callback).run(
         audio_path=audio_path,
@@ -681,7 +715,12 @@ def _run_condition(
     }
 
 
-def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index: int) -> ExperimentConfig:
+def _config_for_case(
+    base_config: ExperimentConfig,
+    case: ExperimentCase,
+    index: int,
+    preprocess_index: Optional[int] = None,
+) -> ExperimentConfig:
     config = copy.deepcopy(base_config)
     condition = case.condition
     config.asr_model = case.asr_model
@@ -747,7 +786,8 @@ def _config_for_case(base_config: ExperimentConfig, case: ExperimentCase, index:
             config.post_base_url = endpoint
         preprocess_gpus = _preprocess_gpus(config)
         if preprocess_gpus:
-            config.preprocess_gpu = preprocess_gpus[index % len(preprocess_gpus)]
+            gpu_index = preprocess_index if preprocess_index is not None else index
+            config.preprocess_gpu = preprocess_gpus[gpu_index % len(preprocess_gpus)]
         return config
     lanes = _matching_lanes(config.pipeline_lanes or [], config.asr_model, config.post_model)
     if lanes:

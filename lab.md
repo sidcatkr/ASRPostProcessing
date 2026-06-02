@@ -235,8 +235,10 @@ L4 x4 profile은 GPU를 아끼기 위한 profile이 아니다. `stage_replicas` 
 GPU memory allocation은 다음 설정으로 제어한다:
 
 - `server_gpu_memory_utilization: auto`: 시작 시점의 실제 free VRAM을 기준으로 vLLM memory fraction을 계산한다.
-- `server_gpu_memory_utilization_max`: GPU가 비어 있을 때 사용할 최대 fraction이다. 기본 profile은 안정적인 대량 실행을 위해 0.90을 사용하지만 config/env에서 더 크게 올릴 수 있다.
-- `server_gpu_memory_reserved_mb`: 외부 프로세스와 CUDA runtime 여유분을 위해 남길 VRAM이다.
+- `server_gpu_memory_utilization_max`: GPU가 비어 있을 때 사용할 최대 fraction이다. L4 x4 기본 profile은 성능 우선으로 0.99를 사용한다.
+- `server_gpu_memory_reserved_mb`: 외부 프로세스와 CUDA runtime 여유분을 위해 남길 VRAM이다. L4 x4 기본 profile은 0으로 두고, VRAM 부족 시 adaptive retry가 같은 GPU에서 더 작은 serving profile로 낮춘다.
+- 거의 빈 GPU에서는 Xorg/CUDA 기본 사용량 때문에 free VRAM이 total보다 조금 작아도 `--max-model-len`, `--max-num-seqs`, `--max-num-batched-tokens`를 낮추지 않는다. 실제 VRAM 압박이 있을 때만 capacity를 줄여 같은 GPU의 남은 자원을 사용한다.
+- Auto Experiment뿐 아니라 일반 Run의 `stage_replicas` 실행도 각 stage replica를 scalable하게 시작한다. 특정 GPU replica가 시작에 실패하면 남은 active replica endpoint pool로 config를 제한해 실행을 계속한다.
 - `VLLM_CACHE_ROOT`: lane별로 자동 분리되어 동시 launch 중 compile cache 충돌을 줄인다.
 
 이 정책은 GPU 번호나 특정 PID를 hardcoding하지 않는다. 예를 들어 GPU 0에 다른 사용자의 Python 프로세스가 약간의 VRAM만 사용 중이면, 서버 시작 시 GPU 0의 남은 VRAM을 읽어 그 범위 안에서 ASR 서버를 올린다. 나중에 그 프로세스가 없어지고 서버를 새로 시작하면 같은 config가 GPU 0을 `server_gpu_memory_utilization_max`까지 사용한다. 이미 실행 중인 vLLM 프로세스의 KV cache 예약은 vLLM 특성상 런타임에 동적으로 커지지 않으므로, free VRAM 변화 반영은 다음 launch/restart 시점에 적용된다.

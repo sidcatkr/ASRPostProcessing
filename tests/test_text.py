@@ -1,6 +1,6 @@
 import unittest
 
-from asrpostprocessing.text import make_diff_html
+from asrpostprocessing.text import make_character_diff_html, make_diff_html
 
 
 class InlineDiffHtmlTest(unittest.TestCase):
@@ -29,6 +29,15 @@ class InlineDiffHtmlTest(unittest.TestCase):
         self.assertIn("Reference", html)
         self.assertIn("Corrected", html)
         self.assertIn("No character changes", html)
+
+    def test_make_character_diff_html_marks_small_character_changes(self):
+        html = make_character_diff_html("앞 문장 불련 코드 뒤 문장", "앞 문장 Boolean 코드 뒤 문장")
+
+        self.assertIn("asrpp-diff-delete", html)
+        self.assertIn("asrpp-diff-insert", html)
+        self.assertIn("Boolean", html)
+        self.assertIn("앞 문장", html)
+        self.assertIn("뒤 문장", html)
 
 
 if __name__ == "__main__":

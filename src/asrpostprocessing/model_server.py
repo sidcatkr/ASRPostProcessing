@@ -73,6 +73,7 @@ class _ServerRuntimeOptions:
 _LOCK = threading.Lock()
 _PROCESSES: Dict[str, subprocess.Popen] = {}
 _ADAPTIVE_START_RETRY_SCALES = (0.85, 0.70, 0.55)
+_NEAR_FULL_CAPACITY_SCALE = 0.98
 
 
 def ensure_model_servers(
@@ -536,7 +537,7 @@ def _runtime_options_for_spec(spec: ModelServerSpec, retry_scale: float = 1.0) -
     raw_ratio = min(snapshot[3] for snapshot in snapshots)
     capped_ratio = min(spec.gpu_memory_utilization_max, raw_ratio)
     ratio = max(0.05, min(0.99, capped_ratio * max(0.05, min(1.0, retry_scale))))
-    capacity_scale = max(0.05, min(1.0, ratio / max(0.05, spec.gpu_memory_utilization_max)))
+    capacity_scale = _capacity_scale_for_ratio(ratio, spec.gpu_memory_utilization_max)
     max_model_len = _scale_capacity(max_model_len, _minimum_max_model_len(spec.stage, max_model_len), capacity_scale, 1024)
     max_num_seqs = _scale_capacity(max_num_seqs, 1, capacity_scale, 1)
     max_num_batched_tokens = _scale_capacity(
@@ -610,6 +611,13 @@ def _gpu_indices(gpu: str) -> List[str]:
 
 def _format_gpu_memory_utilization(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _capacity_scale_for_ratio(ratio: float, configured_max: float) -> float:
+    scale = max(0.05, min(1.0, ratio / max(0.05, configured_max)))
+    if scale >= _NEAR_FULL_CAPACITY_SCALE:
+        return 1.0
+    return scale
 
 
 def _adaptive_int_option(spec: ModelServerSpec, option: str, default: int) -> int:

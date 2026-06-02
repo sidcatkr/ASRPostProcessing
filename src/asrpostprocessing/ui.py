@@ -18,7 +18,7 @@ from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
 from .preprocess import preprocess_audio
-from .text import make_diff_html
+from .text import make_character_diff_html, make_diff_html
 
 RUN_STATUS_POLL_INTERVAL_S = 1.0
 RUN_STATUS_RECENT_EVENT_LIMIT = 8
@@ -1112,7 +1112,10 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
   .asrpp-audit-pass {{ color: #86efac; }}
   .asrpp-audit-fail {{ color: #fca5a5; }}
   .asrpp-route {{ max-width: 150px; overflow-wrap: anywhere; font-size: 12px; color: #d4d4d8; }}
-</style>
+  .asrpp-case-diff-cell {{ min-width: 110px; }}
+  .asrpp-case-diff summary {{ cursor: pointer; display: inline-flex; align-items: center; border: 1px solid #71717a; border-radius: 4px; padding: 3px 7px; font-size: 12px; color: #f4f4f5; background: #27272a; }}
+  .asrpp-case-diff-body {{ margin-top: 8px; min-width: min(760px, 80vw); max-width: 980px; }}
+        </style>
 <h3>Auto Experiment CER/WER by condition</h3>
 <div class="asrpp-auto-results">
   <table>
@@ -1134,6 +1137,7 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
         <th>ASR Cache</th>
         <th>RAG Ctx</th>
         <th>Search Hits</th>
+        <th>Diff</th>
         <th>Risk/Error</th>
       </tr>
     </thead>
@@ -1166,6 +1170,7 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
         f'<td class="metric">{escape(str(row.get("asr_cache_hit") or ""))}</td>'
         f'<td class="metric">{escape(str(row.get("rag_context_count") or ""))}</td>'
         f'<td class="metric">{escape(str(row.get("search_result_count") or ""))}</td>'
+        f'<td class="asrpp-case-diff-cell">{row.get("diff_html") or ""}</td>'
         f"<td{risk_class}>{escape(str(risk_or_error))}</td>"
         "</tr>"
     )
@@ -1202,9 +1207,35 @@ def _auto_experiment_metric_row(row: Dict[str, Any], best_badges: Optional[List[
         "asr_cache_hit": row.get("asr_cache_hit") if row.get("asr_cache_hit") not in (None, "") else "",
         "rag_context_count": _format_count_cell(row.get("rag_context_count")),
         "search_result_count": _format_count_cell(row.get("search_result_count")),
+        "diff_html": _auto_experiment_case_diff_html(row),
         "risk": row.get("risk") or "",
         "error": row.get("error") or "",
     }
+
+
+def _auto_experiment_case_diff_html(row: Dict[str, Any]) -> str:
+    if row.get("error"):
+        return ""
+    output_dir = str(row.get("output_dir") or "").strip()
+    if not output_dir:
+        return ""
+    raw_path = Path(output_dir) / "raw_transcript.txt"
+    corrected_path = Path(output_dir) / "corrected_transcript.txt"
+    if not raw_path.exists() or not corrected_path.exists():
+        return ""
+    try:
+        raw_text = raw_path.read_text(encoding="utf-8")
+        corrected_text = corrected_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    diff = make_character_diff_html(raw_text, corrected_text, "Raw", "Corrected")
+    case_id = escape(str(row.get("case_id") or row.get("condition_id") or "case"))
+    return (
+        f'<details class="asrpp-case-diff">'
+        f"<summary>Diff</summary>"
+        f'<div class="asrpp-case-diff-body" aria-label="Character-level diff for {case_id}">{diff}</div>'
+        "</details>"
+    )
 
 
 def _auto_experiment_metric_sort_key(row: Dict[str, Any]) -> Tuple[int, float, float, str]:

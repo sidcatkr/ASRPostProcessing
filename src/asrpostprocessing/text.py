@@ -76,9 +76,28 @@ def character_f1(a: str, b: str) -> float:
 
 
 def make_diff_html(reference: str, hypothesis: str, reference_label: str = "Raw", hypothesis_label: str = "Corrected") -> str:
+    return _make_diff_html(reference, hypothesis, reference_label, hypothesis_label, character_level=False)
+
+
+def make_character_diff_html(
+    reference: str,
+    hypothesis: str,
+    reference_label: str = "Raw",
+    hypothesis_label: str = "Corrected",
+) -> str:
+    return _make_diff_html(reference, hypothesis, reference_label, hypothesis_label, character_level=True)
+
+
+def _make_diff_html(
+    reference: str,
+    hypothesis: str,
+    reference_label: str,
+    hypothesis_label: str,
+    character_level: bool,
+) -> str:
     reference = reference or ""
     hypothesis = hypothesis or ""
-    body, stats = _inline_diff_body(reference, hypothesis)
+    body, stats = _inline_diff_body(reference, hypothesis, character_level=character_level)
     if not body:
         body = '<span class="asrpp-diff-empty">(empty)</span>'
     no_change = stats["delete"] == 0 and stats["insert"] == 0 and stats["replace"] == 0
@@ -169,10 +188,10 @@ def make_diff_html(reference: str, hypothesis: str, reference_label: str = "Raw"
 """.strip()
 
 
-def _inline_diff_body(reference: str, hypothesis: str) -> tuple[str, dict]:
-    ref_tokens = _diff_tokens(reference)
-    hyp_tokens = _diff_tokens(hypothesis)
-    matcher = SequenceMatcher(a=ref_tokens, b=hyp_tokens)
+def _inline_diff_body(reference: str, hypothesis: str, character_level: bool = False) -> tuple[str, dict]:
+    ref_tokens = list(reference) if character_level else _diff_tokens(reference)
+    hyp_tokens = list(hypothesis) if character_level else _diff_tokens(hypothesis)
+    matcher = SequenceMatcher(a=ref_tokens, b=hyp_tokens, autojunk=not character_level)
     parts: List[str] = []
     stats = {"delete": 0, "insert": 0, "replace": 0}
     for tag, ref_start, ref_end, hyp_start, hyp_end in matcher.get_opcodes():

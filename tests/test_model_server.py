@@ -238,6 +238,39 @@ class ModelServerTest(unittest.TestCase):
         self.assertIn("--max-num-seqs 7", command)
         self.assertIn("--max-num-batched-tokens 14848", command)
 
+    def test_adaptive_runtime_keeps_full_capacity_for_nearly_empty_gpu(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="mock",
+            post_backend="vllm_openai",
+            post_server_command=(
+                "{vllm} serve {model} --gpu-memory-utilization {gpu_memory_utilization} "
+                "--max-model-len 8192 --max-num-seqs 16 --max-num-batched-tokens 32768"
+            ),
+            server_gpu_memory_utilization="auto",
+            server_gpu_memory_utilization_max=0.99,
+            server_gpu_memory_reserved_mb=0,
+        )
+        spec = _server_specs(config)[0]
+        completed = Mock(returncode=0, stdout="24570, 24077\n")
+        with patch("asrpostprocessing.model_server.shutil.which", return_value="/usr/bin/nvidia-smi"), patch(
+            "asrpostprocessing.model_server.subprocess.run", return_value=completed
+        ), patch("asrpostprocessing.model_server.subprocess.Popen") as popen:
+            runtime = _runtime_options_for_spec(spec)
+            process = Mock()
+            process.pid = 123
+            popen.return_value = process
+            _start_process(spec, runtime)
+
+        self.assertAlmostEqual(float(runtime.gpu_memory_utilization), 24077 / 24570, places=4)
+        self.assertEqual(runtime.max_model_len, 8192)
+        self.assertEqual(runtime.max_num_seqs, 16)
+        self.assertEqual(runtime.max_num_batched_tokens, 32768)
+        command = popen.call_args.args[0]
+        self.assertIn("--max-model-len 8192", command)
+        self.assertIn("--max-num-seqs 16", command)
+        self.assertIn("--max-num-batched-tokens 32768", command)
+
     def test_open_non_model_port_fails_fast(self):
         config = ExperimentConfig(auto_start_model_servers=True, asr_backend="vllm_chat", post_backend="mock")
         with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
