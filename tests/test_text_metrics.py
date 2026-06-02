@@ -1,7 +1,7 @@
 import unittest
 
 from asrpostprocessing.metrics import evaluate_transcripts
-from asrpostprocessing.text import cer, normalize_text, wer_eojeol
+from asrpostprocessing.text import cer, normalize_text, transcript_error_breakdown, wer_eojeol
 
 
 class TextMetricsTest(unittest.TestCase):
@@ -22,6 +22,17 @@ class TextMetricsTest(unittest.TestCase):
 
     def test_spacing_insensitive_wer_still_penalizes_content_changes(self):
         self.assertGreater(wer_eojeol("해든마을 주민센터", "해든마을 시민센터"), 0.0)
+
+    def test_error_breakdown_uses_metric_normalization(self):
+        spacing_only = transcript_error_breakdown("해든 마을 주민센터\nOmar Lee", "해든마을 주민센터 OmarLee")
+        self.assertEqual(spacing_only["cer"]["errors"], 0)
+        self.assertEqual(spacing_only["wer"]["errors"], 0)
+
+        changed = transcript_error_breakdown("해든마을 주민센터", "해든마을 시민센터")
+        self.assertGreater(changed["cer"]["errors"], 0)
+        self.assertGreater(changed["wer"]["errors"], 0)
+        self.assertIn("segments", changed["cer"])
+        self.assertGreater(changed["cer"]["segments"][0]["error_share"], 0)
 
     def test_evaluate_delta_positive_when_corrected_improves(self):
         metrics = evaluate_transcripts("AlphaTerm으로 테스트 작성", "알파텀으로 예시 작성", "AlphaTerm으로 테스트 작성")

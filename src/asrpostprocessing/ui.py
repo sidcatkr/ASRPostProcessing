@@ -946,7 +946,7 @@ def _display_diff_html(reference_text: Optional[str], raw_text: str, corrected_t
         sections.append(
             _diff_section(
                 "Reference -> Corrected",
-                make_diff_html(reference_text, corrected_text, "Reference", "Corrected"),
+                make_diff_html(reference_text, corrected_text, "Reference", "Corrected", show_error_monitor=True),
             )
         )
     if not reference_text or raw_text != corrected_text:
@@ -989,7 +989,7 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
         lines.append("<p>No comparable row is available yet. Check the summary CSV after the run completes.</p>")
     lines.append(_auto_experiment_best_methods_html(report))
     lines.append(_auto_experiment_audit_html(report))
-    lines.append(_auto_experiment_results_table(report))
+    lines.append(_auto_experiment_results_table(report, reference_text))
     lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
     lines.append("</div>")
     return "\n".join(lines)
@@ -1082,8 +1082,8 @@ def _auto_experiment_best_methods_html(report: Dict[str, Any]) -> str:
 """
 
 
-def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
-    rows = _auto_experiment_metric_rows(report)
+def _auto_experiment_results_table(report: Dict[str, Any], reference_text: Optional[str] = None) -> str:
+    rows = _auto_experiment_metric_rows(report, reference_text=reference_text)
     if not rows:
         return "<p>No per-condition CER/WER rows are available.</p>"
     body = "\n".join(_auto_experiment_result_row_html(index + 1, row) for index, row in enumerate(rows))
@@ -1115,6 +1115,7 @@ def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
   .asrpp-case-diff-cell {{ min-width: 110px; }}
   .asrpp-case-diff summary {{ cursor: pointer; display: inline-flex; align-items: center; border: 1px solid #71717a; border-radius: 4px; padding: 3px 7px; font-size: 12px; color: #f4f4f5; background: #27272a; }}
   .asrpp-case-diff-body {{ margin-top: 8px; min-width: min(760px, 80vw); max-width: 980px; }}
+  .asrpp-case-diff-subtitle {{ margin: 10px 0 6px; color: #d4d4d8; font-size: 12px; font-weight: 650; }}
         </style>
 <h3>Auto Experiment CER/WER by condition</h3>
 <div class="asrpp-auto-results">
@@ -1176,20 +1177,24 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
     )
 
 
-def _auto_experiment_metric_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _auto_experiment_metric_rows(report: Dict[str, Any], reference_text: Optional[str] = None) -> List[Dict[str, Any]]:
     raw_rows = report.get("rows")
     if not isinstance(raw_rows, list):
         return []
     best_badges = _auto_experiment_best_badges(report)
     rows = [
-        _auto_experiment_metric_row(row, best_badges.get(str(row.get("case_id") or ""), []))
+        _auto_experiment_metric_row(row, best_badges.get(str(row.get("case_id") or ""), []), reference_text)
         for row in raw_rows
         if isinstance(row, dict)
     ]
     return sorted(rows, key=_auto_experiment_metric_sort_key)
 
 
-def _auto_experiment_metric_row(row: Dict[str, Any], best_badges: Optional[List[str]] = None) -> Dict[str, Any]:
+def _auto_experiment_metric_row(
+    row: Dict[str, Any],
+    best_badges: Optional[List[str]] = None,
+    reference_text: Optional[str] = None,
+) -> Dict[str, Any]:
     return {
         "case_id": row.get("case_id") or row.get("condition_id") or "",
         "condition_id": row.get("condition_id") or "",
@@ -1207,13 +1212,13 @@ def _auto_experiment_metric_row(row: Dict[str, Any], best_badges: Optional[List[
         "asr_cache_hit": row.get("asr_cache_hit") if row.get("asr_cache_hit") not in (None, "") else "",
         "rag_context_count": _format_count_cell(row.get("rag_context_count")),
         "search_result_count": _format_count_cell(row.get("search_result_count")),
-        "diff_html": _auto_experiment_case_diff_html(row),
+        "diff_html": _auto_experiment_case_diff_html(row, reference_text),
         "risk": row.get("risk") or "",
         "error": row.get("error") or "",
     }
 
 
-def _auto_experiment_case_diff_html(row: Dict[str, Any]) -> str:
+def _auto_experiment_case_diff_html(row: Dict[str, Any], reference_text: Optional[str] = None) -> str:
     if row.get("error"):
         return ""
     output_dir = str(row.get("output_dir") or "").strip()
@@ -1228,7 +1233,15 @@ def _auto_experiment_case_diff_html(row: Dict[str, Any]) -> str:
         corrected_text = corrected_path.read_text(encoding="utf-8")
     except Exception:
         return ""
-    diff = make_character_diff_html(raw_text, corrected_text, "Raw", "Corrected")
+    if reference_text:
+        diff = (
+            '<div class="asrpp-case-diff-subtitle">Reference CER/WER</div>'
+            + make_diff_html(reference_text, corrected_text, "Reference", "Corrected", show_error_monitor=True)
+            + '<div class="asrpp-case-diff-subtitle">Raw -> Corrected edits</div>'
+            + make_character_diff_html(raw_text, corrected_text, "Raw", "Corrected")
+        )
+    else:
+        diff = make_character_diff_html(raw_text, corrected_text, "Raw", "Corrected")
     case_id = escape(str(row.get("case_id") or row.get("condition_id") or "case"))
     return (
         f'<details class="asrpp-case-diff">'

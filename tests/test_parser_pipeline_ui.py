@@ -180,6 +180,8 @@ class ParserPipelineUiTest(unittest.TestCase):
 
         self.assertIn("asrpp-case-diff", html)
         self.assertIn("<summary>Diff</summary>", html)
+        self.assertIn("Reference CER/WER", html)
+        self.assertIn("CER/WER error monitor", html)
         self.assertIn("Character-level diff", html)
         self.assertIn("asrpp-diff-delete", html)
         self.assertIn("asrpp-diff-insert", html)
@@ -1094,6 +1096,7 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertEqual(metrics["cer_normalized_no_space"], 0.0)
             self.assertEqual(metrics["wer_eojeol"], 0.0)
             self.assertIn("Reference -&gt; Corrected", diff)
+            self.assertIn("CER/WER error monitor", diff)
             self.assertIn("Audio upload cache", status)
 
     def test_ui_caches_large_audio_file_input_by_content(self):

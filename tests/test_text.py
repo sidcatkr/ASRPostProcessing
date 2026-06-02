@@ -33,6 +33,15 @@ class InlineDiffHtmlTest(unittest.TestCase):
         self.assertIn("color: #e5e7eb", html)
         self.assertIn("border-radius: 6px", html)
 
+    def test_make_diff_html_can_show_cer_wer_error_monitor(self):
+        html = make_diff_html("Alpha Term 실행", "Alpha 실행", "Reference", "Corrected", show_error_monitor=True)
+
+        self.assertIn("CER/WER error monitor", html)
+        self.assertIn("Rate part", html)
+        self.assertIn("Error share", html)
+        self.assertIn("Spacing and line-break-only differences are not counted", html)
+        self.assertIn("Term", html)
+
     def test_make_character_diff_html_marks_small_character_changes(self):
         html = make_character_diff_html("앞 문장 불련 코드 뒤 문장", "앞 문장 Boolean 코드 뒤 문장")
 
