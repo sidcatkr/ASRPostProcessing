@@ -783,6 +783,7 @@ def run_from_ui(
         except Exception as exc:
             return "", "", "", {}, [], {}, [], f"Auto experiment failed: {exc}", None, "", query_gpu_status()
         metrics_payload = dict(report.get("analysis", {}))
+        metrics_payload["per_case_cer_wer"] = _auto_experiment_metric_rows(report)
         if not reference:
             metrics_payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
         return (
@@ -966,9 +967,149 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
             lines.append(f"<p>Per-case diff artifact: {escape(str(Path(str(output_dir)) / 'diff.html'))}</p>")
     else:
         lines.append("<p>No comparable row is available yet. Check the summary CSV after the run completes.</p>")
+    lines.append(_auto_experiment_results_table(report))
     lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
     lines.append("</div>")
     return "\n".join(lines)
+
+
+def _auto_experiment_results_table(report: Dict[str, Any]) -> str:
+    rows = _auto_experiment_metric_rows(report)
+    if not rows:
+        return "<p>No per-condition CER/WER rows are available.</p>"
+    body = "\n".join(_auto_experiment_result_row_html(index + 1, row) for index, row in enumerate(rows))
+    return f"""
+<style>
+  .asrpp-auto-results {{ margin-top: 12px; max-height: 520px; overflow: auto; border: 1px solid #3f3f46; border-radius: 6px; }}
+  .asrpp-auto-results table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  .asrpp-auto-results th, .asrpp-auto-results td {{ padding: 7px 8px; border-bottom: 1px solid #3f3f46; vertical-align: top; }}
+  .asrpp-auto-results th {{ position: sticky; top: 0; background: #18181b; text-align: left; z-index: 1; }}
+  .asrpp-auto-results td.metric {{ font-variant-numeric: tabular-nums; white-space: nowrap; }}
+  .asrpp-auto-results td.features {{ min-width: 150px; }}
+  .asrpp-auto-results .failed {{ color: #fca5a5; }}
+</style>
+<h3>Auto Experiment CER/WER by condition</h3>
+<div class="asrpp-auto-results">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Case</th>
+        <th>Condition</th>
+        <th>Enabled</th>
+        <th>CER</th>
+        <th>WER</th>
+        <th>ΔCER vs baseline</th>
+        <th>ΔWER vs baseline</th>
+        <th>Risk/Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {body}
+    </tbody>
+  </table>
+</div>
+"""
+
+
+def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
+    risk_or_error = row.get("error") or row.get("risk") or ""
+    risk_class = ' class="failed"' if row.get("error") else ""
+    return (
+        "<tr>"
+        f'<td class="metric">{index}</td>'
+        f"<td>{escape(str(row.get('case_id') or ''))}</td>"
+        f"<td>{escape(str(row.get('label') or row.get('condition_id') or ''))}</td>"
+        f'<td class="features">{escape(str(row.get("enabled_features") or "baseline"))}</td>'
+        f'<td class="metric">{escape(str(row.get("cer") or "n/a"))}</td>'
+        f'<td class="metric">{escape(str(row.get("wer") or "n/a"))}</td>'
+        f'<td class="metric">{escape(str(row.get("delta_cer_vs_baseline") or "n/a"))}</td>'
+        f'<td class="metric">{escape(str(row.get("delta_wer_vs_baseline") or "n/a"))}</td>'
+        f"<td{risk_class}>{escape(str(risk_or_error))}</td>"
+        "</tr>"
+    )
+
+
+def _auto_experiment_metric_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_rows = report.get("rows")
+    if not isinstance(raw_rows, list):
+        return []
+    rows = [_auto_experiment_metric_row(row) for row in raw_rows if isinstance(row, dict)]
+    return sorted(rows, key=_auto_experiment_metric_sort_key)
+
+
+def _auto_experiment_metric_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "case_id": row.get("case_id") or row.get("condition_id") or "",
+        "condition_id": row.get("condition_id") or "",
+        "label": row.get("label") or row.get("condition_id") or "",
+        "enabled_features": _auto_experiment_enabled_features(row),
+        "cer": _format_metric_cell(row.get("cer_normalized_no_space")),
+        "wer": _format_metric_cell(row.get("wer_eojeol")),
+        "delta_cer_vs_baseline": _format_signed_metric_cell(row.get("delta_cer_vs_baseline")),
+        "delta_wer_vs_baseline": _format_signed_metric_cell(row.get("delta_wer_vs_baseline")),
+        "risk": row.get("risk") or "",
+        "error": row.get("error") or "",
+    }
+
+
+def _auto_experiment_metric_sort_key(row: Dict[str, Any]) -> Tuple[int, float, float, str]:
+    cer = _metric_sort_value(row.get("cer"))
+    wer = _metric_sort_value(row.get("wer"))
+    failed = 1 if row.get("error") else 0
+    return failed, cer, wer, str(row.get("case_id") or "")
+
+
+def _auto_experiment_enabled_features(row: Dict[str, Any]) -> str:
+    features = []
+    feature_map = [
+        ("keyword_bias_enabled", "Keyword"),
+        ("noise_reduction_enabled", "Noise"),
+        ("volume_normalization_enabled", "Volume"),
+        ("llm_postprocess_enabled", "LLM"),
+        ("rag_enabled", "RAG"),
+        ("search_enabled", "Search"),
+    ]
+    for key, label in feature_map:
+        if _truthy(row.get(key)):
+            features.append(label)
+    return " + ".join(features) if features else "Baseline"
+
+
+def _format_metric_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    return f"{number:.4f}"
+
+
+def _format_signed_metric_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    return f"{number:+.4f}"
+
+
+def _metric_sort_value(value: Any) -> float:
+    number = _metric_float_or_none(value)
+    return number if number is not None else 999999.0
+
+
+def _metric_float_or_none(value: Any) -> Optional[float]:
+    try:
+        if value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _metrics_payload(metrics: Dict[str, Any], reference_text: Optional[str]) -> Dict[str, Any]:

@@ -14,6 +14,7 @@ from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
 from asrpostprocessing.ui import (
     NOISE_REDUCTION_MODEL_CHOICES,
     _apply_runtime_saturation,
+    _auto_experiment_diff_html,
     _canonical_noise_reduction_model,
     preview_preprocessed_audio_from_ui,
     run_from_ui,
@@ -40,6 +41,46 @@ class ParserPipelineUiTest(unittest.TestCase):
         result = parse_correction_response("not json", "원문")
         self.assertEqual(result.corrected_text, "원문")
         self.assertEqual(result.risk, "high")
+
+    def test_auto_experiment_html_lists_each_case_cer_wer_readably(self):
+        report = {
+            "summary_csv": "/tmp/auto_experiment_summary.csv",
+            "analysis": {"best_by_cer": {"case_id": "case-b", "cer_normalized_no_space": 0.1, "wer_eojeol": 0.2}},
+            "rows": [
+                {
+                    "case_id": "case-a",
+                    "condition_id": "baseline",
+                    "label": "Baseline",
+                    "cer_normalized_no_space": 0.3,
+                    "wer_eojeol": 0.4,
+                    "delta_cer_vs_baseline": 0.0,
+                    "delta_wer_vs_baseline": 0.0,
+                    "risk": "unchanged",
+                },
+                {
+                    "case_id": "case-b",
+                    "condition_id": "keyword__llm",
+                    "label": "Keyword + LLM",
+                    "keyword_bias_enabled": True,
+                    "llm_postprocess_enabled": True,
+                    "cer_normalized_no_space": 0.1,
+                    "wer_eojeol": 0.2,
+                    "delta_cer_vs_baseline": 0.2,
+                    "delta_wer_vs_baseline": 0.2,
+                    "risk": "low",
+                },
+            ],
+        }
+
+        html = _auto_experiment_diff_html(report, "기준 문장")
+
+        self.assertIn("Auto Experiment CER/WER by condition", html)
+        self.assertIn("Keyword + LLM", html)
+        self.assertIn("Baseline", html)
+        self.assertIn("0.1000", html)
+        self.assertIn("0.2000", html)
+        self.assertIn("+0.2000", html)
+        self.assertLess(html.index("case-b"), html.index("case-a"))
 
     def test_pipeline_mock_end_to_end_and_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
