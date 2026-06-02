@@ -304,7 +304,7 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 
 7. 결과는 정확도, 안정성, 속도 순서로 판정한다.
 
-    1차 기준은 `cer_normalized_no_space`와 `wer_eojeol`이다. 동률에 가까우면 latency, fallback 여부, keyword over-correction, RAG/Search hallucination risk, vLLM preemption 여부를 함께 본다. 최종 후보는 baseline보다 일관되게 좋아야 하며, 특정 샘플에서만 우연히 좋아진 조건은 제외한다.
+    1차 기준은 `cer_normalized_no_space`와 `wer_eojeol`이다. 두 지표 모두 띄어쓰기와 줄바꿈만 다른 경우에는 오류로 세지 않는다. `cer_normalized_no_space`는 공백 제거 CER이고, `wer_eojeol`은 공백 제거 후 script-aware token error rate로 계산한다. 동률에 가까우면 latency, fallback 여부, keyword over-correction, RAG/Search hallucination risk, vLLM preemption 여부를 함께 본다. 최종 후보는 baseline보다 일관되게 좋아야 하며, 특정 샘플에서만 우연히 좋아진 조건은 제외한다.
 
 8. GPU 사용률은 실험 처리량 검증으로만 본다.
 

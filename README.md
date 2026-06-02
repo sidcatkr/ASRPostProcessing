@@ -65,6 +65,7 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - 모델 가중치: 전처리, 후처리에서 적용 가중치를 개별로 세밀하게 조절할 수 있어야 한다. 가중치 정도에 따라 변화하는 정확도를 측정하는 것도 실험 목적의 일부이기 때문이다.
 - RAG 입력: RAG를 사용하기 위한 데이터를 입력 및 업로드할 수 있는 창과 기능을 마련해야 한다.
 - Transcription Viewer: 진행 상황 및 RAW, Processed Transcript를 볼 수 있는 창을 마련해야 한다.
+- CER/WER 측정: reference와 ASR 결과는 NFKC 정규화 후 비교한다. Primary CER인 `cer_normalized_no_space`는 모든 공백과 줄바꿈을 제거하고 계산한다. `wer_eojeol`도 한국어 띄어쓰기 오류로 점수가 왜곡되지 않도록 공백 제거 후 script-aware token error rate로 계산한다. 따라서 줄바꿈, 여러 칸 띄어쓰기, 한국어 어절 분리 차이는 점수에 반영하지 않고, 실제 글자/숫자/영문/기호 내용 차이만 오류로 반영한다. `cer_strict`는 공백까지 포함한 참고용 진단 지표로만 사용한다.
 
 ## L4 x4 서버 운영
 

@@ -53,9 +53,48 @@ def cer(reference: str, hypothesis: str, remove_spaces: bool = False) -> float:
 
 
 def wer_eojeol(reference: str, hypothesis: str) -> float:
-    ref = normalize_text(reference).split()
-    hyp = normalize_text(hypothesis).split()
+    ref = spacing_insensitive_tokens(reference)
+    hyp = spacing_insensitive_tokens(hypothesis)
     return error_rate(ref, hyp)
+
+
+def spacing_insensitive_tokens(text: str) -> List[str]:
+    normalized = normalize_text(text, remove_spaces=True)
+    tokens: List[str] = []
+    buffer: List[str] = []
+    buffer_kind = ""
+
+    def flush() -> None:
+        nonlocal buffer, buffer_kind
+        if buffer:
+            tokens.append("".join(buffer))
+            buffer = []
+            buffer_kind = ""
+
+    for char in normalized:
+        kind = _wer_token_kind(char)
+        if kind == "hangul":
+            flush()
+            tokens.append(char)
+            continue
+        if kind == "alnum":
+            if buffer_kind != kind:
+                flush()
+                buffer_kind = kind
+            buffer.append(char)
+            continue
+        flush()
+        tokens.append(char)
+    flush()
+    return tokens
+
+
+def _wer_token_kind(char: str) -> str:
+    if "\uac00" <= char <= "\ud7a3":
+        return "hangul"
+    if char.isalnum():
+        return "alnum"
+    return "symbol"
 
 
 def character_f1(a: str, b: str) -> float:
