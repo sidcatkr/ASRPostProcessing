@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from pathlib import Path
 from typing import List
 
+from .cache import read_json, write_json_atomic
 from .config import ExperimentConfig
 from .schemas import SearchResult
 
@@ -21,11 +21,16 @@ class CachedSearchProvider:
             return []
         cache_path = self._cache_path(query)
         if cache_path.exists():
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            return [SearchResult(**item) for item in payload.get("results", [])]
+            payload = read_json(cache_path)
+            if isinstance(payload, dict):
+                return [SearchResult(**item) for item in payload.get("results", [])]
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
         results = self._fetch(query)
         payload = {"query": query, "created_at": time.time(), "results": [result.to_dict() for result in results]}
-        cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(cache_path, payload)
         return results
 
     def _fetch(self, query: str) -> List[SearchResult]:
