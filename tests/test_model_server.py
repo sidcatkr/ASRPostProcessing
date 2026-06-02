@@ -1,6 +1,7 @@
-import tempfile
 import os
+import signal
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -384,6 +385,58 @@ class ModelServerTest(unittest.TestCase):
         self.assertEqual(statuses[0].status, "stopped")
         self.assertIn("port released", statuses[0].detail)
         self.assertTrue(any("Waiting for asr port" in message for message in messages))
+
+    def test_stage_replicas_reclaims_stale_endpoint_before_starting_expected_stage(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="mock",
+            post_backend="vllm_openai",
+            model_residency="stage_replicas",
+            stage_server_base_urls=["http://127.0.0.1:18000/v1"],
+            stage_server_gpus=["0"],
+        )
+        spec = _server_specs(config)[0]
+        process = Mock()
+        process.pid = 456
+        process.poll.return_value = None
+        key = f"{spec.name}:{spec.base_url}"
+        try:
+            with patch("asrpostprocessing.model_server._endpoint_ready", return_value=False), patch(
+                "asrpostprocessing.model_server._tcp_port_open", side_effect=[True, False, False]
+            ), patch(
+                "asrpostprocessing.model_server._reclaim_unmanaged_stage_endpoint", return_value=True
+            ) as reclaim, patch(
+                "asrpostprocessing.model_server._start_process", return_value=process
+            ) as start_process, patch(
+                "asrpostprocessing.model_server._wait_until_ready", return_value=None
+            ):
+                statuses = ensure_model_servers(config, names=["post_stage_0"])
+        finally:
+            _PROCESSES.pop(key, None)
+
+        reclaim.assert_called_once()
+        start_process.assert_called_once()
+        self.assertEqual(statuses[0].name, "post_stage_0")
+        self.assertEqual(statuses[0].status, "started")
+
+    def test_stage_replicas_stop_reclaims_unmanaged_server_after_app_restart(self):
+        config = ExperimentConfig(
+            auto_start_model_servers=True,
+            asr_backend="vllm_chat",
+            post_backend="mock",
+            model_residency="stage_replicas",
+            stage_server_base_urls=["http://127.0.0.1:18000/v1"],
+            stage_server_gpus=["0"],
+        )
+        messages = []
+        with patch("asrpostprocessing.model_server._tcp_port_open", side_effect=[True, False]), patch(
+            "asrpostprocessing.model_server._safe_stage_server_pids", return_value=[123]
+        ), patch("asrpostprocessing.model_server._signal_pid_group") as signal_pid:
+            statuses = stop_model_servers(config, status_callback=messages.append, names=["asr_stage_0"])
+
+        self.assertEqual(statuses[0].status, "stopped_unmanaged")
+        signal_pid.assert_called_once_with(123, signal.SIGTERM)
+        self.assertTrue(any("Stopping unmanaged asr_stage_0" in message for message in messages))
 
 
 if __name__ == "__main__":

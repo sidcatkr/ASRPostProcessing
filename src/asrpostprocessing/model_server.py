@@ -124,15 +124,19 @@ def stop_model_servers(
         for spec in specs:
             process = _PROCESSES.pop(_process_key(spec), None)
             if process is None:
-                statuses.append(
-                    ModelServerStatus(
-                        spec.name,
-                        spec.base_url,
-                        "not_managed",
-                        "no auto-started process is registered in this app process",
-                        log_path=spec.log_path,
+                unmanaged = _stop_unmanaged_stage_endpoint(spec, float(config.server_shutdown_timeout_s), status_callback)
+                if unmanaged is not None:
+                    statuses.append(unmanaged)
+                else:
+                    statuses.append(
+                        ModelServerStatus(
+                            spec.name,
+                            spec.base_url,
+                            "not_managed",
+                            "no auto-started process is registered in this app process",
+                            log_path=spec.log_path,
+                        )
                     )
-                )
             else:
                 pending.append((spec, process))
     for spec, process in pending:
@@ -364,12 +368,26 @@ def _prepare_server(spec: ModelServerSpec, status_callback: Optional[StatusCallb
         return _PendingServer(spec, process, "ready", "managed process became ready")
 
     if _tcp_port_open(spec.base_url):
-        detail = _open_port_detail(spec)
-        raise RuntimeError(
-            f"{spec.name} model server port {spec.port} is already open, but {spec.base_url}/models is not serving "
-            f"the expected model {spec.model!r}. {detail} Change the base URL port in the UI/config or stop "
-            "the process that is using the port."
-        )
+        if _reclaim_unmanaged_stage_endpoint(spec, status_callback):
+            if _endpoint_ready(spec.base_url, spec.model):
+                return ModelServerStatus(
+                    spec.name,
+                    spec.base_url,
+                    "ready",
+                    "endpoint became ready after reclaiming stale stage process",
+                    log_path=spec.log_path,
+                )
+            if not _tcp_port_open(spec.base_url):
+                _emit(status_callback, f"{spec.name} reclaimed stale stage endpoint on port {spec.port}; starting expected model.")
+            else:
+                _emit(status_callback, f"{spec.name} reclaimed stale stage endpoint, but port {spec.port} is still open.")
+        if _tcp_port_open(spec.base_url):
+            detail = _open_port_detail(spec)
+            raise RuntimeError(
+                f"{spec.name} model server port {spec.port} is already open, but {spec.base_url}/models is not serving "
+                f"the expected model {spec.model!r}. {detail} Change the base URL port in the UI/config or stop "
+                "the process that is using the port."
+            )
 
     runtime_options = _runtime_options_for_spec(spec)
     if runtime_options.detail:
@@ -894,6 +912,240 @@ def _wait_until_port_closed(
         if not _tcp_port_open(spec.base_url):
             return True
     return not _tcp_port_open(spec.base_url)
+
+
+def _reclaim_unmanaged_stage_endpoint(spec: ModelServerSpec, status_callback: Optional[StatusCallback]) -> bool:
+    if not _stage_replica_spec(spec):
+        return False
+    payload, _error = _fetch_models_payload(spec.base_url)
+    if payload is None or _models_payload_contains(payload, spec.model):
+        return False
+    stale_models = _models_payload_model_ids(payload)
+    pids = _safe_stage_server_pids(spec)
+    if not pids:
+        return False
+    model_detail = f" serving {', '.join(stale_models)}" if stale_models else ""
+    _emit(
+        status_callback,
+        f"{spec.name} found stale stage process on port {spec.port}{model_detail}; reclaiming same-user process(es) {pids}.",
+    )
+    return _terminate_unmanaged_stage_pids(spec, pids, status_callback)
+
+
+def _stop_unmanaged_stage_endpoint(
+    spec: ModelServerSpec,
+    timeout_s: float,
+    status_callback: Optional[StatusCallback],
+) -> Optional[ModelServerStatus]:
+    if not _stage_replica_spec(spec) or not _tcp_port_open(spec.base_url):
+        return None
+    pids = _safe_stage_server_pids(spec)
+    if not pids:
+        return None
+    _emit(status_callback, f"Stopping unmanaged {spec.name} stage server process(es) {pids} on port {spec.port}")
+    stopped = _terminate_unmanaged_stage_pids(spec, pids, status_callback, timeout_s=timeout_s)
+    return ModelServerStatus(
+        spec.name,
+        spec.base_url,
+        "stopped_unmanaged" if stopped else "unmanaged_port_open",
+        (
+            "unmanaged same-user stage server terminated and port released"
+            if stopped
+            else f"unmanaged same-user stage server was signaled, but port {spec.port} is still open"
+        ),
+        pid=pids[0] if pids else None,
+        log_path=spec.log_path,
+    )
+
+
+def _stage_replica_spec(spec: ModelServerSpec) -> bool:
+    return spec.stage in {"asr", "post"} and re.match(r"^(?:asr|post)_stage_\d+$", spec.name or "") is not None
+
+
+def _safe_stage_server_pids(spec: ModelServerSpec) -> List[int]:
+    pids = _listening_pids_for_port(spec.port)
+    safe: List[int] = []
+    for pid in pids:
+        if _pid_owned_by_current_user(pid) and _stage_server_cmdline(_cmdline_for_pid(pid)):
+            safe.append(pid)
+    return safe
+
+
+def _terminate_unmanaged_stage_pids(
+    spec: ModelServerSpec,
+    pids: List[int],
+    status_callback: Optional[StatusCallback],
+    timeout_s: float = 15.0,
+) -> bool:
+    for pid in pids:
+        _signal_pid_group(pid, signal.SIGTERM)
+    if _wait_until_port_closed(spec, timeout_s, status_callback):
+        return True
+    for pid in pids:
+        if _pid_exists(pid):
+            _signal_pid_group(pid, signal.SIGKILL)
+    return _wait_until_port_closed(spec, min(timeout_s, 10.0), status_callback)
+
+
+def _listening_pids_for_port(port: int) -> List[int]:
+    pids: List[int] = []
+    for pid in _listening_pids_from_ss(port):
+        if pid not in pids:
+            pids.append(pid)
+    if pids:
+        return pids
+    for pid in _listening_pids_from_lsof(port):
+        if pid not in pids:
+            pids.append(pid)
+    if pids:
+        return pids
+    for pid in _listening_pids_from_fuser(port):
+        if pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _listening_pids_from_ss(port: int) -> List[int]:
+    executable = shutil.which("ss")
+    if not executable:
+        return []
+    try:
+        result = subprocess.run([executable, "-ltnp"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    pids: List[int] = []
+    port_pattern = re.compile(rf":{int(port)}(?:\s|$)")
+    for line in result.stdout.splitlines():
+        if not port_pattern.search(line):
+            continue
+        for match in re.findall(r"pid=(\d+)", line):
+            pid = int(match)
+            if pid not in pids:
+                pids.append(pid)
+    return pids
+
+
+def _listening_pids_from_lsof(port: int) -> List[int]:
+    executable = shutil.which("lsof")
+    if not executable:
+        return []
+    try:
+        result = subprocess.run(
+            [executable, "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return _int_lines(result.stdout)
+
+
+def _listening_pids_from_fuser(port: int) -> List[int]:
+    executable = shutil.which("fuser")
+    if not executable:
+        return []
+    try:
+        result = subprocess.run(
+            [executable, "-n", "tcp", str(int(port))],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return _int_tokens(result.stdout + "\n" + result.stderr)
+
+
+def _int_lines(value: str) -> List[int]:
+    pids: List[int] = []
+    for line in value.splitlines():
+        line = line.strip()
+        if not line.isdigit():
+            continue
+        pid = int(line)
+        if pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _int_tokens(value: str) -> List[int]:
+    pids: List[int] = []
+    for token in re.findall(r"\b\d+\b", value or ""):
+        pid = int(token)
+        if pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _pid_owned_by_current_user(pid: int) -> bool:
+    try:
+        return os.stat(f"/proc/{int(pid)}").st_uid == os.geteuid()
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "uid=", "-p", str(int(pid))], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        return int(result.stdout.strip()) == os.geteuid()
+    except ValueError:
+        return False
+
+
+def _cmdline_for_pid(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+        if raw:
+            return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "command=", "-p", str(int(pid))], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _stage_server_cmdline(command: str) -> bool:
+    normalized = f" {command or ''} "
+    if " asrpostprocessing.qwen_asr_serve_compat " in normalized:
+        return True
+    if re.search(r"(?:^|[/\s])vllm(?:\s|$)", command or "") and " serve " in normalized:
+        return True
+    if " vllm.entrypoints.openai.api_server " in normalized:
+        return True
+    return False
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _signal_pid_group(pid: int, sig: int) -> None:
+    try:
+        os.killpg(os.getpgid(int(pid)), sig)
+        return
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        os.kill(int(pid), sig)
+    except (OSError, ProcessLookupError):
+        pass
 
 
 def _fetch_models_payload(base_url: str) -> Tuple[Optional[object], str]:
