@@ -60,13 +60,13 @@ server_gpu_memory_utilization: auto
 server_gpu_memory_utilization_max: 0.90
 server_gpu_memory_reserved_mb: 256
 asr_server_command: >-
-  {python} -m asrpostprocessing.qwen_asr_serve_compat {model}
+  exec {python} -m asrpostprocessing.qwen_asr_serve_compat {model}
   --host {host}
   --port {port}
   --gpu-memory-utilization {gpu_memory_utilization}
   --max-model-len 65536
 post_server_command: >-
-  {vllm} serve {model}
+  exec {vllm} serve {model}
   --host {host}
   --port {port}
   --dtype bfloat16
