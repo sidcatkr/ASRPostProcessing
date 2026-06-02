@@ -29,6 +29,9 @@ class InlineDiffHtmlTest(unittest.TestCase):
         self.assertIn("Reference", html)
         self.assertIn("Corrected", html)
         self.assertIn("No character changes", html)
+        self.assertIn("background: #111318", html)
+        self.assertIn("color: #e5e7eb", html)
+        self.assertIn("border-radius: 6px", html)
 
     def test_make_character_diff_html_marks_small_character_changes(self):
         html = make_character_diff_html("앞 문장 불련 코드 뒤 문장", "앞 문장 Boolean 코드 뒤 문장")

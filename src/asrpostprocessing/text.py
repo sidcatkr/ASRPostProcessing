@@ -149,10 +149,10 @@ def _make_diff_html(
     .asrpp-inline-diff {{
       box-sizing: border-box;
       width: 100%;
-      border: 1px solid #d8dee4;
-      border-radius: 8px;
-      background: #ffffff;
-      color: #1f2328;
+      border: 1px solid #3f4652;
+      border-radius: 6px;
+      background: #111318;
+      color: #e5e7eb;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }}
@@ -161,9 +161,10 @@ def _make_diff_html(
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
-      padding: 8px 10px;
-      border-bottom: 1px solid #d8dee4;
-      background: #f6f8fa;
+      padding: 10px 12px;
+      border-bottom: 1px solid #333946;
+      background: #181b21;
+      color: #d1d5db;
       font-size: 12px;
       line-height: 1.35;
     }}
@@ -171,48 +172,53 @@ def _make_diff_html(
       display: inline-flex;
       align-items: center;
       min-height: 22px;
-      padding: 2px 7px;
-      border: 1px solid #d0d7de;
-      border-radius: 999px;
-      background: #ffffff;
+      padding: 2px 8px;
+      border: 1px solid #4b5563;
+      border-radius: 6px;
+      background: #22262e;
+      color: #e5e7eb;
+      font-weight: 500;
       white-space: nowrap;
     }}
-    .asrpp-diff-pill.insert {{ border-color: #8fd19e; background: #dafbe1; }}
-    .asrpp-diff-pill.delete {{ border-color: #ffb3ad; background: #ffebe9; }}
-    .asrpp-diff-pill.replace {{ border-color: #d4a72c; background: #fff8c5; }}
+    .asrpp-diff-pill.insert {{ border-color: #2f8f46; background: #14351f; color: #b7f5c8; }}
+    .asrpp-diff-pill.delete {{ border-color: #9f3a38; background: #3a1718; color: #ffb4ad; }}
+    .asrpp-diff-pill.replace {{ border-color: #8a6a22; background: #33280d; color: #f7d774; }}
     .asrpp-diff-text {{
       max-height: 62vh;
       overflow: auto;
-      padding: 14px 16px;
+      padding: 16px 18px;
+      background: #111318;
+      color: #e5e7eb;
       font-size: 15px;
-      line-height: 1.75;
+      line-height: 1.85;
       white-space: pre-wrap;
       word-break: break-word;
+      scrollbar-color: #4b5563 #111318;
     }}
     .asrpp-diff-delete,
     .asrpp-diff-insert {{
       border-radius: 3px;
-      padding: 0 2px;
+      padding: 0 3px;
       text-decoration-thickness: 1px;
       text-underline-offset: 2px;
     }}
     .asrpp-diff-delete {{
-      background: #ffebe9;
-      color: #82071e;
+      background: rgba(248, 81, 73, 0.22);
+      color: #ffb4ad;
       text-decoration: line-through;
     }}
     .asrpp-diff-insert {{
-      background: #dafbe1;
-      color: #116329;
+      background: rgba(63, 185, 80, 0.22);
+      color: #b7f5c8;
       text-decoration: none;
     }}
     .asrpp-diff-replace {{
       border-radius: 4px;
-      background: #fff8c5;
+      background: rgba(210, 153, 34, 0.20);
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }}
-    .asrpp-diff-empty {{ color: #57606a; }}
+    .asrpp-diff-empty {{ color: #9ca3af; }}
   </style>
   <div class="asrpp-diff-bar">
     <span class="asrpp-diff-pill">{escaped_reference_label} {len(reference):,} chars</span>
