@@ -1,18 +1,1 @@
-Qwen3-ASR 1.7B
-Qwen3.5 9B
-GPU 0번
-GPU 3번
-DeepFilterNet2
-RNNoise
-BS-RoFormer
-씨에스지피유투
-csgpu2
-하드코딩 금지
-자동 실험
-청크 병합
-알에이지 검색
-diff
-CER
-WER
-18000번 포트
-7860번 포트
+Qwen3-ASR 1.7B, Qwen3.5 9B, GPU 0번, GPU 3번, DeepFilterNet2, RNNoise, BS-RoFormer, 씨에스지피유투, csgpu2, 하드코딩 금지, 자동 실험, 청크 병합, 알에이지 검색, diff, CER, WER, 18000번 포트, 7860번 포트

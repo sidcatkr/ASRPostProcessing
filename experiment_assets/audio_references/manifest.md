@@ -12,4 +12,4 @@ ElevenLabs로 생성한 reference audio와 같은 주제의 transcript, RAG cont
 | 작문 | `audio/essay.mp3` | `references/essay.txt` | `rag/essay.md` | `keywords/essay.txt` |
 | 장문 혼합 | `audio/long_mixed.mp3` | `references/long_mixed.txt` | `rag/long_mixed.md` | `keywords/long_mixed.txt` |
 
-실험 시 같은 row의 audio, reference, RAG, keywords를 함께 사용한다. 전체 통합 RAG와 keyword 목록은 상위 `experiment_assets/general_rag_context.md`, `experiment_assets/general_keyword_bias_terms.txt`에 남겨 둔다.
+실험 시 같은 row의 audio, reference, RAG, keywords를 함께 사용한다. Keyword Bias terms 파일은 comma-separated 한 줄 형식이다. 전체 통합 RAG와 keyword 목록은 상위 `experiment_assets/general_rag_context.md`, `experiment_assets/general_keyword_bias_terms.txt`에 남겨 둔다.

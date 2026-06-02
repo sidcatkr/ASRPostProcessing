@@ -109,10 +109,10 @@ RAG와 Keyword Bias 준비:
 - 주제별 audio: `experiment_assets/audio_references/audio/*.mp3`
 - 주제별 reference transcript: `experiment_assets/audio_references/references/*.txt`
 - 주제별 RAG 파일: `experiment_assets/audio_references/rag/*.md`
-- 주제별 Keyword Bias 목록: `experiment_assets/audio_references/keywords/*.txt`
+- 주제별 Keyword Bias 목록: `experiment_assets/audio_references/keywords/*.txt` comma-separated
 - RAG 파일: `experiment_assets/general_rag_context.md`
-- Keyword Bias 목록: `experiment_assets/general_keyword_bias_terms.txt`
-- 사용 방법: 한 오디오를 실험할 때는 manifest에서 같은 row의 audio, reference, RAG, keyword 파일을 함께 사용한다. 여러 주제를 섞어 긴 실험을 할 때만 통합 RAG와 통합 keyword 목록을 사용한다. RAG가 켜진 조건과 꺼진 조건은 같은 reference 기준으로 함께 비교한다.
+- Keyword Bias 목록: `experiment_assets/general_keyword_bias_terms.txt` comma-separated
+- 사용 방법: 한 오디오를 실험할 때는 manifest에서 같은 row의 audio, reference, RAG, keyword 파일을 함께 사용한다. Keyword Bias 입력에는 comma-separated terms를 그대로 붙여 넣는다. 여러 주제를 섞어 긴 실험을 할 때만 통합 RAG와 통합 keyword 목록을 사용한다. RAG가 켜진 조건과 꺼진 조건은 같은 reference 기준으로 함께 비교한다.
 
 검증 포인트는 다음과 같다.
 
