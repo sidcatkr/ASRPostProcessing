@@ -105,9 +105,14 @@ The Quiet Harbor라는 제목은
 
 RAG와 Keyword Bias 준비:
 
+- ElevenLabs reference audio manifest: `experiment_assets/audio_references/manifest.md`
+- 주제별 audio: `experiment_assets/audio_references/audio/*.mp3`
+- 주제별 reference transcript: `experiment_assets/audio_references/references/*.txt`
+- 주제별 RAG 파일: `experiment_assets/audio_references/rag/*.md`
+- 주제별 Keyword Bias 목록: `experiment_assets/audio_references/keywords/*.txt`
 - RAG 파일: `experiment_assets/general_rag_context.md`
 - Keyword Bias 목록: `experiment_assets/general_keyword_bias_terms.txt`
-- 사용 방법: RAG를 켠 조건에서는 RAG 파일을 업로드하거나 같은 내용을 RAG text에 붙여 넣는다. Keyword Bias를 켠 조건에서는 keyword 파일의 각 줄을 Keywords 입력창에 쉼표 또는 줄바꿈으로 넣는다. 고난도 RAG challenge는 RAG 없이 실행한 조건과 RAG를 켠 조건을 반드시 함께 비교한다.
+- 사용 방법: 한 오디오를 실험할 때는 manifest에서 같은 row의 audio, reference, RAG, keyword 파일을 함께 사용한다. 여러 주제를 섞어 긴 실험을 할 때만 통합 RAG와 통합 keyword 목록을 사용한다. RAG가 켜진 조건과 꺼진 조건은 같은 reference 기준으로 함께 비교한다.
 
 검증 포인트는 다음과 같다.
 
