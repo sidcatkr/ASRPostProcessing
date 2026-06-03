@@ -25,6 +25,7 @@ from .logging import make_run_id
 from .model_options import auto_experiment_noise_models, auto_experiment_rag_embedding_models
 from .model_server import ensure_model_servers, stop_model_servers
 from .pipeline import PipelineRunner
+from .preprocess import preprocess_audio
 
 StatusCallback = Callable[[str], None]
 _ACTIVE_ROW_RECORDER: Optional["_AutoExperimentRowRecorder"] = None
@@ -261,6 +262,8 @@ def _run_stage_replicas_auto_experiment(
     worker_config = copy.deepcopy(managed_config)
     worker_config.auto_start_model_servers = False
 
+    _prime_preprocess_cache_before_stage(audio_path, worker_config, cases, status_callback)
+
     _emit(status_callback, "Starting ASR replicas on scalable stage GPUs.")
     asr_active_names = _start_stage_replicas_scalable(
         managed_config,
@@ -380,6 +383,102 @@ def _restrict_stage_worker_pool(config: ExperimentConfig, active_pairs: List[Tup
         config.asr_base_url = active_pairs[0][0]
         config.post_base_url = active_pairs[0][0]
         config.preprocess_gpu = active_pairs[0][1]
+
+
+def _prime_preprocess_cache_before_stage(
+    audio_path: str,
+    base_config: ExperimentConfig,
+    cases: List[ExperimentCase],
+    status_callback: Optional[StatusCallback],
+) -> None:
+    jobs = _preprocess_prime_jobs(base_config, cases)
+    if not jobs:
+        return
+    worker_count = min(len(jobs), max(1, len(_preprocess_gpus(base_config)) or _effective_worker_count(base_config)))
+    _emit(
+        status_callback,
+        f"Priming preprocess cache for {len(jobs)} unique audio preprocessing plan(s) "
+        f"with {worker_count} worker(s) before model servers reserve VRAM.",
+    )
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(_prime_one_preprocess_plan, audio_path, config, case, key): (config, case, key)
+            for key, config, case in jobs
+        }
+        for future in as_completed(futures):
+            config, case, key = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                _emit(status_callback, f"Preprocess cache priming failed for {case.case_id}: {exc}")
+                raise
+            gpu = str(config.preprocess_gpu or "").strip()
+            gpu_detail = f" on preprocess GPU {gpu}" if gpu else ""
+            _emit(status_callback, f"Preprocess cache ready for {case.condition.asr_group_key}{gpu_detail}.")
+
+
+def _preprocess_prime_jobs(
+    base_config: ExperimentConfig,
+    cases: List[ExperimentCase],
+) -> List[Tuple[str, ExperimentConfig, ExperimentCase]]:
+    jobs: List[Tuple[str, ExperimentConfig, ExperimentCase]] = []
+    seen: set[str] = set()
+    gpu_preprocess_index = 0
+    for index, case in enumerate(cases):
+        candidate_config = _config_for_case(base_config, case, index, preprocess_index=0)
+        if not _has_preprocess_plan(candidate_config):
+            continue
+        key = _preprocess_prime_key(candidate_config)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _case_uses_gpu_preprocess(base_config, case):
+            config = _config_for_case(base_config, case, index, preprocess_index=gpu_preprocess_index)
+            gpu_preprocess_index += 1
+        else:
+            config = candidate_config
+        jobs.append((key, config, case))
+    return jobs
+
+
+def _prime_one_preprocess_plan(
+    audio_path: str,
+    config: ExperimentConfig,
+    case: ExperimentCase,
+    key: str,
+) -> None:
+    result = preprocess_audio(audio_path, config)
+    if not result.applied:
+        warning = "; ".join(str(item) for item in (result.warnings or []) if str(item).strip())
+        detail = warning or "preprocessing produced no output"
+        raise RuntimeError(f"{case.case_id} ({key}) {detail}")
+
+
+def _has_preprocess_plan(config: ExperimentConfig) -> bool:
+    noise_model = str(config.noise_reduction_model or "none").strip().lower()
+    legacy_model = str(config.preprocess_model or "none").strip().lower()
+    return (
+        (bool(config.enable_noise_reduction) and noise_model != "none")
+        or bool(config.enable_volume_normalization)
+        or (bool(config.enable_preprocess) and legacy_model != "none")
+    )
+
+
+def _preprocess_prime_key(config: ExperimentConfig) -> str:
+    return stable_json_hash(
+        {
+            "enable_preprocess": bool(config.enable_preprocess),
+            "preprocess_model": config.preprocess_model,
+            "preprocess_strength": float(config.preprocess_strength),
+            "enable_noise_reduction": bool(config.enable_noise_reduction),
+            "noise_reduction_model": config.noise_reduction_model,
+            "noise_reduction_command": config.noise_reduction_command,
+            "noise_reduction_strength": float(config.noise_reduction_strength),
+            "enable_volume_normalization": bool(config.enable_volume_normalization),
+            "volume_normalization_strength": float(config.volume_normalization_strength),
+            "volume_target_dbfs": float(config.volume_target_dbfs),
+        }
+    )
 
 
 def _prime_asr_groups(

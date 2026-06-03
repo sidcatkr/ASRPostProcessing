@@ -16,6 +16,7 @@ from asrpostprocessing.auto_experiment import (
 from asrpostprocessing.config import ExperimentConfig, load_config
 from asrpostprocessing.experiment_matrix import generate_auto_conditions
 from asrpostprocessing.model_options import AUTO_EXPERIMENT_NOISE_MODELS, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS
+from asrpostprocessing.preprocess import PreprocessResult
 from asrpostprocessing.schemas import SearchResult
 
 
@@ -480,6 +481,92 @@ class AutoExperimentTest(unittest.TestCase):
 
             self.assertEqual(len(seen_preprocess_gpus), 4)
             self.assertEqual(set(seen_preprocess_gpus), {"0", "1", "2", "3"})
+
+    def test_stage_replicas_primes_preprocess_cache_before_asr_servers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                asr_backend="vllm_chat",
+                post_backend="mock",
+                model_residency="stage_replicas",
+                auto_start_model_servers=True,
+                output_dir=str(Path(tmp) / "outputs"),
+                runs_dir=str(Path(tmp) / "runs"),
+                enable_keyword_bias=True,
+                enable_noise_reduction=True,
+                noise_reduction_model="deepfilternet2",
+                enable_volume_normalization=True,
+                enable_llm_postprocess=False,
+                stage_server_base_urls=[
+                    "http://stage-0/v1",
+                    "http://stage-1/v1",
+                ],
+                stage_server_gpus=["0", "1"],
+                preprocess_gpus=["0", "1"],
+            )
+            events = []
+
+            def fake_preprocess(audio_path, preprocess_config):
+                events.append(
+                    (
+                        "preprocess",
+                        preprocess_config.preprocess_gpu,
+                        preprocess_config.enable_noise_reduction,
+                        preprocess_config.enable_volume_normalization,
+                    )
+                )
+                return PreprocessResult(audio_path=audio_path, applied=True)
+
+            def fake_ensure(config, status_callback=None, names=None):
+                events.append(("ensure", tuple(names or ())))
+                return []
+
+            def fake_stop(config, status_callback=None, names=None):
+                events.append(("stop", tuple(names or ())))
+                return []
+
+            def fake_prime_asr(audio_path, base_config, cases, reference_text, rag_inline_text, status_callback):
+                events.append(("prime_asr", tuple(base_config.stage_server_base_urls)))
+
+            def fake_run(audio_path, base_config, indexed_cases, reference_text, rag_inline_text, status_callback):
+                return [
+                    {
+                        "case_id": case.case_id,
+                        "condition_id": case.condition.condition_id,
+                        "label": case.condition.label,
+                        "group": case.condition.group,
+                        "asr_model": case.asr_model,
+                        "post_model": case.post_model,
+                        "asr_base_url": base_config.stage_server_base_urls[0],
+                        "post_base_url": base_config.stage_server_base_urls[0],
+                        "preprocess_gpu": base_config.preprocess_gpus[0],
+                        "model_residency": base_config.model_residency,
+                        "planned_asr_cache_group_key": case.condition.asr_group_key,
+                        "asr_cache_key": case.condition.asr_group_key,
+                        "llm_postprocess_enabled": case.condition.enable_llm_postprocess,
+                        "cer_normalized_no_space": 0.0,
+                        "wer_eojeol": 0.0,
+                        "error": "",
+                    }
+                    for _, case in indexed_cases
+                ]
+
+            with patch("asrpostprocessing.auto_experiment.preprocess_audio", side_effect=fake_preprocess), patch(
+                "asrpostprocessing.auto_experiment.ensure_model_servers", side_effect=fake_ensure
+            ), patch("asrpostprocessing.auto_experiment.stop_model_servers", side_effect=fake_stop), patch(
+                "asrpostprocessing.auto_experiment._prime_asr_groups", side_effect=fake_prime_asr
+            ), patch("asrpostprocessing.auto_experiment._run_conditions_parallel", side_effect=fake_run):
+                report = run_auto_experiment(str(audio), config, reference_text="테스트 전사 문장입니다.", mode="full_valid")
+
+            preprocess_events = [event for event in events if event[0] == "preprocess"]
+            first_preprocess = next(index for index, event in enumerate(events) if event[0] == "preprocess")
+            first_ensure = next(index for index, event in enumerate(events) if event[0] == "ensure")
+            self.assertLess(first_preprocess, first_ensure)
+            self.assertEqual(len(preprocess_events), 3)
+            self.assertIn(("preprocess", "0", True, False), preprocess_events)
+            self.assertIn(("preprocess", "1", True, True), preprocess_events)
+            self.assertEqual(report["analysis"]["num_failed_rows"], 0)
 
     def test_stage_replicas_route_cases_across_all_stage_gpus(self):
         with tempfile.TemporaryDirectory() as tmp:
