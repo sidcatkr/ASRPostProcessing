@@ -39,3 +39,27 @@ def _install_torchaudio_info_compat() -> None:
 
 
 _install_torchaudio_info_compat()
+
+
+def _force_single_process_dataloader() -> None:
+    try:
+        import torch.utils.data as torch_data  # type: ignore
+    except Exception:
+        return
+
+    original = torch_data.DataLoader
+    if getattr(original, "_asrpp_deepfilter_compat", False):
+        return
+
+    class DataLoader(original):  # type: ignore[misc, valid-type]
+        _asrpp_deepfilter_compat = True
+
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN204
+            kwargs["num_workers"] = 0
+            kwargs.pop("prefetch_factor", None)
+            super().__init__(*args, **kwargs)
+
+    torch_data.DataLoader = DataLoader
+
+
+_force_single_process_dataloader()
