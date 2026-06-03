@@ -1007,7 +1007,13 @@ def _prepend_diff_export_panel(body_html: str, export_path: Path) -> str:
 
 
 def _gradio_file_href(path: Path) -> str:
-    return "/file=" + quote(str(path.resolve()))
+    resolved = path.resolve()
+    url = "/gradio_api/file=" + quote(str(resolved), safe="/")
+    try:
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}v={resolved.stat().st_mtime_ns}"
+    except OSError:
+        return url
 
 
 def _diff_section(title: str, body: str) -> str:
@@ -1031,9 +1037,9 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
     if isinstance(best, dict) and best:
         lines.append(
             "<p>"
-            f"Best/comparable case: {escape(str(best.get('case_id') or best.get('condition_id') or ''))} "
-            f"CER={escape(str(best.get('cer_normalized_no_space', '')))} "
-            f"WER={escape(str(best.get('wer_eojeol', '')))}"
+            f"Best/comparable case: {_auto_experiment_case_tags_html(best)} "
+            f"CER={escape(_format_rate_cell(best.get('cer_normalized_no_space')))} "
+            f"WER={escape(_format_rate_cell(best.get('wer_eojeol')))}"
             "</p>"
         )
         output_dir = best.get("output_dir")
@@ -1089,9 +1095,9 @@ def _auto_experiment_audit_html(report: Dict[str, Any]) -> str:
     <div><span>Rows</span><strong>{escape(str(audit.get("row_count", "")))}/{escape(str(audit.get("expected_case_count", "")))}</strong></div>
     <div><span>Failed</span><strong>{escape(str(audit.get("failed_count", "")))}</strong></div>
     <div><span>CER/WER Rows</span><strong>{escape(str(audit.get("cer_wer_row_count", "")))}</strong></div>
-    <div><span>Baseline CER</span><strong>{escape(_format_metric_cell(audit.get("baseline_cer_normalized_no_space")))}</strong></div>
-    <div><span>Best CER Δ</span><strong>{escape(_format_signed_metric_cell(audit.get("best_cer_improvement_vs_baseline")))}</strong></div>
-    <div><span>Best WER Δ</span><strong>{escape(_format_signed_metric_cell(audit.get("best_wer_improvement_vs_baseline")))}</strong></div>
+    <div><span>Baseline CER</span><strong>{escape(_format_rate_cell(audit.get("baseline_cer_normalized_no_space")))}</strong></div>
+    <div><span>Best CER Δ</span><strong>{escape(_format_signed_rate_cell(audit.get("best_cer_improvement_vs_baseline")))}</strong></div>
+    <div><span>Best WER Δ</span><strong>{escape(_format_signed_rate_cell(audit.get("best_wer_improvement_vs_baseline")))}</strong></div>
     <div><span>ASR Cache Groups</span><strong>{escape(str(audit.get("observed_asr_cache_group_count", "")))}/{escape(str(audit.get("expected_asr_cache_group_count", "")))}</strong></div>
     <div><span>Actual ASR Cache Keys</span><strong>{escape(str(audit.get("actual_asr_cache_key_count", "")))}</strong></div>
     <div><span>Peak GPU</span><strong>{escape(_format_percent_metric_cell(audit.get("peak_gpu_utilization_percent")))}</strong></div>
@@ -1118,11 +1124,11 @@ def _auto_experiment_best_methods_html(report: Dict[str, Any]) -> str:
         "<tr>"
         f"<td><span class=\"asrpp-best-badge\">{escape(str(row.get('badge') or 'Best'))}</span></td>"
         f"<td>{escape(str(row.get('method') or ''))}</td>"
-        f"<td>{escape(str(row.get('case_id') or ''))}</td>"
-        f"<td class=\"metric\">{escape(_format_metric_cell(row.get('cer_normalized_no_space')))}</td>"
-        f"<td class=\"metric\">{escape(_format_metric_cell(row.get('wer_eojeol')))}</td>"
-        f"<td class=\"metric\">{escape(_format_signed_metric_cell(row.get('delta_cer_vs_baseline')))}</td>"
-        f"<td class=\"metric\">{escape(_format_signed_metric_cell(row.get('delta_wer_vs_baseline')))}</td>"
+        f'<td>{_auto_experiment_case_tags_html(row)}</td>'
+        f"<td class=\"metric\">{escape(_format_rate_cell(row.get('cer_normalized_no_space')))}</td>"
+        f"<td class=\"metric\">{escape(_format_rate_cell(row.get('wer_eojeol')))}</td>"
+        f"<td class=\"metric\">{escape(_format_signed_rate_cell(row.get('delta_cer_vs_baseline')))}</td>"
+        f"<td class=\"metric\">{escape(_format_signed_rate_cell(row.get('delta_wer_vs_baseline')))}</td>"
         f"<td class=\"metric\">{escape(_format_count_cell(row.get('rag_context_count')))}</td>"
         f"<td class=\"metric\">{escape(_format_count_cell(row.get('search_result_count')))}</td>"
         "</tr>"
@@ -1166,6 +1172,11 @@ def _auto_experiment_results_table(report: Dict[str, Any], reference_text: Optio
   .asrpp-auto-results th {{ position: sticky; top: 0; background: #18181b; text-align: left; z-index: 1; }}
   .asrpp-auto-results td.metric {{ font-variant-numeric: tabular-nums; white-space: nowrap; }}
   .asrpp-auto-results td.features {{ min-width: 150px; }}
+  .asrpp-auto-case-tags {{ display: flex; flex-wrap: wrap; gap: 4px; min-width: 132px; }}
+  .asrpp-auto-case-tag {{ display: inline-flex; align-items: center; border: 1px solid #71717a; border-radius: 999px; padding: 1px 7px; background: #27272a; color: #f4f4f5; font-size: 12px; line-height: 1.55; white-space: nowrap; }}
+  .asrpp-auto-case-tag.baseline {{ border-color: #93c5fd; color: #bfdbfe; }}
+  .asrpp-auto-case-tag.model {{ border-color: #c4b5fd; color: #ddd6fe; }}
+  .asrpp-auto-condition-subtitle {{ display: block; margin-top: 2px; color: #a1a1aa; font-size: 11px; }}
   .asrpp-auto-results .failed {{ color: #fca5a5; }}
   .asrpp-best-methods {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
   .asrpp-best-methods table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
@@ -1228,8 +1239,8 @@ def _auto_experiment_result_row_html(index: int, row: Dict[str, Any]) -> str:
         "<tr>"
         f'<td class="metric">{index}</td>'
         f'<td><span class="asrpp-best-list">{_auto_experiment_best_badge_html(row.get("best_badges"))}</span></td>'
-        f"<td>{escape(str(row.get('case_id') or ''))}</td>"
-        f"<td>{escape(str(row.get('label') or row.get('condition_id') or ''))}</td>"
+        f'<td>{_auto_experiment_case_tags_html(row)}</td>'
+        f"<td>{_auto_experiment_condition_label_html(row)}</td>"
         f'<td class="features">{escape(str(row.get("enabled_features") or "baseline"))}</td>'
         f'<td class="metric">{escape(str(row.get("cer") or "n/a"))}</td>'
         f'<td class="metric">{escape(str(row.get("wer") or "n/a"))}</td>'
@@ -1272,10 +1283,10 @@ def _auto_experiment_metric_row(
         "label": row.get("label") or row.get("condition_id") or "",
         "best_badges": best_badges or [],
         "enabled_features": _auto_experiment_enabled_features(row),
-        "cer": _format_metric_cell(row.get("cer_normalized_no_space")),
-        "wer": _format_metric_cell(row.get("wer_eojeol")),
-        "delta_cer_vs_baseline": _format_signed_metric_cell(row.get("delta_cer_vs_baseline")),
-        "delta_wer_vs_baseline": _format_signed_metric_cell(row.get("delta_wer_vs_baseline")),
+        "cer": _format_rate_cell(row.get("cer_normalized_no_space")),
+        "wer": _format_rate_cell(row.get("wer_eojeol")),
+        "delta_cer_vs_baseline": _format_signed_rate_cell(row.get("delta_cer_vs_baseline")),
+        "delta_wer_vs_baseline": _format_signed_rate_cell(row.get("delta_wer_vs_baseline")),
         "asr_base_url": row.get("asr_base_url") or "",
         "post_base_url": row.get("post_base_url") or "",
         "preprocess_gpu": row.get("preprocess_gpu") or "",
@@ -1395,6 +1406,137 @@ def _auto_experiment_enabled_features(row: Dict[str, Any]) -> str:
     return " + ".join(features) if features else "Baseline"
 
 
+def _auto_experiment_case_tags_html(row: Dict[str, Any]) -> str:
+    raw_case_id = str(row.get("case_id") or row.get("condition_id") or "").strip()
+    tags = _auto_experiment_case_tags(row)
+    if not tags:
+        tags = [raw_case_id or "Case"]
+    spans = []
+    for tag in tags:
+        css_class = "asrpp-auto-case-tag"
+        lowered = tag.lower()
+        if "baseline" in lowered:
+            css_class += " baseline"
+        elif "model" in lowered:
+            css_class += " model"
+        spans.append(f'<span class="{css_class}">{escape(tag)}</span>')
+    title = f' title="{escape(raw_case_id)}"' if raw_case_id else ""
+    return f'<span class="asrpp-auto-case-tags"{title}>{"".join(spans)}</span>'
+
+
+def _auto_experiment_case_tags(row: Dict[str, Any]) -> List[str]:
+    case_id = str(row.get("case_id") or "").strip()
+    condition_id = str(row.get("condition_id") or "").strip()
+    enabled_features = str(row.get("enabled_features") or "").strip()
+    method = str(row.get("method") or "").strip()
+    label = str(row.get("label") or "").strip()
+    tags: List[str] = []
+
+    if condition_id == "baseline" or case_id.startswith("baseline") or label in {"Baseline", "All off baseline"}:
+        tags.append("Baseline")
+    elif enabled_features and enabled_features.lower() != "baseline":
+        tags.extend(_split_feature_tags(enabled_features))
+    elif method and method.lower() != "baseline":
+        tags.extend(_split_feature_tags(method))
+    elif label and label not in {"Baseline", "All off baseline"}:
+        tags.extend(_split_feature_tags(label.split("(", 1)[0]))
+
+    tag_parts_source = condition_id or _strip_case_model_suffix(case_id)
+    for part in [item for item in tag_parts_source.split("__") if item]:
+        parsed = _auto_experiment_condition_part_tag(part)
+        if parsed and parsed not in tags:
+            tags.append(parsed)
+    if _has_case_model_suffix(case_id) and "Model" not in tags:
+        tags.append("Model")
+    return tags
+
+
+def _split_feature_tags(value: str) -> List[str]:
+    aliases = {
+        "keyword bias": "Keyword",
+        "keyword": "Keyword",
+        "noise reduction": "Noise",
+        "noise": "Noise",
+        "volume normalization": "Volume",
+        "volume": "Volume",
+        "llm": "LLM",
+        "rag": "RAG",
+        "search": "Search",
+    }
+    tags: List[str] = []
+    for raw_part in value.replace(",", "+").split("+"):
+        normalized = " ".join(raw_part.strip().lower().split())
+        if not normalized:
+            continue
+        tag = aliases.get(normalized) or raw_part.strip()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _auto_experiment_condition_part_tag(part: str) -> str:
+    feature_tags = {
+        "baseline": "Baseline",
+        "keyword": "Keyword",
+        "noise": "Noise",
+        "volume": "Volume",
+        "llm": "LLM",
+        "rag": "RAG",
+        "search": "Search",
+    }
+    if part in feature_tags:
+        return feature_tags[part]
+    if part.startswith("kw"):
+        return f"KW {_display_sweep_value(part[2:])}"
+    if part.startswith("noise") and len(part) > len("noise"):
+        return f"Noise {_display_sweep_value(part[len('noise') :])}"
+    if part.startswith("vol"):
+        return f"Vol {_display_sweep_value(part[3:])}"
+    if part.startswith("post"):
+        return f"Post {_display_sweep_value(part[4:])}"
+    if part.startswith("rag") and len(part) > len("rag"):
+        return f"RAG {_display_sweep_value(part[3:])}"
+    if part.startswith("topk"):
+        return f"Top-k {part[4:]}"
+    if part.startswith("search"):
+        return f"Search {_display_sweep_value(part[6:])}"
+    if part.startswith("nmodel_"):
+        return "Noise model"
+    if part.startswith("emb_"):
+        return "RAG emb"
+    return ""
+
+
+def _display_sweep_value(value: str) -> str:
+    text = str(value or "").strip().replace("p", ".")
+    return text or "sweep"
+
+
+def _auto_experiment_condition_label_html(row: Dict[str, Any]) -> str:
+    condition_id = str(row.get("condition_id") or "").strip()
+    label = str(row.get("label") or condition_id or "").strip()
+    if condition_id == "baseline" or label in {"Baseline", "All off baseline"}:
+        label = "Baseline (all toggles off)"
+    if not label:
+        label = "Condition"
+    subtitle = ""
+    case_id = str(row.get("case_id") or "").strip()
+    if _has_case_model_suffix(case_id):
+        subtitle = '<span class="asrpp-auto-condition-subtitle">model variant</span>'
+    return f"{escape(label)}{subtitle}"
+
+
+def _has_case_model_suffix(case_id: str) -> bool:
+    return "__model_" in case_id or "_model_" in case_id
+
+
+def _strip_case_model_suffix(case_id: str) -> str:
+    for marker in ("__model_", "_model_"):
+        if marker in case_id:
+            return case_id.split(marker, 1)[0]
+    return case_id
+
+
 def _format_metric_cell(value: Any) -> str:
     number = _metric_float_or_none(value)
     if number is None:
@@ -1407,6 +1549,20 @@ def _format_signed_metric_cell(value: Any) -> str:
     if number is None:
         return ""
     return f"{number:+.4f}"
+
+
+def _format_rate_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    return f"{number * 100.0:.4f}%"
+
+
+def _format_signed_rate_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    return f"{number * 100.0:+.4f}%"
 
 
 def _format_percent_metric_cell(value: Any) -> str:

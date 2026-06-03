@@ -215,7 +215,7 @@ def _condition_from_modes(pre: Dict[str, bool], post: Dict[str, bool]) -> Condit
         parts.append("search")
     condition_id = "baseline" if not parts else "__".join(parts)
     group = "baseline" if not parts else ("post" if post and not pre else "pre_asr" if pre and not post else "mixed")
-    label = " + ".join(_label_for(part) for part in parts) if parts else "All off baseline"
+    label = " + ".join(_label_for(part) for part in parts) if parts else "Baseline (all toggles off)"
     return ConditionSpec(
         condition_id=condition_id,
         label=label,

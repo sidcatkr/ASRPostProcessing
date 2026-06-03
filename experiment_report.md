@@ -16,6 +16,16 @@
 
 이 실험은 단순히 최고 점수 하나를 찾는 것이 아니라, 어떤 기능이 어떤 상황에서 도움이 되고 어떤 상황에서 악화 요인이 되는지 분리해 최종적으로 재현 가능한 최적 조합을 찾는 것을 목표로 한다.
 
+### 1.1 구현된 실험 기능
+
+현재 Gradio UI에는 단일 실행과 자동 실험을 모두 수행할 수 있는 기능이 구현되어 있다. 단일 실행에서는 오디오와 reference transcript를 입력하고, Keyword Bias, Noise reduction, Volume normalization, LLM 후처리, RAG, Search를 각각 토글해 결과를 비교할 수 있다. 자동 실험에서는 사용자가 켠 범위 안에서 baseline, 단일 기능, 조합 조건, 강도 sweep, 모델 후보 조합을 자동으로 생성해 여러 조건을 반복 실행한다.
+
+정량 평가는 CER/WER, baseline 대비 개선량, latency, GPU/VRAM 사용량을 기록한다. CER/WER은 공백, 줄바꿈, 문장부호, 기호를 제외한 한 줄 내용 문자열 기준으로 계산하며, `cer_strict`는 참고용으로 별도 기록한다. 결과 화면에는 raw transcript, corrected transcript, CER/WER, edits, preprocessing 정보, model server 상태, GPU 상태가 표시된다.
+
+Diff view에는 삭제, 삽입, 대체가 구분되어 표시되며, 각 변경의 reference/raw 텍스트와 corrected 텍스트를 함께 확인할 수 있다. Reference가 있는 경우 CER/WER error monitor가 오류 위치와 오류 기여도를 보여준다. 단일 실행과 자동 실험 결과는 보고서에 활용할 수 있도록 HTML diff export 파일로도 저장된다.
+
+서버 실행은 L4 x4 GPU 환경을 기준으로 구성되어 있다. Run 또는 Auto Experiment가 필요할 때 stage model server를 올리고, 종료 후 ASR/Post-processing 모델을 offload해 유휴 GPU 점유를 줄인다. VRAM이 부족하거나 일부 GPU에 다른 프로세스가 있을 때는 가용 GPU와 남은 VRAM을 기준으로 가능한 stage replica만 사용하도록 구성되어 있다.
+
 ## 2. 실험 방법
 
 ### 2.1 실험 데이터 준비
