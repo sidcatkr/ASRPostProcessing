@@ -160,6 +160,8 @@ class ParserPipelineUiTest(unittest.TestCase):
             (case_dir / "raw_transcript.txt").write_text("불련 코드와 포물 작성", encoding="utf-8")
             (case_dir / "corrected_transcript.txt").write_text("Boolean 코드와 for문 작성", encoding="utf-8")
             report = {
+                "run_id": "auto-diff-test",
+                "output_dir": str(Path(tmp) / "auto-output"),
                 "summary_csv": str(Path(tmp) / "auto_experiment_summary.csv"),
                 "analysis": {},
                 "audit": {},
@@ -177,8 +179,12 @@ class ParserPipelineUiTest(unittest.TestCase):
             }
 
             html = _auto_experiment_diff_html(report, "Boolean 코드와 for문 작성")
+            export_path = Path(report["output_dir"]) / "auto_experiment_diff_export.html"
+            self.assertTrue(export_path.exists())
+            export_html = export_path.read_text(encoding="utf-8")
 
         self.assertIn("asrpp-case-diff", html)
+        self.assertIn("Export HTML", html)
         self.assertIn("<summary>Diff</summary>", html)
         self.assertIn("Reference CER/WER", html)
         self.assertIn("CER/WER error monitor", html)
@@ -187,6 +193,8 @@ class ParserPipelineUiTest(unittest.TestCase):
         self.assertIn("asrpp-diff-insert", html)
         self.assertIn("Boolean", html)
         self.assertIn("for", html)
+        self.assertIn("<!doctype html>", export_html)
+        self.assertIn("Auto Experiment Diff: auto-diff-test", export_html)
 
     def test_pipeline_passes_rag_and_search_evidence_to_postprocessor(self):
         class CapturingPostprocessor:
@@ -349,6 +357,10 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertTrue((Path(output.output_dir) / "raw_transcript.txt").exists())
             self.assertTrue((Path(output.output_dir) / "corrected_transcript.txt").exists())
             self.assertTrue((Path(output.output_dir) / "diff.html").exists())
+            diff_export = (Path(output.output_dir) / "diff.html").read_text(encoding="utf-8")
+            self.assertIn("<!doctype html>", diff_export)
+            self.assertIn("Transcript Diff: test-run", diff_export)
+            self.assertIn("Change details", diff_export)
             self.assertEqual((Path(output.output_dir) / "raw_transcript.txt").read_text(encoding="utf-8"), output.raw.text)
             self.assertEqual(
                 (Path(output.output_dir) / "corrected_transcript.txt").read_text(encoding="utf-8"),
@@ -968,8 +980,17 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertEqual(preprocessed_audio_html, "")
             self.assertFalse(preprocess["applied"])
             self.assertIn("Run ID:", status)
+            self.assertIn("Diff export:", status)
+            self.assertIn("Export HTML", diff)
             self.assertIn("Audio upload cache", status)
             self.assertIn("available", gpu_status)
+            export_files = list((Path(tmp) / "outputs").glob("*/diff_export.html"))
+            self.assertEqual(len(export_files), 1)
+            export_html = export_files[0].read_text(encoding="utf-8")
+            self.assertIn("<!doctype html>", export_html)
+            self.assertIn("Reference/Raw -&gt; Corrected", export_html)
+            result_payload = json.loads((export_files[0].parent / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result_payload["artifacts"]["diff_export_html"], str(export_files[0]))
 
     def test_ui_metrics_warn_when_reference_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

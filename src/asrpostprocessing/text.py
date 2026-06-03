@@ -9,14 +9,22 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, TypeVar
 T = TypeVar("T")
 _DIFF_TOKEN_RE = re.compile(r"\s+|[^\s]+")
 _ERROR_MONITOR_MAX_ROWS = 12
+_DIFF_CHANGE_MAX_ROWS = 10
 
 
-def normalize_text(text: str, remove_spaces: bool = False, lowercase_latin: bool = True) -> str:
+def normalize_text(
+    text: str,
+    remove_spaces: bool = False,
+    lowercase_latin: bool = True,
+    remove_symbols: bool = False,
+) -> str:
     text = unicodedata.normalize("NFKC", text or "")
     text = text.strip()
     text = re.sub(r"\s+", " ", text)
     if lowercase_latin:
         text = "".join(char.lower() if char.isascii() else char for char in text)
+    if remove_symbols:
+        text = "".join(char for char in text if not _is_ignored_metric_symbol(char))
     if remove_spaces:
         text = re.sub(r"\s+", "", text)
     return text
@@ -47,9 +55,9 @@ def error_rate(reference: Sequence[T], hypothesis: Sequence[T]) -> float:
     return levenshtein(reference, hypothesis) / float(len(reference))
 
 
-def cer(reference: str, hypothesis: str, remove_spaces: bool = False) -> float:
-    ref = normalize_text(reference, remove_spaces=remove_spaces)
-    hyp = normalize_text(hypothesis, remove_spaces=remove_spaces)
+def cer(reference: str, hypothesis: str, remove_spaces: bool = False, remove_symbols: bool = False) -> float:
+    ref = normalize_text(reference, remove_spaces=remove_spaces, remove_symbols=remove_symbols)
+    hyp = normalize_text(hypothesis, remove_spaces=remove_spaces, remove_symbols=remove_symbols)
     return error_rate(list(ref), list(hyp))
 
 
@@ -60,7 +68,7 @@ def wer_eojeol(reference: str, hypothesis: str) -> float:
 
 
 def spacing_insensitive_tokens(text: str) -> List[str]:
-    normalized = normalize_text(text, remove_spaces=True)
+    normalized = normalize_text(text, remove_spaces=True, remove_symbols=True)
     tokens: List[str] = []
     buffer: List[str] = []
     buffer_kind = ""
@@ -96,6 +104,10 @@ def _wer_token_kind(char: str) -> str:
     if char.isalnum():
         return "alnum"
     return "symbol"
+
+
+def _is_ignored_metric_symbol(char: str) -> bool:
+    return unicodedata.category(char)[:1] in {"P", "S"}
 
 
 def character_f1(a: str, b: str) -> float:
@@ -148,11 +160,107 @@ def make_character_diff_html(
     )
 
 
+def make_diff_export_document(
+    body_html: str,
+    title: str = "Transcript Diff Export",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    escaped_title = html.escape(title or "Transcript Diff Export")
+    metadata_html = _diff_export_metadata_html(metadata or {})
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escaped_title}</title>
+  <style>
+    :root {{
+      --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --monospace-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --block-radius: 8px;
+      --block-background-fill: #ffffff;
+      --background-fill-primary: #f7f7f8;
+      --background-fill-secondary: rgba(127, 127, 127, 0.08);
+      --input-background-fill: rgba(127, 127, 127, 0.06);
+      --border-color-primary: #d0d7de;
+      --body-text-color: #1f2328;
+      --body-text-color-subdued: #6e7781;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --block-background-fill: #1f2026;
+        --background-fill-primary: #0f1117;
+        --background-fill-secondary: rgba(255, 255, 255, 0.06);
+        --input-background-fill: rgba(255, 255, 255, 0.06);
+        --border-color-primary: #3f4652;
+        --body-text-color: #f3f4f6;
+        --body-text-color-subdued: #b4bbc6;
+      }}
+    }}
+    body {{
+      margin: 0;
+      background: var(--background-fill-primary);
+      color: var(--body-text-color);
+      font-family: var(--font);
+    }}
+    main {{
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }}
+    .asrpp-export-header {{
+      margin-bottom: 16px;
+    }}
+    .asrpp-export-header h1 {{
+      margin: 0 0 8px 0;
+      font-size: 22px;
+      line-height: 1.25;
+    }}
+    .asrpp-export-metadata {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0;
+      color: var(--body-text-color-subdued);
+      font-size: 12px;
+    }}
+    .asrpp-export-metadata div {{
+      border: 1px solid var(--border-color-primary);
+      border-radius: 6px;
+      padding: 4px 7px;
+      background: var(--block-background-fill);
+    }}
+    .asrpp-diff-section + .asrpp-diff-section {{
+      margin-top: 16px;
+    }}
+    .asrpp-diff-section h3 {{
+      color: var(--body-text-color);
+    }}
+    @media print {{
+      main {{ max-width: none; padding: 12mm; }}
+      .asrpp-diff-text {{ max-height: none !important; overflow: visible !important; }}
+      .asrpp-error-table-wrap {{ max-height: none !important; overflow: visible !important; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="asrpp-export-header">
+      <h1>{escaped_title}</h1>
+      {metadata_html}
+    </header>
+    {body_html or ""}
+  </main>
+</body>
+</html>
+"""
+
+
 def transcript_error_breakdown(reference: str, hypothesis: str) -> Dict[str, Any]:
     return {
         "cer": _sequence_error_summary(
-            list(normalize_text(reference, remove_spaces=True)),
-            list(normalize_text(hypothesis, remove_spaces=True)),
+            list(normalize_text(reference, remove_spaces=True, remove_symbols=True)),
+            list(normalize_text(hypothesis, remove_spaces=True, remove_symbols=True)),
             "CER",
             "char",
             "",
@@ -169,6 +277,19 @@ def transcript_error_breakdown(reference: str, hypothesis: str) -> Dict[str, Any
     }
 
 
+def _diff_export_metadata_html(metadata: Dict[str, Any]) -> str:
+    if not metadata:
+        return ""
+    rows = []
+    for key, value in metadata.items():
+        if value is None or value == "":
+            continue
+        rows.append(f"<div><strong>{html.escape(str(key))}:</strong> {html.escape(str(value))}</div>")
+    if not rows:
+        return ""
+    return '<div class="asrpp-export-metadata">' + "".join(rows) + "</div>"
+
+
 def _make_diff_html(
     reference: str,
     hypothesis: str,
@@ -179,25 +300,26 @@ def _make_diff_html(
 ) -> str:
     reference = reference or ""
     hypothesis = hypothesis or ""
-    body, stats = _inline_diff_body(reference, hypothesis, character_level=character_level)
+    body, stats, changes = _inline_diff_body(reference, hypothesis, character_level=character_level)
     if not body:
         body = '<span class="asrpp-diff-empty">(empty)</span>'
     no_change = stats["delete"] == 0 and stats["insert"] == 0 and stats["replace"] == 0
-    no_change_pill = '<span class="asrpp-diff-pill">No character changes</span>' if no_change else ""
+    no_change_pill = '<span class="asrpp-diff-count">No character changes</span>' if no_change else ""
     escaped_reference_label = html.escape(reference_label or "Reference")
     escaped_hypothesis_label = html.escape(hypothesis_label or "Hypothesis")
     error_monitor = _error_monitor_html(reference, hypothesis) if show_error_monitor else ""
+    change_summary = _diff_change_summary_html(changes, escaped_reference_label, escaped_hypothesis_label)
     return f"""
 <div class="asrpp-inline-diff" role="region" aria-label="Inline transcript diff">
   <style>
     .asrpp-inline-diff {{
       box-sizing: border-box;
       width: 100%;
-      border: 1px solid #3f4652;
-      border-radius: 6px;
-      background: #111318;
-      color: #e5e7eb;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      border: 1px solid var(--border-color-primary, #d0d7de);
+      border-radius: var(--block-radius, 8px);
+      background: var(--block-background-fill, #ffffff);
+      color: var(--body-text-color, #1f2328);
+      font-family: var(--font, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
       overflow: hidden;
     }}
     .asrpp-diff-bar {{
@@ -205,39 +327,61 @@ def _make_diff_html(
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
-      padding: 10px 12px;
-      border-bottom: 1px solid #333946;
-      background: #181b21;
-      color: #d1d5db;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border-color-primary, #d0d7de);
+      background: var(--background-fill-secondary, rgba(127, 127, 127, 0.08));
+      color: var(--body-text-color, #1f2328);
       font-size: 12px;
       line-height: 1.35;
     }}
-    .asrpp-diff-pill {{
+    .asrpp-diff-title {{
+      font-weight: 650;
+      margin-right: 2px;
+    }}
+    .asrpp-diff-meta {{
+      color: var(--body-text-color-subdued, #6e7781);
+      margin-right: 4px;
+    }}
+    .asrpp-diff-count {{
       display: inline-flex;
       align-items: center;
       min-height: 22px;
-      padding: 2px 8px;
-      border: 1px solid #4b5563;
+      padding: 2px 7px;
+      border: 1px solid var(--border-color-primary, #d0d7de);
       border-radius: 6px;
-      background: #22262e;
-      color: #e5e7eb;
+      background: var(--input-background-fill, rgba(127, 127, 127, 0.06));
+      color: var(--body-text-color, #1f2328);
       font-weight: 500;
       white-space: nowrap;
     }}
-    .asrpp-diff-pill.insert {{ border-color: #2f8f46; background: #14351f; color: #b7f5c8; }}
-    .asrpp-diff-pill.delete {{ border-color: #9f3a38; background: #3a1718; color: #ffb4ad; }}
-    .asrpp-diff-pill.replace {{ border-color: #8a6a22; background: #33280d; color: #f7d774; }}
+    .asrpp-diff-count.insert {{ border-color: rgba(46, 160, 67, 0.42); }}
+    .asrpp-diff-count.delete {{ border-color: rgba(207, 34, 46, 0.42); }}
+    .asrpp-diff-count.replace {{ border-color: rgba(154, 103, 0, 0.42); }}
+    .asrpp-diff-legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-color-primary, #d0d7de);
+      color: var(--body-text-color-subdued, #6e7781);
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .asrpp-diff-legend span {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }}
     .asrpp-diff-text {{
       max-height: 62vh;
       overflow: auto;
-      padding: 16px 18px;
-      background: #111318;
-      color: #e5e7eb;
+      padding: 14px 16px;
+      background: var(--block-background-fill, #ffffff);
+      color: var(--body-text-color, #1f2328);
       font-size: 15px;
       line-height: 1.85;
       white-space: pre-wrap;
       word-break: break-word;
-      scrollbar-color: #4b5563 #111318;
     }}
     .asrpp-diff-delete,
     .asrpp-diff-insert {{
@@ -247,36 +391,87 @@ def _make_diff_html(
       text-underline-offset: 2px;
     }}
     .asrpp-diff-delete {{
-      background: rgba(248, 81, 73, 0.22);
-      color: #ffb4ad;
+      background: rgba(207, 34, 46, 0.16);
+      color: var(--body-text-color, #1f2328);
       text-decoration: line-through;
     }}
     .asrpp-diff-insert {{
-      background: rgba(63, 185, 80, 0.22);
-      color: #b7f5c8;
+      background: rgba(46, 160, 67, 0.16);
+      color: var(--body-text-color, #1f2328);
       text-decoration: none;
     }}
     .asrpp-diff-replace {{
       border-radius: 4px;
-      background: rgba(210, 153, 34, 0.20);
+      background: rgba(187, 128, 9, 0.13);
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }}
-    .asrpp-diff-empty {{ color: #9ca3af; }}
+    .asrpp-diff-empty {{ color: var(--body-text-color-subdued, #6e7781); }}
+    .asrpp-diff-change-summary {{
+      border-top: 1px solid var(--border-color-primary, #d0d7de);
+      background: var(--background-fill-secondary, rgba(127, 127, 127, 0.05));
+      padding: 10px 12px 12px;
+    }}
+    .asrpp-diff-change-heading {{
+      margin: 0 0 8px 0;
+      color: var(--body-text-color, #1f2328);
+      font-size: 13px;
+      font-weight: 650;
+    }}
+    .asrpp-diff-change-list {{
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 7px;
+    }}
+    .asrpp-diff-change-item {{
+      display: grid;
+      grid-template-columns: minmax(96px, 142px) 1fr;
+      gap: 8px;
+      align-items: start;
+      border: 1px solid var(--border-color-primary, #d0d7de);
+      border-radius: 6px;
+      background: var(--block-background-fill, #ffffff);
+      padding: 8px 9px;
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .asrpp-diff-change-kind {{
+      font-weight: 650;
+      color: var(--body-text-color, #1f2328);
+    }}
+    .asrpp-diff-change-copy {{
+      color: var(--body-text-color, #1f2328);
+      overflow-wrap: anywhere;
+    }}
+    .asrpp-diff-change-copy code {{
+      font-family: var(--monospace-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .asrpp-diff-change-context {{
+      margin-top: 4px;
+      color: var(--body-text-color-subdued, #6e7781);
+    }}
+    .asrpp-diff-change-muted {{
+      color: var(--body-text-color-subdued, #6e7781);
+    }}
     .asrpp-error-monitor {{
-      border-top: 1px solid #333946;
-      background: #0f1115;
+      border-top: 1px solid var(--border-color-primary, #d0d7de);
+      background: var(--block-background-fill, #ffffff);
       padding: 12px;
     }}
     .asrpp-error-monitor h4 {{
       margin: 0 0 8px 0;
-      color: #f3f4f6;
+      color: var(--body-text-color, #1f2328);
       font-size: 13px;
       font-weight: 650;
     }}
     .asrpp-error-note {{
       margin: 0 0 10px 0;
-      color: #aeb6c2;
+      color: var(--body-text-color-subdued, #6e7781);
       font-size: 12px;
       line-height: 1.45;
     }}
@@ -287,19 +482,19 @@ def _make_diff_html(
       margin-bottom: 10px;
     }}
     .asrpp-error-card {{
-      border: 1px solid #333946;
+      border: 1px solid var(--border-color-primary, #d0d7de);
       border-radius: 6px;
-      background: #171a20;
+      background: var(--background-fill-secondary, rgba(127, 127, 127, 0.05));
       padding: 8px 9px;
     }}
     .asrpp-error-card span {{
       display: block;
-      color: #aeb6c2;
+      color: var(--body-text-color-subdued, #6e7781);
       font-size: 11px;
     }}
     .asrpp-error-card strong {{
       display: block;
-      color: #f3f4f6;
+      color: var(--body-text-color, #1f2328);
       font-size: 14px;
       font-variant-numeric: tabular-nums;
       margin-top: 2px;
@@ -309,14 +504,14 @@ def _make_diff_html(
     }}
     .asrpp-error-section h5 {{
       margin: 0 0 6px 0;
-      color: #d1d5db;
+      color: var(--body-text-color, #1f2328);
       font-size: 12px;
       font-weight: 650;
     }}
     .asrpp-error-table-wrap {{
       max-height: 260px;
       overflow: auto;
-      border: 1px solid #333946;
+      border: 1px solid var(--border-color-primary, #d0d7de);
       border-radius: 6px;
     }}
     .asrpp-error-table {{
@@ -327,37 +522,48 @@ def _make_diff_html(
     .asrpp-error-table th,
     .asrpp-error-table td {{
       padding: 6px 7px;
-      border-bottom: 1px solid #2c323d;
+      border-bottom: 1px solid var(--border-color-primary, #d0d7de);
       vertical-align: top;
       text-align: left;
     }}
     .asrpp-error-table th {{
       position: sticky;
       top: 0;
-      background: #171a20;
-      color: #cbd5e1;
+      background: var(--background-fill-secondary, rgba(127, 127, 127, 0.08));
+      color: var(--body-text-color, #1f2328);
       z-index: 1;
     }}
     .asrpp-error-table td {{
-      color: #e5e7eb;
+      color: var(--body-text-color, #1f2328);
     }}
     .asrpp-error-muted {{
-      color: #9ca3af;
+      color: var(--body-text-color-subdued, #6e7781);
     }}
     .asrpp-error-context {{
-      color: #b8c0cc;
+      color: var(--body-text-color-subdued, #6e7781);
       overflow-wrap: anywhere;
+    }}
+    @media (max-width: 640px) {{
+      .asrpp-diff-change-item {{
+        grid-template-columns: 1fr;
+      }}
     }}
   </style>
   <div class="asrpp-diff-bar">
-    <span class="asrpp-diff-pill">{escaped_reference_label} {len(reference):,} chars</span>
-    <span class="asrpp-diff-pill">{escaped_hypothesis_label} {len(hypothesis):,} chars</span>
-    <span class="asrpp-diff-pill delete">-{stats["delete"]}</span>
-    <span class="asrpp-diff-pill insert">+{stats["insert"]}</span>
-    <span class="asrpp-diff-pill replace">~{stats["replace"]}</span>
+    <span class="asrpp-diff-title">{escaped_reference_label} -> {escaped_hypothesis_label}</span>
+    <span class="asrpp-diff-meta">{len(reference):,} -> {len(hypothesis):,} chars</span>
+    <span class="asrpp-diff-count delete">Deleted {stats["delete"]}</span>
+    <span class="asrpp-diff-count insert">Inserted {stats["insert"]}</span>
+    <span class="asrpp-diff-count replace">Replaced {stats["replace"]}</span>
     {no_change_pill}
   </div>
+  <div class="asrpp-diff-legend" aria-label="Diff legend">
+    <span><del class="asrpp-diff-delete">deleted</del> removed from {escaped_reference_label}</span>
+    <span><ins class="asrpp-diff-insert">inserted</ins> added in {escaped_hypothesis_label}</span>
+    <span><span class="asrpp-diff-replace">replacement</span> old text followed by new text</span>
+  </div>
   <div class="asrpp-diff-text">{body}</div>
+  {change_summary}
   {error_monitor}
 </div>
 """.strip()
@@ -370,7 +576,7 @@ def _error_monitor_html(reference: str, hypothesis: str) -> str:
     return f"""
   <div class="asrpp-error-monitor" aria-label="CER and WER error monitor">
     <h4>CER/WER error monitor</h4>
-    <p class="asrpp-error-note">CER uses normalized no-space characters. WER uses spacing-insensitive tokens. Spacing and line-break-only differences are not counted here.</p>
+    <p class="asrpp-error-note">CER/WER use one-line normalized text without spacing, line breaks, punctuation, or symbols. Formatting-only differences are not counted here.</p>
     <div class="asrpp-error-cards">
       {_error_summary_card_html(cer_summary)}
       {_error_summary_card_html(wer_summary)}
@@ -615,12 +821,13 @@ def _format_error_percent(value: float) -> str:
     return f"{value * 100:.4f}%"
 
 
-def _inline_diff_body(reference: str, hypothesis: str, character_level: bool = False) -> tuple[str, dict]:
+def _inline_diff_body(reference: str, hypothesis: str, character_level: bool = False) -> tuple[str, dict, List[Dict[str, str]]]:
     ref_tokens = list(reference) if character_level else _diff_tokens(reference)
     hyp_tokens = list(hypothesis) if character_level else _diff_tokens(hypothesis)
     matcher = SequenceMatcher(a=ref_tokens, b=hyp_tokens, autojunk=not character_level)
     parts: List[str] = []
     stats = {"delete": 0, "insert": 0, "replace": 0}
+    changes: List[Dict[str, str]] = []
     for tag, ref_start, ref_end, hyp_start, hyp_end in matcher.get_opcodes():
         ref_text = "".join(ref_tokens[ref_start:ref_end])
         hyp_text = "".join(hyp_tokens[hyp_start:hyp_end])
@@ -629,13 +836,116 @@ def _inline_diff_body(reference: str, hypothesis: str, character_level: bool = F
         elif tag == "delete":
             stats["delete"] += len(ref_text)
             parts.append(_diff_span("del", "asrpp-diff-delete", ref_text))
+            changes.append(
+                {
+                    "kind": "delete",
+                    "reference_text": ref_text,
+                    "hypothesis_text": "",
+                    "context": _diff_context(ref_tokens, ref_start, ref_end),
+                }
+            )
         elif tag == "insert":
             stats["insert"] += len(hyp_text)
             parts.append(_diff_span("ins", "asrpp-diff-insert", hyp_text))
+            changes.append(
+                {
+                    "kind": "insert",
+                    "reference_text": "",
+                    "hypothesis_text": hyp_text,
+                    "context": _diff_context(hyp_tokens, hyp_start, hyp_end),
+                }
+            )
         elif tag == "replace":
             stats["replace"] += max(len(ref_text), len(hyp_text))
             parts.append(_render_replacement(ref_text, hyp_text))
-    return "".join(parts), stats
+            changes.append(
+                {
+                    "kind": "replace",
+                    "reference_text": ref_text,
+                    "hypothesis_text": hyp_text,
+                    "context": _diff_context(ref_tokens, ref_start, ref_end),
+                }
+            )
+    return "".join(parts), stats, changes
+
+
+def _diff_change_summary_html(changes: List[Dict[str, str]], reference_label: str, hypothesis_label: str) -> str:
+    if not changes:
+        return """
+  <div class="asrpp-diff-change-summary" aria-label="Diff change details">
+    <h4 class="asrpp-diff-change-heading">Change details</h4>
+    <p class="asrpp-diff-change-muted">No deletion, insertion, or replacement was detected.</p>
+  </div>
+""".rstrip()
+    shown = changes[:_DIFF_CHANGE_MAX_ROWS]
+    omitted = len(changes) - len(shown)
+    rows = "\n".join(_diff_change_item_html(change, reference_label, hypothesis_label) for change in shown)
+    omitted_html = (
+        f'<p class="asrpp-diff-change-muted">Showing first {_DIFF_CHANGE_MAX_ROWS} of {len(changes)} changes.</p>'
+        if omitted > 0
+        else ""
+    )
+    return f"""
+  <div class="asrpp-diff-change-summary" aria-label="Diff change details">
+    <h4 class="asrpp-diff-change-heading">Change details</h4>
+    <ol class="asrpp-diff-change-list">
+      {rows}
+    </ol>
+    {omitted_html}
+  </div>
+""".rstrip()
+
+
+def _diff_change_item_html(change: Dict[str, str], reference_label: str, hypothesis_label: str) -> str:
+    kind = change.get("kind") or "replace"
+    if kind == "delete":
+        label = "Deletion"
+        explanation = f"Removed from {reference_label}"
+    elif kind == "insert":
+        label = "Insertion"
+        explanation = f"Added in {hypothesis_label}"
+    else:
+        label = "Replacement"
+        explanation = f"Changed {reference_label} text into {hypothesis_label} text"
+    reference_text = _compact_diff_snippet(change.get("reference_text") or "")
+    hypothesis_text = _compact_diff_snippet(change.get("hypothesis_text") or "")
+    context = _compact_diff_snippet(change.get("context") or "")
+    return (
+        f'<li class="asrpp-diff-change-item {html.escape(kind)}">'
+        f'<div class="asrpp-diff-change-kind">{html.escape(label)}<br>'
+        f'<span class="asrpp-diff-change-muted">{explanation}</span></div>'
+        '<div class="asrpp-diff-change-copy">'
+        f'<div><span class="asrpp-diff-change-muted">{reference_label}:</span> <code>{html.escape(reference_text)}</code></div>'
+        f'<div><span class="asrpp-diff-change-muted">{hypothesis_label}:</span> <code>{html.escape(hypothesis_text)}</code></div>'
+        f'<div class="asrpp-diff-change-context">Context: {html.escape(context)}</div>'
+        "</div>"
+        "</li>"
+    )
+
+
+def _diff_context(tokens: Sequence[str], start: int, end: int, window: int = 4) -> str:
+    context_start = max(0, start - window)
+    context_end = min(len(tokens), end + window)
+    before = "".join(tokens[context_start:start])
+    selected = "".join(tokens[start:end])
+    after = "".join(tokens[end:context_end])
+    parts = []
+    if before:
+        parts.append(before)
+    if selected:
+        parts.append(f"[{selected}]")
+    if after:
+        parts.append(after)
+    return "".join(parts)
+
+
+def _compact_diff_snippet(text: str, max_chars: int = 180) -> str:
+    compacted = re.sub(r"\s+", " ", text or "").strip()
+    if not compacted:
+        return "(empty)"
+    if len(compacted) <= max_chars:
+        return compacted
+    return compacted[: max_chars - 1].rstrip() + "..."
 
 
 def _diff_tokens(text: str) -> List[str]:

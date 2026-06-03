@@ -23,7 +23,7 @@ from .preprocess import preprocess_audio
 from .rag import build_rag_index
 from .schemas import CorrectionResult, Edit, MetricsResult, RAGContext, SearchResult, TranscriptResult
 from .search import CachedSearchProvider
-from .text import make_diff_html, merge_overlapping_texts
+from .text import make_diff_export_document, make_diff_html, merge_overlapping_texts
 from .vllm_metrics import diff_vllm_metrics, query_vllm_metrics, vllm_metrics_endpoint_pool
 
 StatusCallback = Callable[[str], None]
@@ -135,6 +135,11 @@ class PipelineRunner:
         self._emit("Evaluating transcript metrics.")
         metrics = evaluate_transcripts(reference_text, raw.text, correction.corrected_text, latency_ms=latency_ms)
         diff_html = make_diff_html(raw.text, correction.corrected_text)
+        diff_export_html = make_diff_export_document(
+            diff_html,
+            title=f"Transcript Diff: {run_id}",
+            metadata={"Run ID": run_id, "View": "Raw -> Corrected"},
+        )
         asr_quality = build_asr_quality_report(raw, preprocess_result.to_dict(), self.config)
         correction_quality = build_correction_quality_report(raw, correction, self.config)
 
@@ -144,7 +149,7 @@ class PipelineRunner:
             "result": str(logger.output_dir / "result.json"),
             "raw_transcript": str(logger.write_text("raw_transcript.txt", raw.text)),
             "corrected_transcript": str(logger.write_text("corrected_transcript.txt", correction.corrected_text)),
-            "diff_html": str(logger.write_text("diff.html", diff_html)),
+            "diff_html": str(logger.write_text("diff.html", diff_export_html)),
             "asr_quality": str(logger.write_json("asr_quality.json", asr_quality)),
             "correction_quality": str(logger.write_json("correction_quality.json", correction_quality)),
             "preprocess": str(logger.write_json("preprocess.json", preprocess_result.to_dict())),

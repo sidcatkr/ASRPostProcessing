@@ -15,8 +15,8 @@ def evaluate_transcripts(
     if not reference:
         return MetricsResult(latency_ms=latency_ms)
 
-    raw_cer_no_space = cer(reference, raw_text, remove_spaces=True)
-    corrected_cer_no_space = cer(reference, corrected_text, remove_spaces=True)
+    raw_cer_no_space = cer(reference, raw_text, remove_spaces=True, remove_symbols=True)
+    corrected_cer_no_space = cer(reference, corrected_text, remove_spaces=True, remove_symbols=True)
     raw_cer_strict = cer(reference, raw_text, remove_spaces=False)
     corrected_cer_strict = cer(reference, corrected_text, remove_spaces=False)
     raw_wer = wer_eojeol(reference, raw_text)

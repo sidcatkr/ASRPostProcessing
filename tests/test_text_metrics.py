@@ -8,23 +8,25 @@ class TextMetricsTest(unittest.TestCase):
     def test_normalize_mixed_korean_english(self):
         self.assertEqual(normalize_text(" Alpha   Term 로  테스트 "), "alpha term 로 테스트")
         self.assertEqual(normalize_text("A B C", remove_spaces=True), "abc")
+        self.assertEqual(normalize_text("A, B? C!", remove_spaces=True, remove_symbols=True), "abc")
 
     def test_cer_and_wer(self):
         self.assertEqual(cer("abc", "abc"), 0.0)
         self.assertAlmostEqual(cer("abc", "axc"), 1 / 3)
         self.assertAlmostEqual(wer_eojeol("Alpha Term 실행", "Alpha 실행"), 1 / 3)
 
-    def test_metrics_ignore_spacing_and_linebreak_only_differences(self):
-        reference = "해든 마을 주민센터\nOmar Lee"
-        hypothesis = "해든마을   주민센터 OmarLee"
-        self.assertEqual(cer(reference, hypothesis, remove_spaces=True), 0.0)
+    def test_metrics_ignore_spacing_linebreak_and_punctuation_only_differences(self):
+        reference = "해든 마을 주민센터,\nOmar Lee?"
+        hypothesis = "해든마을   주민센터 OmarLee!"
+        self.assertGreater(cer(reference, hypothesis, remove_spaces=True), 0.0)
+        self.assertEqual(cer(reference, hypothesis, remove_spaces=True, remove_symbols=True), 0.0)
         self.assertEqual(wer_eojeol(reference, hypothesis), 0.0)
 
     def test_spacing_insensitive_wer_still_penalizes_content_changes(self):
         self.assertGreater(wer_eojeol("해든마을 주민센터", "해든마을 시민센터"), 0.0)
 
     def test_error_breakdown_uses_metric_normalization(self):
-        spacing_only = transcript_error_breakdown("해든 마을 주민센터\nOmar Lee", "해든마을 주민센터 OmarLee")
+        spacing_only = transcript_error_breakdown("해든 마을 주민센터,\nOmar Lee?", "해든마을 주민센터 OmarLee!")
         self.assertEqual(spacing_only["cer"]["errors"], 0)
         self.assertEqual(spacing_only["wer"]["errors"], 0)
 

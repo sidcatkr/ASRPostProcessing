@@ -18,7 +18,7 @@ from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
 from .pipeline import PipelineRunner
 from .preprocess import preprocess_audio
-from .text import make_character_diff_html, make_diff_html
+from .text import make_character_diff_html, make_diff_export_document, make_diff_html
 
 RUN_STATUS_POLL_INTERVAL_S = 1.0
 RUN_STATUS_RECENT_EVENT_LIMIT = 8
@@ -806,10 +806,11 @@ def run_from_ui(
         metrics_payload["per_case_cer_wer"] = _auto_experiment_metric_rows(report)
         if not reference:
             metrics_payload["reference_required"] = "CER/WER require a reference transcript or .txt reference file."
+        diff_html = _auto_experiment_diff_html(report, reference)
         return (
             "",
             "",
-            _auto_experiment_diff_html(report, reference),
+            diff_html,
             metrics_payload,
             [],
             {"auto_experiment": True, "condition_count": report.get("condition_count")},
@@ -843,10 +844,20 @@ def run_from_ui(
     server_lines = _format_server_statuses(output.server_statuses)
     preview_path = _preview_audio_path(output.preprocess)
     metrics_payload = _metrics_payload(output.metrics.to_dict(), reference)
+    diff_html = _display_diff_html(reference, output.raw.text, output.correction.corrected_text)
+    diff_export_path = Path(output.output_dir) / "diff_export.html"
+    _write_diff_export(
+        diff_export_path,
+        diff_html,
+        title=f"Transcript Diff: {output.run_id}",
+        metadata={"Run ID": output.run_id, "View": "Reference/Raw -> Corrected"},
+    )
+    diff_html = _prepend_diff_export_panel(diff_html, diff_export_path)
+    _record_diff_export_artifact(output, diff_export_path)
     return (
         output.raw.text,
         output.correction.corrected_text,
-        _display_diff_html(reference, output.raw.text, output.correction.corrected_text),
+        diff_html,
         metrics_payload,
         [edit.to_dict() for edit in output.correction.edits],
         output.preprocess,
@@ -861,6 +872,7 @@ def run_from_ui(
             f"context {config.asr_context_chars} chars, workers {config.asr_chunk_parallelism})\n"
             f"{server_lines}"
             f"Output: {output.output_dir}\n"
+            f"Diff export: {diff_export_path}\n"
             f"TensorBoard: tensorboard --logdir {config.runs_dir} --port {config.tensorboard_port}\n"
             f"Artifacts: {json.dumps(output.artifacts, ensure_ascii=False)}"
         ),
@@ -956,6 +968,48 @@ def _display_diff_html(reference_text: Optional[str], raw_text: str, corrected_t
     return '<div class="asrpp-diff-stack">' + "\n".join(sections) + "</div>"
 
 
+def _write_diff_export(path: Path, body_html: str, title: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(make_diff_export_document(body_html, title=title, metadata=metadata), encoding="utf-8")
+    return path
+
+
+def _record_diff_export_artifact(output: Any, export_path: Path) -> None:
+    output.artifacts["diff_export_html"] = str(export_path)
+    result_path = Path(str(output.artifacts.get("result") or ""))
+    if not result_path.exists():
+        return
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), dict) else {}
+    artifacts["diff_export_html"] = str(export_path)
+    payload["artifacts"] = artifacts
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _prepend_diff_export_panel(body_html: str, export_path: Path) -> str:
+    escaped_path = escape(str(export_path))
+    href = _gradio_file_href(export_path)
+    return (
+        '<div class="asrpp-diff-export-panel" '
+        'style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;'
+        'margin:0 0 10px 0;padding:8px 10px;border:1px solid var(--border-color-primary,#d0d7de);'
+        'border-radius:var(--block-radius,8px);background:var(--background-fill-secondary,rgba(127,127,127,.08));'
+        'font-size:13px;">'
+        f'<a href="{href}" target="_blank" download '
+        'style="font-weight:650;text-decoration:none;color:var(--link-text-color,#2563eb);">Export HTML</a>'
+        f'<span style="color:var(--body-text-color-subdued,#6e7781);overflow-wrap:anywhere;">{escaped_path}</span>'
+        "</div>"
+        f"{body_html}"
+    )
+
+
+def _gradio_file_href(path: Path) -> str:
+    return "/file=" + quote(str(path.resolve()))
+
+
 def _diff_section(title: str, body: str) -> str:
     return (
         '<section class="asrpp-diff-section">'
@@ -992,7 +1046,24 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
     lines.append(_auto_experiment_results_table(report, reference_text))
     lines.append(f"<p>Summary CSV: {escape(str(report.get('summary_csv') or ''))}</p>")
     lines.append("</div>")
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    export_path = _auto_experiment_diff_export_path(report)
+    if export_path is None:
+        return body
+    _write_diff_export(
+        export_path,
+        body,
+        title=f"Auto Experiment Diff: {report.get('run_id') or 'run'}",
+        metadata={"Run ID": report.get("run_id"), "View": "Auto Experiment Diff"},
+    )
+    return _prepend_diff_export_panel(body, export_path)
+
+
+def _auto_experiment_diff_export_path(report: Dict[str, Any]) -> Optional[Path]:
+    output_dir = str(report.get("output_dir") or "").strip()
+    if not output_dir:
+        return None
+    return Path(output_dir) / "auto_experiment_diff_export.html"
 
 
 def _auto_experiment_audit_html(report: Dict[str, Any]) -> str:
