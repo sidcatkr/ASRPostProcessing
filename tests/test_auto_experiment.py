@@ -8,6 +8,7 @@ from unittest.mock import patch
 from asrpostprocessing.auto_experiment import (
     _prime_asr_groups,
     _start_stage_replicas_scalable,
+    analyze_auto_experiment,
     preview_auto_experiment,
     run_auto_experiment,
 )
@@ -149,6 +150,45 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertEqual(config.stage_server_gpus, ["0", "1", "2", "3"])
         self.assertEqual(config.preprocess_gpus, ["0", "1", "2", "3"])
         self.assertTrue(config.asr_cache_enabled)
+
+    def test_analysis_marks_equal_scores_as_ties_not_improvements(self):
+        rows = [
+            {
+                "case_id": "baseline__model_a",
+                "condition_id": "baseline",
+                "label": "Baseline",
+                "cer_normalized_no_space": 0.072893,
+                "wer_eojeol": 0.049261,
+                "delta_cer_vs_baseline": 0.0,
+                "delta_wer_vs_baseline": 0.0,
+                "latency_ms": 2000.0,
+            },
+            {
+                "case_id": "keyword__noise__volume__model_a",
+                "condition_id": "keyword__noise__volume",
+                "label": "Keyword + Noise + Volume",
+                "keyword_bias_enabled": True,
+                "noise_reduction_enabled": True,
+                "volume_normalization_enabled": True,
+                "cer_normalized_no_space": 0.072893,
+                "wer_eojeol": 0.049261,
+                "delta_cer_vs_baseline": 0.0,
+                "delta_wer_vs_baseline": 0.0,
+                "latency_ms": 1200.0,
+            },
+        ]
+
+        analysis = analyze_auto_experiment(rows)
+        methods = analysis["best_methods"]
+
+        self.assertEqual(methods[0]["badge"], "CER tie")
+        self.assertEqual(methods[0]["strict_status"], "No CER gain vs baseline")
+        self.assertEqual(methods[0]["tie_count"], 2)
+        self.assertFalse(methods[0]["strict_improved"])
+        self.assertEqual(methods[1]["badge"], "WER tie")
+        self.assertEqual(methods[1]["strict_status"], "No WER gain vs baseline")
+        self.assertEqual(methods[2]["badge"], "Fastest comparable")
+        self.assertEqual(methods[2]["case_id"], "keyword__noise__volume__model_a")
 
     def test_auto_experiment_runs_mock_core_with_cache(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -472,6 +472,9 @@ def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_val
     }
 
 
+STRICT_METRIC_EPSILON = 1e-12
+
+
 def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     comparable = [row for row in rows if _metric(row, "cer_normalized_no_space") is not None]
     best_by_cer = min(comparable, key=lambda row: _metric(row, "cer_normalized_no_space"), default=None)
@@ -480,7 +483,7 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str
         key=lambda row: _metric(row, "wer_eojeol"),
         default=None,
     )
-    best_latency_quality_tradeoff = _best_latency_quality_tradeoff(comparable, best_by_cer)
+    fastest_comparable = _fastest_comparable_row(comparable, best_by_cer)
     baseline = next((row for row in comparable if row.get("condition_id") == "baseline"), None)
     baseline_cer = _metric(baseline or {}, "cer_normalized_no_space")
     worse_than_baseline = []
@@ -492,8 +495,9 @@ def analyze_auto_experiment(rows: List[Dict[str, Any]], audit: Optional[Dict[str
     result = {
         "best_by_cer": best_by_cer,
         "best_by_wer": best_by_wer,
-        "best_latency_quality_tradeoff": best_latency_quality_tradeoff,
-        "best_methods": _best_method_summary(best_by_cer, best_by_wer, best_latency_quality_tradeoff),
+        "fastest_comparable": fastest_comparable,
+        "best_latency_quality_tradeoff": fastest_comparable,
+        "best_methods": _best_method_summary(rows, best_by_cer, best_by_wer, fastest_comparable, baseline),
         "baseline": baseline,
         "worse_than_baseline": worse_than_baseline,
         "effect_summary": _auto_effect_summary(rows),
@@ -903,9 +907,7 @@ def _baseline_delta(baseline: Dict[str, Any], row: Dict[str, Any], key: str) -> 
     return baseline_value - value
 
 
-def _best_latency_quality_tradeoff(
-    rows: List[Dict[str, Any]], best_row: Optional[Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
+def _fastest_comparable_row(rows: List[Dict[str, Any]], best_row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     best_cer = _metric(best_row or {}, "cer_normalized_no_space")
     if best_cer is None:
         return None
@@ -928,19 +930,28 @@ def _best_latency_quality_tradeoff(
 
 
 def _best_method_summary(
+    rows: List[Dict[str, Any]],
     best_by_cer: Optional[Dict[str, Any]],
     best_by_wer: Optional[Dict[str, Any]],
-    best_latency_quality_tradeoff: Optional[Dict[str, Any]],
+    fastest_comparable: Optional[Dict[str, Any]],
+    baseline: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     candidates = [
-        ("Best CER", "cer_normalized_no_space", best_by_cer),
-        ("Best WER", "wer_eojeol", best_by_wer),
-        ("Best speed/quality", "latency_ms", best_latency_quality_tradeoff),
+        ("cer", "cer_normalized_no_space", "delta_cer_vs_baseline", best_by_cer),
+        ("wer", "wer_eojeol", "delta_wer_vs_baseline", best_by_wer),
+        ("fastest", "latency_ms", "", fastest_comparable),
     ]
     methods: List[Dict[str, Any]] = []
-    for badge, metric_key, row in candidates:
+    for kind, metric_key, delta_key, row in candidates:
         if not row:
             continue
+        metric_value = _metric(row, metric_key)
+        baseline_value = _metric(baseline or {}, metric_key)
+        delta = _metric(row, delta_key) if delta_key else None
+        tie_count = _metric_tie_count(rows, metric_key, metric_value)
+        strict_improved = delta is not None and delta > STRICT_METRIC_EPSILON
+        baseline_tied = baseline_value is not None and _metric_equal(metric_value, baseline_value)
+        badge, strict_status = _best_method_badge_and_status(kind, strict_improved, baseline_tied, tie_count)
         methods.append(
             {
                 "badge": badge,
@@ -957,9 +968,47 @@ def _best_method_summary(
                 "rag_context_count": row.get("rag_context_count"),
                 "rag_used_context_count": row.get("rag_used_context_count"),
                 "search_result_count": row.get("search_result_count"),
+                "tie_count": tie_count,
+                "baseline_metric_value": baseline_value,
+                "strict_improved": strict_improved,
+                "strict_status": strict_status,
             }
         )
     return methods
+
+
+def _metric_tie_count(rows: List[Dict[str, Any]], key: str, target: Optional[float]) -> int:
+    if target is None:
+        return 0
+    return sum(1 for row in rows if _metric_equal(_metric(row, key), target))
+
+
+def _metric_equal(left: Optional[float], right: Optional[float]) -> bool:
+    if left is None or right is None:
+        return False
+    return abs(left - right) <= STRICT_METRIC_EPSILON
+
+
+def _best_method_badge_and_status(
+    kind: str,
+    strict_improved: bool,
+    baseline_tied: bool,
+    tie_count: int,
+) -> Tuple[str, str]:
+    if kind == "cer":
+        if strict_improved:
+            return "Best CER", "Strict CER improvement vs baseline"
+        if baseline_tied:
+            return "CER tie", "No CER gain vs baseline"
+        return "Lowest CER", "No baseline CER comparison"
+    if kind == "wer":
+        if strict_improved:
+            return "Best WER", "Strict WER improvement vs baseline"
+        if baseline_tied:
+            return "WER tie", "No WER gain vs baseline"
+        return "Lowest WER", "No baseline WER comparison"
+    tie_note = f"; {tie_count} latency tie" if tie_count > 1 else ""
+    return "Fastest comparable", f"Fastest comparable row{tie_note}"
 
 
 def _method_label(row: Dict[str, Any]) -> str:

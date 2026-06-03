@@ -1035,11 +1035,13 @@ def _auto_experiment_diff_html(report: Dict[str, Any], reference_text: Optional[
     if not reference_text:
         lines.append("<p>CER/WER and reference diff require a reference transcript or .txt reference file.</p>")
     if isinstance(best, dict) and best:
+        comparison_note = _auto_experiment_comparison_note(analysis)
         lines.append(
             "<p>"
-            f"Best/comparable case: {_auto_experiment_case_tags_html(best)} "
+            f"Comparison case: {_auto_experiment_case_tags_html(best)} "
             f"CER={escape(_format_rate_cell(best.get('cer_normalized_no_space')))} "
             f"WER={escape(_format_rate_cell(best.get('wer_eojeol')))}"
+            f"{comparison_note}"
             "</p>"
         )
         output_dir = best.get("output_dir")
@@ -1122,13 +1124,16 @@ def _auto_experiment_best_methods_html(report: Dict[str, Any]) -> str:
         return "<p>No best-method summary is available yet.</p>"
     body = "\n".join(
         "<tr>"
-        f"<td><span class=\"asrpp-best-badge\">{escape(str(row.get('badge') or 'Best'))}</span></td>"
+        f"<td>{_auto_experiment_best_badge_span(str(row.get('badge') or 'Finding'))}</td>"
         f"<td>{escape(str(row.get('method') or ''))}</td>"
         f'<td>{_auto_experiment_case_tags_html(row)}</td>'
         f"<td class=\"metric\">{escape(_format_rate_cell(row.get('cer_normalized_no_space')))}</td>"
         f"<td class=\"metric\">{escape(_format_rate_cell(row.get('wer_eojeol')))}</td>"
         f"<td class=\"metric\">{escape(_format_signed_rate_cell(row.get('delta_cer_vs_baseline')))}</td>"
         f"<td class=\"metric\">{escape(_format_signed_rate_cell(row.get('delta_wer_vs_baseline')))}</td>"
+        f"<td>{escape(str(row.get('strict_status') or ''))}</td>"
+        f"<td class=\"metric\">{escape(_format_tie_count_cell(row.get('tie_count')))}</td>"
+        f"<td class=\"metric\">{escape(_format_latency_cell(row.get('latency_ms')))}</td>"
         f"<td class=\"metric\">{escape(_format_count_cell(row.get('rag_context_count')))}</td>"
         f"<td class=\"metric\">{escape(_format_count_cell(row.get('search_result_count')))}</td>"
         "</tr>"
@@ -1136,17 +1141,21 @@ def _auto_experiment_best_methods_html(report: Dict[str, Any]) -> str:
     )
     return f"""
 <section class="asrpp-best-methods">
-  <h3>Best Methods</h3>
+  <h3>Strict Method Summary</h3>
+  <p>Rows marked as ties are not strict improvements; they only match the current best normalized CER/WER.</p>
   <table>
     <thead>
       <tr>
-        <th>Best</th>
+        <th>Finding</th>
         <th>Method</th>
         <th>Case</th>
         <th>CER</th>
         <th>WER</th>
-        <th>ΔCER</th>
-        <th>ΔWER</th>
+        <th>ΔCER vs baseline</th>
+        <th>ΔWER vs baseline</th>
+        <th>Strict result</th>
+        <th>Ties</th>
+        <th>Latency</th>
         <th>RAG Ctx</th>
         <th>Search Hits</th>
       </tr>
@@ -1179,9 +1188,12 @@ def _auto_experiment_results_table(report: Dict[str, Any], reference_text: Optio
   .asrpp-auto-condition-subtitle {{ display: block; margin-top: 2px; color: #a1a1aa; font-size: 11px; }}
   .asrpp-auto-results .failed {{ color: #fca5a5; }}
   .asrpp-best-methods {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
+  .asrpp-best-methods p {{ margin: 2px 0 8px; color: #d4d4d8; font-size: 12px; }}
   .asrpp-best-methods table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
   .asrpp-best-methods th, .asrpp-best-methods td {{ padding: 6px 7px; border-top: 1px solid #3f3f46; text-align: left; }}
   .asrpp-best-badge {{ display: inline-block; border: 1px solid #86efac; color: #86efac; border-radius: 4px; padding: 1px 5px; font-size: 12px; white-space: nowrap; }}
+  .asrpp-best-badge.tie {{ border-color: #fbbf24; color: #fde68a; }}
+  .asrpp-best-badge.speed {{ border-color: #93c5fd; color: #bfdbfe; }}
   .asrpp-best-list {{ display: flex; gap: 4px; flex-wrap: wrap; min-width: 78px; }}
   .asrpp-auto-audit {{ margin-top: 12px; border: 1px solid #3f3f46; border-radius: 6px; padding: 10px 12px; }}
   .asrpp-audit-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 8px 0; }}
@@ -1205,7 +1217,7 @@ def _auto_experiment_results_table(report: Dict[str, Any], reference_text: Optio
     <thead>
       <tr>
         <th>#</th>
-        <th>Best</th>
+        <th>Finding</th>
         <th>Case</th>
         <th>Condition</th>
         <th>Enabled</th>
@@ -1349,9 +1361,11 @@ def _auto_experiment_best_method_rows(report: Dict[str, Any]) -> List[Dict[str, 
     for badge, key in [
         ("Best CER", "best_by_cer"),
         ("Best WER", "best_by_wer"),
-        ("Best speed/quality", "best_latency_quality_tradeoff"),
+        ("Fastest comparable", "fastest_comparable"),
     ]:
         row = analysis.get(key)
+        if not isinstance(row, dict) or not row:
+            row = analysis.get("best_latency_quality_tradeoff") if key == "fastest_comparable" else row
         if not isinstance(row, dict) or not row:
             continue
         fallback.append(
@@ -1364,11 +1378,30 @@ def _auto_experiment_best_method_rows(report: Dict[str, Any]) -> List[Dict[str, 
                 "wer_eojeol": row.get("wer_eojeol"),
                 "delta_cer_vs_baseline": row.get("delta_cer_vs_baseline"),
                 "delta_wer_vs_baseline": row.get("delta_wer_vs_baseline"),
+                "latency_ms": row.get("latency_ms"),
                 "rag_context_count": row.get("rag_context_count"),
                 "search_result_count": row.get("search_result_count"),
+                "strict_status": "",
+                "tie_count": "",
             }
         )
     return fallback
+
+
+def _auto_experiment_comparison_note(analysis: Dict[str, Any]) -> str:
+    methods = analysis.get("best_methods")
+    if not isinstance(methods, list):
+        return ""
+    metric_methods = [
+        method
+        for method in methods
+        if isinstance(method, dict) and method.get("metric_key") in {"cer_normalized_no_space", "wer_eojeol"}
+    ]
+    if not metric_methods:
+        return ""
+    if any(_truthy(method.get("strict_improved")) for method in metric_methods):
+        return " (strict metric improvement found)"
+    return " (no strict CER/WER gain vs baseline)"
 
 
 def _auto_experiment_best_badges(report: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -1387,7 +1420,17 @@ def _auto_experiment_best_badges(report: Dict[str, Any]) -> Dict[str, List[str]]
 def _auto_experiment_best_badge_html(value: Any) -> str:
     if not isinstance(value, list):
         return ""
-    return "".join(f'<span class="asrpp-best-badge">{escape(str(item))}</span>' for item in value if str(item).strip())
+    return "".join(_auto_experiment_best_badge_span(str(item)) for item in value if str(item).strip())
+
+
+def _auto_experiment_best_badge_span(label: str) -> str:
+    lowered = label.strip().lower()
+    css_class = "asrpp-best-badge"
+    if "tie" in lowered or "no gain" in lowered:
+        css_class += " tie"
+    elif "fastest" in lowered:
+        css_class += " speed"
+    return f'<span class="{css_class}">{escape(label)}</span>'
 
 
 def _auto_experiment_enabled_features(row: Dict[str, Any]) -> str:
@@ -1575,6 +1618,25 @@ def _format_count_cell(value: Any) -> str:
     if number is None:
         return ""
     return str(int(number))
+
+
+def _format_tie_count_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    count = int(number)
+    if count <= 0:
+        return ""
+    return f"{count} tied" if count > 1 else "unique"
+
+
+def _format_latency_cell(value: Any) -> str:
+    number = _metric_float_or_none(value)
+    if number is None:
+        return ""
+    if number >= 1000:
+        return f"{number / 1000.0:.2f}s"
+    return f"{number:.0f}ms"
 
 
 def _join_audit_values(value: Any) -> str:
