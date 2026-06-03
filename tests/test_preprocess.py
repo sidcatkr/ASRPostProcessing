@@ -6,7 +6,12 @@ import wave
 from pathlib import Path
 
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.preprocess import _preprocess_subprocess_env, ffmpeg_executable, preprocess_audio
+from asrpostprocessing.preprocess import (
+    _preprocess_payload_is_complete,
+    _preprocess_subprocess_env,
+    ffmpeg_executable,
+    preprocess_audio,
+)
 
 
 class PreprocessTest(unittest.TestCase):
@@ -217,6 +222,30 @@ class PreprocessTest(unittest.TestCase):
             self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "2")
             self.assertEqual(env["ASRPP_PREPROCESS_VENV"], str((root / ".venv-preprocess").resolve()))
             self.assertIn("deepfilter_sitecustomize", env["PYTHONPATH"])
+
+    def test_preprocess_cache_rejects_partial_step_success(self):
+        self.assertFalse(
+            _preprocess_payload_is_complete(
+                {
+                    "applied": True,
+                    "steps": [
+                        {"step": "noise_reduction", "applied": False},
+                        {"step": "volume_normalization", "applied": True},
+                    ],
+                }
+            )
+        )
+        self.assertTrue(
+            _preprocess_payload_is_complete(
+                {
+                    "applied": True,
+                    "steps": [
+                        {"step": "noise_reduction", "applied": True},
+                        {"step": "volume_normalization", "applied": True},
+                    ],
+                }
+            )
+        )
 
 
 def _write_pcm16_wav(path: Path, samples):

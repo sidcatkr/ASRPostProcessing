@@ -33,7 +33,12 @@ def preprocess_audio(audio_path: str, config: ExperimentConfig) -> PreprocessRes
     cache_path = _preprocess_cache_path(audio_path, config, plan) if config.preprocess_cache_enabled else None
     if cache_path is not None:
         cached = read_json(cache_path)
-        if cached and cached.get("audio_path") and Path(str(cached["audio_path"])).exists():
+        if (
+            cached
+            and cached.get("audio_path")
+            and Path(str(cached["audio_path"])).exists()
+            and _preprocess_payload_is_complete(cached)
+        ):
             cached.setdefault("metadata", {})
             cached["metadata"]["cache_hit"] = True
             cached["metadata"]["cache_path"] = str(cache_path)
@@ -76,7 +81,7 @@ def preprocess_audio(audio_path: str, config: ExperimentConfig) -> PreprocessRes
         },
         steps=steps,
     )
-    if cache_path is not None and result.applied:
+    if cache_path is not None and result.applied and _preprocess_payload_is_complete(result.to_dict()):
         payload = result.to_dict()
         payload.setdefault("metadata", {})
         payload["metadata"]["cache_hit"] = False
@@ -694,6 +699,15 @@ def _preprocess_cache_path(audio_path: str, config: ExperimentConfig, plan: List
         "volume_target_dbfs": float(config.volume_target_dbfs),
     }
     return cache_json_path(config.cache_dir, "preprocess", stable_json_hash(payload))
+
+
+def _preprocess_payload_is_complete(payload: Dict[str, Any]) -> bool:
+    if not bool(payload.get("applied")):
+        return False
+    steps = payload.get("steps")
+    if not isinstance(steps, list):
+        return True
+    return all(not isinstance(step, dict) or bool(step.get("applied")) for step in steps)
 
 
 def _preprocess_subprocess_env(config: ExperimentConfig) -> Dict[str, str] | None:
