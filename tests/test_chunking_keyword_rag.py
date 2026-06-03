@@ -7,10 +7,13 @@ from unittest.mock import patch
 from asrpostprocessing.chunking import chunk_text
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.keyword_bias import build_keyword_bias_instruction, quantize_keyword_weight
-from asrpostprocessing.rag import SUPPORTED_RAG_EXTENSIONS, build_rag_index, load_rag_documents
+from asrpostprocessing.rag import SUPPORTED_RAG_EXTENSIONS, build_rag_index, clear_rag_index_cache, load_rag_documents
 
 
 class ChunkingKeywordRagTest(unittest.TestCase):
+    def tearDown(self):
+        clear_rag_index_cache()
+
     def test_chunk_overlap(self):
         text = "가" * 150 + ". " + "나" * 150 + ". " + "다" * 150
         chunks = chunk_text(text, max_chars=180, overlap=20)
@@ -31,6 +34,54 @@ class ChunkingKeywordRagTest(unittest.TestCase):
         contexts = index.retrieve("알파텀 AlphaTerm", top_k=2, strength=0.5)
         self.assertTrue(contexts)
         self.assertIn("AlphaTerm", contexts[0].text)
+
+    def test_faiss_rag_index_is_cached_for_same_documents(self):
+        class FakeFaissIndex:
+            builds = 0
+
+            def __init__(self, documents, model_name):
+                FakeFaissIndex.builds += 1
+                self.documents = documents
+                self.model_name = model_name
+
+        config = ExperimentConfig(
+            enable_rag=True,
+            rag_embedding_backend="faiss",
+            rag_embedding_model="fake-embedding",
+            rag_inline_text="AlphaTerm은 프로젝트 용어입니다.",
+        )
+        with patch("asrpostprocessing.rag.FaissRAGIndex", FakeFaissIndex):
+            first = build_rag_index(config)
+            second = build_rag_index(config)
+        self.assertIs(first, second)
+        self.assertEqual(FakeFaissIndex.builds, 1)
+
+    def test_faiss_rag_index_cache_changes_when_documents_change(self):
+        class FakeFaissIndex:
+            builds = 0
+
+            def __init__(self, documents, model_name):
+                FakeFaissIndex.builds += 1
+                self.documents = documents
+                self.model_name = model_name
+
+        first_config = ExperimentConfig(
+            enable_rag=True,
+            rag_embedding_backend="faiss",
+            rag_embedding_model="fake-embedding",
+            rag_inline_text="AlphaTerm은 프로젝트 용어입니다.",
+        )
+        second_config = ExperimentConfig(
+            enable_rag=True,
+            rag_embedding_backend="faiss",
+            rag_embedding_model="fake-embedding",
+            rag_inline_text="BetaTerm은 다른 프로젝트 용어입니다.",
+        )
+        with patch("asrpostprocessing.rag.FaissRAGIndex", FakeFaissIndex):
+            first = build_rag_index(first_config)
+            second = build_rag_index(second_config)
+        self.assertIsNot(first, second)
+        self.assertEqual(FakeFaissIndex.builds, 2)
 
     def test_rag_loads_text_file_formats(self):
         self.assertIn(".txt", SUPPORTED_RAG_EXTENSIONS)

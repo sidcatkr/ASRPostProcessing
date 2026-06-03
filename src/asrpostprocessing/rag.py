@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .config import ExperimentConfig, clamp01
 from .schemas import RAGContext
@@ -13,6 +14,8 @@ from .schemas import RAGContext
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-.]+|[가-힣]+")
 SUPPORTED_RAG_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".pdf"}
+_RAG_INDEX_CACHE_LOCK = threading.RLock()
+_RAG_INDEX_CACHE: Dict[Tuple[str, str, str], object] = {}
 
 
 @dataclass
@@ -51,6 +54,7 @@ class FaissRAGIndex:
 
         self.documents = documents
         self.model = SentenceTransformer(model_name)
+        self._lock = threading.RLock()
         texts = [document.text for document in documents]
         embeddings = self.model.encode(texts, normalize_embeddings=True)
         self.index = faiss.IndexFlatIP(embeddings.shape[1])
@@ -59,8 +63,9 @@ class FaissRAGIndex:
     def retrieve(self, query: str, top_k: int = 5, strength: float = 0.5) -> List[RAGContext]:
         if not self.documents:
             return []
-        query_embedding = self.model.encode([query], normalize_embeddings=True)
-        scores, indices = self.index.search(query_embedding, min(top_k, len(self.documents)))
+        with self._lock:
+            query_embedding = self.model.encode([query], normalize_embeddings=True)
+            scores, indices = self.index.search(query_embedding, min(top_k, len(self.documents)))
         threshold = 0.15 + 0.35 * (1.0 - clamp01(strength))
         contexts: List[RAGContext] = []
         for score, index in zip(scores[0], indices[0]):
@@ -73,11 +78,23 @@ class FaissRAGIndex:
 
 def build_rag_index(config: ExperimentConfig, extra_texts: Optional[Iterable[str]] = None):
     documents = load_rag_documents(config.rag_files, config.rag_inline_text, extra_texts=extra_texts)
-    if config.rag_embedding_backend == "faiss":
-        faiss_index = _try_build_faiss_index(documents, config)
-        if faiss_index is not None:
-            return faiss_index
-    return LexicalRAGIndex(documents)
+    cache_key = _rag_index_cache_key(config, documents)
+    with _RAG_INDEX_CACHE_LOCK:
+        cached = _RAG_INDEX_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        if config.rag_embedding_backend == "faiss":
+            faiss_index = _try_build_faiss_index(documents, config)
+            index = faiss_index if faiss_index is not None else LexicalRAGIndex(documents)
+        else:
+            index = LexicalRAGIndex(documents)
+        _RAG_INDEX_CACHE[cache_key] = index
+        return index
+
+
+def clear_rag_index_cache() -> None:
+    with _RAG_INDEX_CACHE_LOCK:
+        _RAG_INDEX_CACHE.clear()
 
 
 def load_rag_documents(paths: Iterable[str], inline_text: str = "", extra_texts: Optional[Iterable[str]] = None) -> List[RAGDocument]:
@@ -166,3 +183,15 @@ def _try_build_faiss_index(documents: List[RAGDocument], config: ExperimentConfi
         return FaissRAGIndex(documents, config.rag_embedding_model)
     except Exception:
         return None
+
+
+def _rag_index_cache_key(config: ExperimentConfig, documents: List[RAGDocument]) -> Tuple[str, str, str]:
+    digest = hashlib.sha256()
+    for document in documents:
+        digest.update(document.doc_id.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(document.source.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(document.text.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+    return (config.rag_embedding_backend, config.rag_embedding_model, digest.hexdigest())
