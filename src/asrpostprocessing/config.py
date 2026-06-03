@@ -110,7 +110,7 @@ class ExperimentConfig:
     rag_files: List[str] = field(default_factory=list)
     rag_inline_text: str = ""
     rag_embedding_backend: str = "lexical"
-    rag_embedding_model: str = "intfloat/multilingual-e5-base"
+    rag_embedding_model: str = "BAAI/bge-m3"
 
     enable_search: bool = False
     search_strength: float = 0.0

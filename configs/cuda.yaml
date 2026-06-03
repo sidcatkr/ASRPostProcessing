@@ -41,7 +41,7 @@ enable_rag: false
 rag_strength: 0.0
 rag_top_k: 5
 rag_embedding_backend: faiss
-rag_embedding_model: intfloat/multilingual-e5-base
+rag_embedding_model: BAAI/bge-m3
 enable_search: false
 search_strength: 0.0
 search_provider: duckduckgo

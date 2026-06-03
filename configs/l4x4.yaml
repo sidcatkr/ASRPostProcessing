@@ -143,7 +143,7 @@ enable_rag: true
 rag_strength: 1.0
 rag_top_k: 8
 rag_embedding_backend: faiss
-rag_embedding_model: intfloat/multilingual-e5-base
+rag_embedding_model: BAAI/bge-m3
 enable_search: true
 search_strength: 1.0
 search_provider: duckduckgo
