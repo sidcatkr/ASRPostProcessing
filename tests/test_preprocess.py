@@ -216,6 +216,7 @@ class PreprocessTest(unittest.TestCase):
             self.assertIsNotNone(env)
             self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "2")
             self.assertEqual(env["ASRPP_PREPROCESS_VENV"], str((root / ".venv-preprocess").resolve()))
+            self.assertIn("deepfilter_sitecustomize", env["PYTHONPATH"])
 
 
 def _write_pcm16_wav(path: Path, samples):

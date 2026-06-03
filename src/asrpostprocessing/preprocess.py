@@ -707,6 +707,12 @@ def _preprocess_subprocess_env(config: ExperimentConfig) -> Dict[str, str] | Non
         env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     if preprocess_venv and not env.get("ASRPP_PREPROCESS_VENV"):
         env["ASRPP_PREPROCESS_VENV"] = str(preprocess_venv)
+    sitecustomize_path = _deepfilter_sitecustomize_path()
+    if sitecustomize_path is not None:
+        existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+        env["PYTHONPATH"] = (
+            f"{sitecustomize_path}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else str(sitecustomize_path)
+        )
     return env
 
 
@@ -721,6 +727,13 @@ def _default_preprocess_venv() -> Path | None:
     candidate = Path(".venv-preprocess")
     if (candidate / "bin" / "deepFilter").exists():
         return candidate.resolve()
+    return None
+
+
+def _deepfilter_sitecustomize_path() -> Path | None:
+    candidate = Path(__file__).resolve().parent / "deepfilter_sitecustomize"
+    if (candidate / "sitecustomize.py").exists():
+        return candidate
     return None
 
 
