@@ -38,11 +38,16 @@ class ChunkingKeywordRagTest(unittest.TestCase):
     def test_faiss_rag_index_is_cached_for_same_documents(self):
         class FakeFaissIndex:
             builds = 0
+            retrieve_calls = 0
 
             def __init__(self, documents, model_name):
                 FakeFaissIndex.builds += 1
                 self.documents = documents
                 self.model_name = model_name
+
+            def retrieve(self, query, top_k=5, strength=0.5):
+                FakeFaissIndex.retrieve_calls += 1
+                return []
 
         config = ExperimentConfig(
             enable_rag=True,
@@ -55,6 +60,20 @@ class ChunkingKeywordRagTest(unittest.TestCase):
             second = build_rag_index(config)
         self.assertIs(first, second)
         self.assertEqual(FakeFaissIndex.builds, 1)
+
+    def test_lexical_rag_retrieval_is_cached_per_query(self):
+        config = ExperimentConfig(
+            enable_rag=True,
+            rag_embedding_backend="lexical",
+            rag_inline_text="AlphaTerm은 프로젝트 용어입니다.\n\n무관한 날씨 문서입니다.",
+            rag_top_k=2,
+        )
+        index = build_rag_index(config)
+        with patch("asrpostprocessing.rag._term_counts", wraps=__import__("asrpostprocessing.rag", fromlist=["_term_counts"])._term_counts) as counts:
+            first = index.retrieve("AlphaTerm", top_k=2, strength=0.5)
+            second = index.retrieve("AlphaTerm", top_k=2, strength=0.5)
+        self.assertEqual([context.context_id for context in first], [context.context_id for context in second])
+        self.assertEqual(counts.call_count, 1)
 
     def test_faiss_rag_index_cache_changes_when_documents_change(self):
         class FakeFaissIndex:
@@ -96,6 +115,19 @@ class ChunkingKeywordRagTest(unittest.TestCase):
         self.assertEqual(len(documents), 1)
         self.assertIn("AlphaTerm", documents[0].text)
         self.assertEqual(documents[0].source, str(path))
+
+    def test_rag_document_loading_is_cached_until_file_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.md"
+            path.write_text("AlphaTerm은 프로젝트 용어입니다.", encoding="utf-8")
+            first = load_rag_documents([str(path)])
+            with patch("asrpostprocessing.rag.read_rag_file") as read_file:
+                second = load_rag_documents([str(path)])
+            self.assertEqual([doc.doc_id for doc in first], [doc.doc_id for doc in second])
+            read_file.assert_not_called()
+            path.write_text("BetaTerm은 다른 용어입니다.", encoding="utf-8")
+            changed = load_rag_documents([str(path)])
+        self.assertNotEqual(first[0].doc_id, changed[0].doc_id)
 
     def test_rag_reads_pdf_with_pypdf(self):
         class FakePage:

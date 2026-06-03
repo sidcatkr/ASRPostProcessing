@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 from pathlib import Path
 from typing import List
@@ -8,6 +9,10 @@ from typing import List
 from .cache import read_json, write_json_atomic
 from .config import ExperimentConfig
 from .schemas import SearchResult
+
+_SEARCH_CACHE_LOCK = threading.RLock()
+_SEARCH_MEMORY_CACHE = {}
+_SEARCH_KEY_LOCKS = {}
 
 
 class CachedSearchProvider:
@@ -19,19 +24,30 @@ class CachedSearchProvider:
     def search(self, query: str) -> List[SearchResult]:
         if not self.config.enable_search:
             return []
+        cache_key = self._cache_key(query)
         cache_path = self._cache_path(query)
-        if cache_path.exists():
-            payload = read_json(cache_path)
-            if isinstance(payload, dict):
-                return [SearchResult(**item) for item in payload.get("results", [])]
-            try:
-                cache_path.unlink()
-            except FileNotFoundError:
-                pass
-        results = self._fetch(query)
-        payload = {"query": query, "created_at": time.time(), "results": [result.to_dict() for result in results]}
-        write_json_atomic(cache_path, payload)
-        return results
+        with _search_key_lock(cache_key):
+            with _SEARCH_CACHE_LOCK:
+                cached = _SEARCH_MEMORY_CACHE.get(cache_key)
+                if cached is not None:
+                    return _copy_results(cached)
+            if cache_path.exists():
+                payload = read_json(cache_path)
+                if isinstance(payload, dict):
+                    results = [SearchResult(**item) for item in payload.get("results", [])]
+                    with _SEARCH_CACHE_LOCK:
+                        _SEARCH_MEMORY_CACHE[cache_key] = [result.to_dict() for result in results]
+                    return results
+                try:
+                    cache_path.unlink()
+                except FileNotFoundError:
+                    pass
+            results = self._fetch(query)
+            payload = {"query": query, "created_at": time.time(), "results": [result.to_dict() for result in results]}
+            write_json_atomic(cache_path, payload)
+            with _SEARCH_CACHE_LOCK:
+                _SEARCH_MEMORY_CACHE[cache_key] = list(payload["results"])
+            return results
 
     def _fetch(self, query: str) -> List[SearchResult]:
         provider = (self.config.search_provider or "").lower()
@@ -111,9 +127,39 @@ class CachedSearchProvider:
         return results
 
     def _cache_path(self, query: str) -> Path:
-        key = f"{self.config.search_provider}:{query}"
+        key = self._cache_key(query)
         digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
         return self.cache_dir / f"{digest}.json"
+
+    def _cache_key(self, query: str) -> str:
+        return "|".join(
+            [
+                str(self.cache_dir.resolve()),
+                str(self.config.search_provider or ""),
+                str(self.config.search_endpoint or ""),
+                f"{float(self.config.search_strength):.4f}",
+                query or "",
+            ]
+        )
+
+
+def clear_search_memory_cache() -> None:
+    with _SEARCH_CACHE_LOCK:
+        _SEARCH_MEMORY_CACHE.clear()
+        _SEARCH_KEY_LOCKS.clear()
+
+
+def _copy_results(items) -> List[SearchResult]:
+    return [SearchResult(**dict(item)) for item in items]
+
+
+def _search_key_lock(cache_key: str) -> threading.RLock:
+    with _SEARCH_CACHE_LOCK:
+        lock = _SEARCH_KEY_LOCKS.get(cache_key)
+        if lock is None:
+            lock = threading.RLock()
+            _SEARCH_KEY_LOCKS[cache_key] = lock
+        return lock
 
 
 def _flatten_related_topics(items):

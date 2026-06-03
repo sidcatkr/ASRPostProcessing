@@ -16,6 +16,7 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9_+\-.]+|[가-힣]+")
 SUPPORTED_RAG_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".pdf"}
 _RAG_INDEX_CACHE_LOCK = threading.RLock()
 _RAG_INDEX_CACHE: Dict[Tuple[str, str, str], object] = {}
+_RAG_DOCUMENT_CACHE: Dict[Tuple[Tuple[Tuple[str, bool, int, int], ...], str, Tuple[str, ...]], List[RAGDocument]] = {}
 
 
 @dataclass
@@ -29,8 +30,15 @@ class LexicalRAGIndex:
     def __init__(self, documents: Iterable[RAGDocument]):
         self.documents = list(documents)
         self._vectors = [_term_counts(doc.text) for doc in self.documents]
+        self._retrieve_lock = threading.RLock()
+        self._retrieve_cache: Dict[Tuple[str, int, float], List[RAGContext]] = {}
 
     def retrieve(self, query: str, top_k: int = 5, strength: float = 0.5) -> List[RAGContext]:
+        cache_key = _retrieve_cache_key(query, top_k, strength)
+        with self._retrieve_lock:
+            cached = self._retrieve_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
         query_vector = _term_counts(query)
         if not query_vector:
             return []
@@ -41,10 +49,13 @@ class LexicalRAGIndex:
             if score >= threshold:
                 scored.append((score, document))
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [
+        contexts = [
             RAGContext(context_id=document.doc_id, text=document.text, score=score, source=document.source)
             for score, document in scored[:top_k]
         ]
+        with self._retrieve_lock:
+            self._retrieve_cache[cache_key] = list(contexts)
+        return contexts
 
 
 class FaissRAGIndex:
@@ -55,6 +66,7 @@ class FaissRAGIndex:
         self.documents = documents
         self.model = SentenceTransformer(model_name)
         self._lock = threading.RLock()
+        self._retrieve_cache: Dict[Tuple[str, int, float], List[RAGContext]] = {}
         texts = [document.text for document in documents]
         embeddings = self.model.encode(texts, normalize_embeddings=True)
         self.index = faiss.IndexFlatIP(embeddings.shape[1])
@@ -63,17 +75,22 @@ class FaissRAGIndex:
     def retrieve(self, query: str, top_k: int = 5, strength: float = 0.5) -> List[RAGContext]:
         if not self.documents:
             return []
+        cache_key = _retrieve_cache_key(query, top_k, strength)
         with self._lock:
+            cached = self._retrieve_cache.get(cache_key)
+            if cached is not None:
+                return list(cached)
             query_embedding = self.model.encode([query], normalize_embeddings=True)
             scores, indices = self.index.search(query_embedding, min(top_k, len(self.documents)))
-        threshold = 0.15 + 0.35 * (1.0 - clamp01(strength))
-        contexts: List[RAGContext] = []
-        for score, index in zip(scores[0], indices[0]):
-            if index < 0 or float(score) < threshold:
-                continue
-            document = self.documents[int(index)]
-            contexts.append(RAGContext(context_id=document.doc_id, text=document.text, score=float(score), source=document.source))
-        return contexts
+            threshold = 0.15 + 0.35 * (1.0 - clamp01(strength))
+            contexts: List[RAGContext] = []
+            for score, index in zip(scores[0], indices[0]):
+                if index < 0 or float(score) < threshold:
+                    continue
+                document = self.documents[int(index)]
+                contexts.append(RAGContext(context_id=document.doc_id, text=document.text, score=float(score), source=document.source))
+            self._retrieve_cache[cache_key] = list(contexts)
+            return contexts
 
 
 def build_rag_index(config: ExperimentConfig, extra_texts: Optional[Iterable[str]] = None):
@@ -95,11 +112,19 @@ def build_rag_index(config: ExperimentConfig, extra_texts: Optional[Iterable[str
 def clear_rag_index_cache() -> None:
     with _RAG_INDEX_CACHE_LOCK:
         _RAG_INDEX_CACHE.clear()
+        _RAG_DOCUMENT_CACHE.clear()
 
 
 def load_rag_documents(paths: Iterable[str], inline_text: str = "", extra_texts: Optional[Iterable[str]] = None) -> List[RAGDocument]:
+    path_list = [str(path) for path in (paths or [])]
+    extra_list = [text for text in (extra_texts or []) if text]
+    cache_key = _rag_document_cache_key(path_list, inline_text, extra_list)
+    with _RAG_INDEX_CACHE_LOCK:
+        cached = _RAG_DOCUMENT_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
     documents: List[RAGDocument] = []
-    for path in paths or []:
+    for path in path_list:
         path_obj = Path(path)
         if not path_obj.exists() or not path_obj.is_file():
             continue
@@ -107,9 +132,11 @@ def load_rag_documents(paths: Iterable[str], inline_text: str = "", extra_texts:
         documents.extend(_split_document(text, source=str(path_obj)))
     if inline_text:
         documents.extend(_split_document(inline_text, source="inline"))
-    for index, text in enumerate(extra_texts or []):
+    for index, text in enumerate(extra_list):
         if text:
             documents.extend(_split_document(text, source=f"extra:{index}"))
+    with _RAG_INDEX_CACHE_LOCK:
+        _RAG_DOCUMENT_CACHE[cache_key] = list(documents)
     return documents
 
 
@@ -195,3 +222,19 @@ def _rag_index_cache_key(config: ExperimentConfig, documents: List[RAGDocument])
         digest.update(document.text.encode("utf-8", errors="replace"))
         digest.update(b"\0")
     return (config.rag_embedding_backend, config.rag_embedding_model, digest.hexdigest())
+
+
+def _retrieve_cache_key(query: str, top_k: int, strength: float) -> Tuple[str, int, float]:
+    return (query or "", max(1, int(top_k)), round(clamp01(strength), 4))
+
+
+def _rag_document_cache_key(paths: List[str], inline_text: str, extra_texts: List[str]) -> Tuple[Tuple[Tuple[str, bool, int, int], ...], str, Tuple[str, ...]]:
+    path_parts = []
+    for path in paths:
+        path_obj = Path(path)
+        try:
+            stat = path_obj.stat()
+            path_parts.append((str(path_obj), path_obj.is_file(), int(stat.st_mtime_ns), int(stat.st_size)))
+        except OSError:
+            path_parts.append((str(path_obj), False, 0, 0))
+    return (tuple(path_parts), inline_text or "", tuple(extra_texts))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, dataclass
@@ -26,6 +27,7 @@ from .model_server import ensure_model_servers, stop_model_servers
 from .pipeline import PipelineRunner
 
 StatusCallback = Callable[[str], None]
+_ACTIVE_ROW_RECORDER: Optional["_AutoExperimentRowRecorder"] = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,31 @@ class ExperimentCase:
         payload = asdict(self)
         payload["condition"] = self.condition.to_dict()
         return payload
+
+
+class _AutoExperimentRowRecorder:
+    def __init__(self, path: Path, total: int, status_callback: Optional[StatusCallback] = None):
+        self.path = path
+        self.total = total
+        self.status_callback = status_callback
+        self._lock = threading.RLock()
+        self._count = 0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("", encoding="utf-8")
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+    def record(self, row: Dict[str, Any]) -> None:
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+            self._count += 1
+            count = self._count
+        if count == 1 or count % 25 == 0 or count == self.total:
+            _emit(self.status_callback, f"Auto experiment progress: {count}/{self.total} case rows persisted.")
 
 
 def run_auto_experiment(
@@ -57,33 +84,41 @@ def run_auto_experiment(
     output_dir.mkdir(parents=True, exist_ok=True)
     _emit(status_callback, f"Auto experiment {run_id} generated {len(cases)} case(s) from {len(conditions)} condition(s).")
     started = time.time()
-    if base_config.model_residency == "stage_replicas" and base_config.auto_start_model_servers:
-        rows = _run_stage_replicas_auto_experiment(
-            audio_path,
-            base_config,
-            cases,
-            reference_text,
-            rag_inline_text,
-            status_callback,
-        )
-    elif base_config.asr_cache_enabled:
-        rows = _run_conditions_after_asr_cache_ready(
-            audio_path,
-            base_config,
-            cases,
-            reference_text,
-            rag_inline_text,
-            status_callback,
-        )
-    else:
-        rows = _run_conditions_parallel(
-            audio_path,
-            base_config,
-            list(enumerate(cases)),
-            reference_text,
-            rag_inline_text,
-            status_callback,
-        )
+    partial_rows_path = output_dir / "auto_experiment_rows.partial.jsonl"
+    recorder = _AutoExperimentRowRecorder(partial_rows_path, len(cases), status_callback)
+    global _ACTIVE_ROW_RECORDER
+    previous_recorder = _ACTIVE_ROW_RECORDER
+    _ACTIVE_ROW_RECORDER = recorder
+    try:
+        if base_config.model_residency == "stage_replicas" and base_config.auto_start_model_servers:
+            rows = _run_stage_replicas_auto_experiment(
+                audio_path,
+                base_config,
+                cases,
+                reference_text,
+                rag_inline_text,
+                status_callback,
+            )
+        elif base_config.asr_cache_enabled:
+            rows = _run_conditions_after_asr_cache_ready(
+                audio_path,
+                base_config,
+                cases,
+                reference_text,
+                rag_inline_text,
+                status_callback,
+            )
+        else:
+            rows = _run_conditions_parallel(
+                audio_path,
+                base_config,
+                list(enumerate(cases)),
+                reference_text,
+                rag_inline_text,
+                status_callback,
+            )
+    finally:
+        _ACTIVE_ROW_RECORDER = previous_recorder
     rows.sort(key=lambda row: str(row.get("case_id") or row.get("condition_id", "")))
     _annotate_baseline_deltas(rows)
     summary_path = output_dir / "auto_experiment_summary.csv"
@@ -114,6 +149,7 @@ def run_auto_experiment(
         "audit": audit,
         "elapsed_s": time.time() - started,
         "summary_csv": str(summary_path),
+        "partial_rows_jsonl": str(partial_rows_path),
         "analysis_json": str(analysis_path),
         "conditions_json": str(manifest_path),
         "analysis": analysis,
@@ -435,6 +471,9 @@ def _condition_row_from_future(
         if config is not None:
             row.update(_routing_payload(config))
         _emit(status_callback, f"Auto case failed: {case.case_id}: {exc}")
+    recorder = _ACTIVE_ROW_RECORDER
+    if recorder is not None:
+        recorder.record(row)
     return row
 
 

@@ -544,8 +544,15 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         )
         refresh_gpu_button.click(fn=query_gpu_status, outputs=gpu_output)
 
-    demo.queue()
+    _enable_queue(demo)
     return demo.launch(**_launch_kwargs(host, port, share))
+
+
+def _enable_queue(demo):
+    try:
+        demo.queue(default_concurrency_limit=2)
+    except TypeError:
+        demo.queue()
 
 
 def run_from_ui_stream(*args):
@@ -922,6 +929,7 @@ def run_from_ui(
                 f"Coverage: {report['mode']}\n"
                 f"Conditions: {report['condition_count']}\n"
                 f"Summary: {report['summary_csv']}\n"
+                f"Partial rows: {report.get('partial_rows_jsonl', '')}\n"
                 f"Analysis: {report['analysis_json']}\n"
                 f"Output: {report['output_dir']}"
             ),

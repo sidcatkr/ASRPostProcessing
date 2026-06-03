@@ -2,6 +2,7 @@ import tempfile
 import threading
 import unittest
 import csv
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -299,6 +300,7 @@ class AutoExperimentTest(unittest.TestCase):
                 mode="core_ablation",
             )
             self.assertTrue(Path(report["summary_csv"]).exists())
+            self.assertTrue(Path(report["partial_rows_jsonl"]).exists())
             self.assertTrue(Path(report["analysis_json"]).exists())
             self.assertGreaterEqual(report["condition_count"], 3)
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
@@ -320,6 +322,13 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertIn("preprocess_gpu", rows[0])
             self.assertIn("model_residency", rows[0])
             self.assertIn("planned_asr_cache_group_key", rows[0])
+            partial_rows = [
+                json.loads(line)
+                for line in Path(report["partial_rows_jsonl"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(partial_rows), report["case_count"])
+            self.assertTrue({row["case_id"] for row in partial_rows})
 
     def test_auto_experiment_starts_ready_conditions_before_all_asr_groups_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
