@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from asrpostprocessing.config import ExperimentConfig
 from asrpostprocessing.correction_parser import parse_correction_response
+from asrpostprocessing.model_options import AUTO_EXPERIMENT_NOISE_MODELS, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS
 from asrpostprocessing.model_server import ModelServerStatus
 from asrpostprocessing.pipeline import PipelineRunner, _preprocess_status
 from asrpostprocessing.schemas import CorrectionResult, SearchResult, TranscriptResult
@@ -343,6 +344,8 @@ class ParserPipelineUiTest(unittest.TestCase):
                     auto_experiment_include_models=True,
                     auto_experiment_asr_models="",
                     auto_experiment_post_models="",
+                    auto_experiment_noise_models="",
+                    auto_experiment_rag_embedding_models="",
                     base_config_state=base_config.to_dict(),
                 )
 
@@ -351,6 +354,8 @@ class ParserPipelineUiTest(unittest.TestCase):
             self.assertEqual(config.post_model, "base-post")
             self.assertEqual(config.auto_experiment_asr_models, ["strong-asr-a", "strong-asr-b", "base-asr"])
             self.assertEqual(config.auto_experiment_post_models, ["strong-post-a", "strong-post-b", "base-post"])
+            self.assertEqual(config.auto_experiment_noise_models, AUTO_EXPERIMENT_NOISE_MODELS)
+            self.assertEqual(config.auto_experiment_rag_embedding_models, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS)
             self.assertEqual(captured["mode"], "full_valid")
             self.assertIn("Auto Experiment ID: auto-test", status)
 

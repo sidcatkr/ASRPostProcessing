@@ -16,21 +16,20 @@ from .auto_experiment import run_auto_experiment
 from .cache import cache_file_by_sha256
 from .config import ExperimentConfig
 from .gpu_status import query_gpu_status
+from .model_options import (
+    AUTO_EXPERIMENT_NOISE_MODELS,
+    AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS,
+    NOISE_REDUCTION_MODEL_CHOICES,
+    auto_experiment_noise_models as _auto_experiment_noise_model_grid,
+    auto_experiment_rag_embedding_models as _auto_experiment_rag_embedding_model_grid,
+    canonical_noise_reduction_model as _canonical_noise_reduction_model,
+)
 from .pipeline import PipelineRunner
 from .preprocess import preprocess_audio
 from .text import make_character_diff_html, make_diff_export_document, make_diff_html
 
 RUN_STATUS_POLL_INTERVAL_S = 1.0
 RUN_STATUS_RECENT_EVENT_LIMIT = 8
-NOISE_REDUCTION_MODEL_CHOICES = [
-    ("None", "none"),
-    ("FFmpeg afftdn", "afftdn"),
-    ("RNNoise", "rnnoise"),
-    ("DeepFilterNet2", "deepfilternet2"),
-    ("DeepFilterNet2-PF", "deepfilternet2_pf"),
-    ("DeepFilterNet3", "deepfilternet3"),
-    ("BS-RoFormer", "bs-roformer"),
-]
 RunOutput = Tuple[str, str, str, dict, list, dict, list, str, Optional[str], str, dict]
 
 
@@ -226,12 +225,12 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     auto_experiment_noise_models = gr.Textbox(
                         label="Noise models for Auto Experiment",
                         value=", ".join(initial_config.auto_experiment_noise_models),
-                        placeholder="afftdn, deepfilternet2, deepfilternet2_pf, deepfilternet3, rnnoise",
+                        placeholder=", ".join(AUTO_EXPERIMENT_NOISE_MODELS),
                     )
                     auto_experiment_rag_embedding_models = gr.Textbox(
                         label="RAG embedding models for Auto Experiment",
                         value=", ".join(initial_config.auto_experiment_rag_embedding_models),
-                        placeholder="intfloat/multilingual-e5-base, ...",
+                        placeholder=", ".join(AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS),
                     )
                 with gr.Row():
                     auto_experiment_keyword_weights = gr.Textbox(
@@ -744,8 +743,22 @@ def run_from_ui(
                 bool(auto_experiment_mode),
                 include_model_axis,
             ),
-            "auto_experiment_noise_models": _split_keywords(auto_experiment_noise_models),
-            "auto_experiment_rag_embedding_models": _split_keywords(auto_experiment_rag_embedding_models),
+            "auto_experiment_noise_models": _auto_experiment_toggle_model_grid(
+                auto_experiment_noise_models,
+                base_config.auto_experiment_noise_models,
+                noise_reduction_model,
+                bool(auto_experiment_mode),
+                include_model_axis,
+                _auto_experiment_noise_model_grid,
+            ),
+            "auto_experiment_rag_embedding_models": _auto_experiment_toggle_model_grid(
+                auto_experiment_rag_embedding_models,
+                base_config.auto_experiment_rag_embedding_models,
+                base_config.rag_embedding_model,
+                bool(auto_experiment_mode),
+                include_model_axis,
+                _auto_experiment_rag_embedding_model_grid,
+            ),
             "auto_experiment_keyword_weights": _split_float_grid(auto_experiment_keyword_weights),
             "auto_experiment_noise_strengths": _split_float_grid(auto_experiment_noise_strengths),
             "auto_experiment_volume_strengths": _split_float_grid(auto_experiment_volume_strengths),
@@ -1902,30 +1915,6 @@ def _format_pipeline_lanes(config: ExperimentConfig) -> str:
     return "Pipeline lanes: " + "; ".join(parts) + "\n"
 
 
-def _canonical_noise_reduction_model(value: str) -> str:
-    normalized = str(value or "none").strip().lower().replace("-", "_")
-    aliases = {
-        "none": "none",
-        "off": "none",
-        "false": "none",
-        "afftdn": "afftdn",
-        "ffmpeg_afftdn": "afftdn",
-        "basic": "afftdn",
-        "built_in": "afftdn",
-        "denoise": "afftdn",
-        "rnnoise": "rnnoise",
-        "deepfilternet2": "deepfilternet2",
-        "deep_filter_net2": "deepfilternet2",
-        "deepfilternet2_pf": "deepfilternet2_pf",
-        "deep_filter_net2_pf": "deepfilternet2_pf",
-        "deepfilternet3": "deepfilternet3",
-        "deep_filter_net3": "deepfilternet3",
-        "bs_roformer": "bs-roformer",
-        "bsroformer": "bs-roformer",
-    }
-    return aliases.get(normalized, normalized.replace("_", "-") if normalized.startswith("bs_") else normalized)
-
-
 def _split_keywords(value: str) -> List[str]:
     return [item.strip() for item in (value or "").replace("\n", ",").split(",") if item.strip()]
 
@@ -1946,6 +1935,24 @@ def _auto_experiment_model_grid(
         models = [str(item).strip() for item in configured_values if str(item).strip()]
         if selected_model:
             models.append(selected_model)
+    deduped: List[str] = []
+    for model in models:
+        if model and model not in deduped:
+            deduped.append(model)
+    return deduped
+
+
+def _auto_experiment_toggle_model_grid(
+    value: str,
+    configured_values: List[str],
+    selected_model: str,
+    auto_mode: bool,
+    include_models: bool,
+    fallback: Callable[[List[str], str], List[str]],
+) -> List[str]:
+    models = _split_keywords(value)
+    if not models and auto_mode and include_models:
+        models = fallback(configured_values, selected_model)
     deduped: List[str] = []
     for model in models:
         if model and model not in deduped:

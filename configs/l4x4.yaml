@@ -85,8 +85,16 @@ auto_experiment_asr_models:
   - Qwen/Qwen3-ASR-1.7B
 auto_experiment_post_models:
   - Qwen/Qwen3.5-9B
-auto_experiment_noise_models: []
-auto_experiment_rag_embedding_models: []
+auto_experiment_noise_models:
+  - afftdn
+  - rnnoise
+  - deepfilternet2
+  - deepfilternet2_pf
+  - deepfilternet3
+  - bs-roformer
+auto_experiment_rag_embedding_models:
+  - intfloat/multilingual-e5-base
+  - BAAI/bge-m3
 auto_experiment_keyword_weights:
   - 0.25
   - 0.5

@@ -14,6 +14,7 @@ from asrpostprocessing.auto_experiment import (
 )
 from asrpostprocessing.config import ExperimentConfig, load_config
 from asrpostprocessing.experiment_matrix import generate_auto_conditions
+from asrpostprocessing.model_options import AUTO_EXPERIMENT_NOISE_MODELS, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS
 from asrpostprocessing.schemas import SearchResult
 
 
@@ -135,6 +136,49 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertTrue(any("__emb_baai_bge_m3" in condition.condition_id for condition in rag_conditions))
         self.assertGreater(len({condition.asr_group_key for condition in conditions}), 2)
 
+    def test_preview_include_models_expands_blank_selectable_model_axes(self):
+        config = ExperimentConfig(
+            asr_backend="mock",
+            post_backend="mock",
+            enable_keyword_bias=False,
+            enable_noise_reduction=True,
+            enable_volume_normalization=False,
+            enable_llm_postprocess=True,
+            enable_rag=True,
+            enable_search=False,
+            auto_experiment_include_models=True,
+            auto_experiment_noise_models=[],
+            auto_experiment_rag_embedding_models=[],
+        )
+
+        preview = preview_auto_experiment(config, mode="full_valid")
+        conditions = preview["conditions"]
+        noise_conditions = [condition for condition in conditions if condition.enable_noise_reduction]
+        rag_conditions = [condition for condition in conditions if condition.enable_rag]
+        noise_rag_conditions = [
+            condition for condition in conditions if condition.enable_noise_reduction and condition.enable_rag
+        ]
+
+        self.assertEqual(
+            {condition.noise_reduction_model for condition in noise_conditions},
+            set(AUTO_EXPERIMENT_NOISE_MODELS),
+        )
+        self.assertEqual(
+            {condition.rag_embedding_model for condition in rag_conditions},
+            set(AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS),
+        )
+        self.assertEqual(
+            {
+                (condition.noise_reduction_model, condition.rag_embedding_model)
+                for condition in noise_rag_conditions
+            },
+            {
+                (noise_model, rag_model)
+                for noise_model in AUTO_EXPERIMENT_NOISE_MODELS
+                for rag_model in AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS
+            },
+        )
+
     def test_l4x4_config_loads_pipeline_lanes(self):
         config = load_config("configs/l4x4.yaml")
         self.assertEqual(config.model_residency, "stage_replicas")
@@ -149,6 +193,8 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertEqual(len(config.stage_server_base_urls), 4)
         self.assertEqual(config.stage_server_gpus, ["0", "1", "2", "3"])
         self.assertEqual(config.preprocess_gpus, ["0", "1", "2", "3"])
+        self.assertEqual(config.auto_experiment_noise_models, AUTO_EXPERIMENT_NOISE_MODELS)
+        self.assertEqual(config.auto_experiment_rag_embedding_models, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS)
         self.assertTrue(config.asr_cache_enabled)
 
     def test_analysis_marks_equal_scores_as_ties_not_improvements(self):

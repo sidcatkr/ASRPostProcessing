@@ -13,6 +13,7 @@ from .cache import stable_json_hash
 from .config import ExperimentConfig
 from .experiment_matrix import ConditionSpec, generate_auto_conditions
 from .logging import make_run_id
+from .model_options import auto_experiment_noise_models, auto_experiment_rag_embedding_models
 from .model_server import ensure_model_servers, stop_model_servers
 from .pipeline import PipelineRunner
 
@@ -437,6 +438,19 @@ def _group_indexed_cases_by_asr_cache_key(cases: List[ExperimentCase]) -> Dict[s
 
 
 def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_valid") -> Dict[str, Any]:
+    noise_model_grid = (
+        auto_experiment_noise_models(base_config.auto_experiment_noise_models, base_config.noise_reduction_model)
+        if base_config.auto_experiment_include_models
+        else None
+    )
+    rag_embedding_model_grid = (
+        auto_experiment_rag_embedding_models(
+            base_config.auto_experiment_rag_embedding_models,
+            base_config.rag_embedding_model,
+        )
+        if base_config.auto_experiment_include_models
+        else None
+    )
     conditions = generate_auto_conditions(
         include_keyword_bias=base_config.enable_keyword_bias,
         include_noise_reduction=base_config.enable_noise_reduction,
@@ -446,15 +460,11 @@ def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_val
         include_search=base_config.enable_search,
         mode=mode,
         keyword_strengths=base_config.auto_experiment_keyword_weights,
-        noise_models=base_config.auto_experiment_noise_models
-        if base_config.auto_experiment_include_models
-        else None,
+        noise_models=noise_model_grid,
         noise_strengths=base_config.auto_experiment_noise_strengths,
         volume_strengths=base_config.auto_experiment_volume_strengths,
         postprocess_strengths=base_config.auto_experiment_postprocess_strengths,
-        rag_embedding_models=base_config.auto_experiment_rag_embedding_models
-        if base_config.auto_experiment_include_models
-        else None,
+        rag_embedding_models=rag_embedding_model_grid,
         rag_strengths=base_config.auto_experiment_rag_strengths,
         rag_top_ks=base_config.auto_experiment_rag_top_ks,
         search_strengths=base_config.auto_experiment_search_strengths,

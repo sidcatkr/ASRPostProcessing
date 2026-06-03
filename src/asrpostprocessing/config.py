@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .model_options import AUTO_EXPERIMENT_NOISE_MODELS, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS
+
 DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS = [0.25, 0.5, 0.75, 1.0]
 DEFAULT_AUTO_EXPERIMENT_STRENGTHS = [0.25, 0.5, 0.75]
 DEFAULT_AUTO_EXPERIMENT_RAG_TOP_KS = [3, 5, 8, 12]
@@ -56,8 +58,10 @@ class ExperimentConfig:
     auto_experiment_include_models: bool = False
     auto_experiment_asr_models: List[str] = field(default_factory=list)
     auto_experiment_post_models: List[str] = field(default_factory=list)
-    auto_experiment_noise_models: List[str] = field(default_factory=list)
-    auto_experiment_rag_embedding_models: List[str] = field(default_factory=list)
+    auto_experiment_noise_models: List[str] = field(default_factory=lambda: list(AUTO_EXPERIMENT_NOISE_MODELS))
+    auto_experiment_rag_embedding_models: List[str] = field(
+        default_factory=lambda: list(AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS)
+    )
     auto_experiment_keyword_weights: List[float] = field(
         default_factory=lambda: list(DEFAULT_AUTO_EXPERIMENT_KEYWORD_WEIGHTS)
     )
