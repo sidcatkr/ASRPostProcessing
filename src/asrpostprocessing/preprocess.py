@@ -289,6 +289,8 @@ def _denoise_with_deepfilternet(
             enhanced_path = _latest_wav(out_dir)
             if enhanced_path is not None:
                 break
+        except subprocess.CalledProcessError as exc:
+            last_error = _subprocess_failure_detail(exc)
         except Exception as exc:
             last_error = str(exc)
     if enhanced_path is None:
@@ -322,6 +324,24 @@ def _deepfilter_commands(
         commands.append([*base, model_option, model_id, str(input_path)])
     commands.append([*base, str(input_path)])
     return commands
+
+
+def _subprocess_failure_detail(exc: subprocess.CalledProcessError) -> str:
+    parts = [str(exc)]
+    stderr = str(exc.stderr or "").strip()
+    stdout = str(exc.stdout or "").strip()
+    if stderr:
+        parts.append(f"stderr: {_short_process_text(stderr)}")
+    if stdout:
+        parts.append(f"stdout: {_short_process_text(stdout)}")
+    return "; ".join(parts)
+
+
+def _short_process_text(value: str, limit: int = 1200) -> str:
+    collapsed = " ".join(str(value).split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[:limit]}..."
 
 
 def _mix_or_copy_enhanced(
@@ -678,11 +698,15 @@ def _preprocess_cache_path(audio_path: str, config: ExperimentConfig, plan: List
 
 def _preprocess_subprocess_env(config: ExperimentConfig) -> Dict[str, str] | None:
     gpu = str(getattr(config, "preprocess_gpu", "") or "").strip()
-    if not gpu:
+    preprocess_venv = _default_preprocess_venv()
+    if not gpu and not preprocess_venv:
         return None
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = gpu
-    env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    if gpu:
+        env["CUDA_VISIBLE_DEVICES"] = gpu
+        env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    if preprocess_venv and not env.get("ASRPP_PREPROCESS_VENV"):
+        env["ASRPP_PREPROCESS_VENV"] = str(preprocess_venv)
     return env
 
 
@@ -691,6 +715,13 @@ def _preprocess_gpu_metadata(config: ExperimentConfig) -> Dict[str, str]:
     if not gpu:
         return {}
     return {"preprocess_gpu": gpu, "cuda_visible_devices": gpu}
+
+
+def _default_preprocess_venv() -> Path | None:
+    candidate = Path(".venv-preprocess")
+    if (candidate / "bin" / "deepFilter").exists():
+        return candidate.resolve()
+    return None
 
 
 def _preprocess_result_from_dict(payload: Dict[str, Any]) -> PreprocessResult:

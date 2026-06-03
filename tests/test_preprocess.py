@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -5,7 +6,7 @@ import wave
 from pathlib import Path
 
 from asrpostprocessing.config import ExperimentConfig
-from asrpostprocessing.preprocess import ffmpeg_executable, preprocess_audio
+from asrpostprocessing.preprocess import _preprocess_subprocess_env, ffmpeg_executable, preprocess_audio
 
 
 class PreprocessTest(unittest.TestCase):
@@ -198,6 +199,23 @@ class PreprocessTest(unittest.TestCase):
             self.assertEqual(env_path.read_text(encoding="utf-8"), "3")
             self.assertEqual(result.steps[0]["metadata"]["preprocess_gpu"], "3")
             self.assertEqual(result.steps[0]["metadata"]["cuda_visible_devices"], "3")
+
+    def test_preprocess_env_autodetects_repo_local_deepfilter_venv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deepfilter = root / ".venv-preprocess" / "bin" / "deepFilter"
+            deepfilter.parent.mkdir(parents=True)
+            deepfilter.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                env = _preprocess_subprocess_env(ExperimentConfig(preprocess_gpu="2"))
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertIsNotNone(env)
+            self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "2")
+            self.assertEqual(env["ASRPP_PREPROCESS_VENV"], str((root / ".venv-preprocess").resolve()))
 
 
 def _write_pcm16_wav(path: Path, samples):

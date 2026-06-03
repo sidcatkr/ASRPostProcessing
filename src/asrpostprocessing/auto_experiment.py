@@ -448,9 +448,19 @@ def _prime_one_preprocess_plan(
     key: str,
 ) -> None:
     result = preprocess_audio(audio_path, config)
-    if not result.applied:
-        warning = "; ".join(str(item) for item in (result.warnings or []) if str(item).strip())
-        detail = warning or "preprocessing produced no output"
+    failed_steps = [
+        str(step.get("step") or step.get("model") or "preprocess")
+        for step in (result.steps or [])
+        if isinstance(step, dict) and not step.get("applied")
+    ]
+    if failed_steps or not result.applied:
+        warnings = "; ".join(str(item) for item in (result.warnings or []) if str(item).strip())
+        detail_parts = []
+        if failed_steps:
+            detail_parts.append(f"failed step(s): {', '.join(failed_steps)}")
+        if warnings:
+            detail_parts.append(warnings)
+        detail = "; ".join(detail_parts) or "preprocessing produced no output"
         raise RuntimeError(f"{case.case_id} ({key}) {detail}")
 
 

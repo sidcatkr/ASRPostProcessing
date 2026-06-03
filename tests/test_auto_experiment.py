@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from asrpostprocessing.auto_experiment import (
+    _prime_one_preprocess_plan,
     _prime_asr_groups,
     _start_stage_replicas_scalable,
     analyze_auto_experiment,
@@ -567,6 +568,34 @@ class AutoExperimentTest(unittest.TestCase):
             self.assertIn(("preprocess", "0", True, False), preprocess_events)
             self.assertIn(("preprocess", "1", True, True), preprocess_events)
             self.assertEqual(report["analysis"]["num_failed_rows"], 0)
+
+    def test_preprocess_cache_priming_rejects_partial_step_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "sample.wav"
+            audio.write_bytes(b"mock")
+            config = ExperimentConfig(
+                enable_noise_reduction=True,
+                noise_reduction_model="deepfilternet2",
+                enable_volume_normalization=True,
+            )
+            case = next(
+                case
+                for case in preview_auto_experiment(config, mode="full_valid")["cases"]
+                if case.condition.enable_noise_reduction and case.condition.enable_volume_normalization
+            )
+            partial = PreprocessResult(
+                audio_path=str(audio),
+                applied=True,
+                warnings=["DeepFilterNet failed"],
+                steps=[
+                    {"step": "noise_reduction", "applied": False},
+                    {"step": "volume_normalization", "applied": True},
+                ],
+            )
+
+            with patch("asrpostprocessing.auto_experiment.preprocess_audio", return_value=partial):
+                with self.assertRaisesRegex(RuntimeError, "noise_reduction"):
+                    _prime_one_preprocess_plan(str(audio), config, case, "cache-key")
 
     def test_stage_replicas_route_cases_across_all_stage_gpus(self):
         with tempfile.TemporaryDirectory() as tmp:
