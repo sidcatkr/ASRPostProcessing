@@ -127,7 +127,7 @@ class CliTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 0)
-        self.assertEqual(payload["condition_count"], 12)
+        self.assertEqual(payload["condition_count"], 9)
         self.assertEqual(payload["asr_cache_group_count"], 3)
         self.assertIn("keyword__kw0p4", [condition["condition_id"] for condition in payload["conditions"]])
 

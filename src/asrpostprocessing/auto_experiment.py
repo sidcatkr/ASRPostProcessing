@@ -11,6 +11,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .cache import stable_json_hash
 from .config import ExperimentConfig
+from .experiment_defaults import (
+    DEFAULT_ACTIVE_KEYWORD_WEIGHT,
+    DEFAULT_ACTIVE_NOISE_STRENGTH,
+    DEFAULT_ACTIVE_POSTPROCESS_STRENGTH,
+    DEFAULT_ACTIVE_RAG_STRENGTH,
+    DEFAULT_ACTIVE_SEARCH_STRENGTH,
+)
 from .experiment_matrix import ConditionSpec, generate_auto_conditions
 from .logging import make_run_id
 from .model_options import auto_experiment_noise_models, auto_experiment_rag_embedding_models
@@ -750,7 +757,7 @@ def _config_for_case(
     if config.enable_keyword_bias and condition.keyword_bias_weight is not None:
         config.keyword_bias_weight = condition.keyword_bias_weight
     elif config.enable_keyword_bias and config.keyword_bias_weight <= 0:
-        config.keyword_bias_weight = 0.5
+        config.keyword_bias_weight = DEFAULT_ACTIVE_KEYWORD_WEIGHT
     elif not config.enable_keyword_bias:
         config.keyword_bias_weight = 0.0
     if config.enable_noise_reduction:
@@ -761,7 +768,7 @@ def _config_for_case(
         if condition.noise_reduction_strength is not None:
             config.noise_reduction_strength = condition.noise_reduction_strength
         elif config.noise_reduction_strength <= 0:
-            config.noise_reduction_strength = 0.5
+            config.noise_reduction_strength = DEFAULT_ACTIVE_NOISE_STRENGTH
     else:
         config.noise_reduction_strength = 0.0
     if config.enable_volume_normalization and condition.volume_normalization_strength is not None:
@@ -773,13 +780,13 @@ def _config_for_case(
     if config.enable_llm_postprocess and condition.postprocess_strength is not None:
         config.postprocess_strength = condition.postprocess_strength
     elif config.enable_llm_postprocess and config.postprocess_strength <= 0:
-        config.postprocess_strength = 0.5
+        config.postprocess_strength = DEFAULT_ACTIVE_POSTPROCESS_STRENGTH
     elif not config.enable_llm_postprocess:
         config.postprocess_strength = 0.0
     if config.enable_rag and condition.rag_strength is not None:
         config.rag_strength = condition.rag_strength
     elif config.enable_rag and config.rag_strength <= 0:
-        config.rag_strength = 0.5
+        config.rag_strength = DEFAULT_ACTIVE_RAG_STRENGTH
     elif not config.enable_rag:
         config.rag_strength = 0.0
     if config.enable_rag and condition.rag_top_k is not None:
@@ -789,7 +796,7 @@ def _config_for_case(
     if config.enable_search and condition.search_strength is not None:
         config.search_strength = condition.search_strength
     elif config.enable_search and config.search_strength <= 0:
-        config.search_strength = 0.5
+        config.search_strength = DEFAULT_ACTIVE_SEARCH_STRENGTH
     elif not config.enable_search:
         config.search_strength = 0.0
     if config.model_residency == "stage_replicas":

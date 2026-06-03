@@ -9,13 +9,18 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import ExperimentConfig
+from .experiment_defaults import (
+    DEFAULT_EXPERIMENT_STRENGTHS,
+    DEFAULT_SWEEP_KEYWORD_WEIGHTS,
+    DEFAULT_SWEEP_RAG_STRENGTHS,
+)
 from .model_server import ensure_model_servers
 from .pipeline import PipelineRunner, read_reference
 
-DEFAULT_KEYWORD_WEIGHTS = [0.0, 0.25, 0.5, 0.75, 1.0]
-DEFAULT_RAG_STRENGTHS = [0.0, 0.25, 0.5, 0.75, 1.0]
-DEFAULT_POST_STRENGTHS = [0.25, 0.5, 0.75]
-DEFAULT_PREPROCESS_STRENGTHS = [0.25, 0.5, 0.75]
+DEFAULT_KEYWORD_WEIGHTS = DEFAULT_SWEEP_KEYWORD_WEIGHTS
+DEFAULT_RAG_STRENGTHS = DEFAULT_SWEEP_RAG_STRENGTHS
+DEFAULT_POST_STRENGTHS = DEFAULT_EXPERIMENT_STRENGTHS
+DEFAULT_PREPROCESS_STRENGTHS = DEFAULT_EXPERIMENT_STRENGTHS
 
 CONDITIONS = [
     "A_raw_asr",

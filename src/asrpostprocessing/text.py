@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
 _DIFF_TOKEN_RE = re.compile(r"\s+|[^\s]+")
-_ERROR_MONITOR_MAX_ROWS = 12
+_ERROR_MONITOR_MAX_ROWS = 50
 _DIFF_CHANGE_MAX_ROWS = 10
 
 
@@ -618,11 +618,12 @@ def _error_segments_section_html(summary: Dict[str, Any]) -> str:
         <table class="asrpp-error-table">
           <thead>
             <tr>
-              <th>Ref pos</th>
+              <th>Metric location</th>
               <th>Type</th>
               <th>Reference</th>
               <th>Hypothesis</th>
-              <th>Context</th>
+              <th>Reference context</th>
+              <th>Hypothesis context</th>
               <th>Rate part</th>
               <th>Error share</th>
             </tr>
@@ -643,7 +644,8 @@ def _error_segment_row_html(segment: Dict[str, Any]) -> str:
         f"<td>{html.escape(str(segment['operation']))}</td>"
         f"<td>{html.escape(str(segment['reference_text']))}</td>"
         f"<td>{html.escape(str(segment['hypothesis_text']))}</td>"
-        f'<td class="asrpp-error-context">{html.escape(str(segment["context"]))}</td>'
+        f'<td class="asrpp-error-context">{html.escape(str(segment["reference_context"]))}</td>'
+        f'<td class="asrpp-error-context">{html.escape(str(segment["hypothesis_context"]))}</td>'
         f'<td class="asrpp-error-muted">{int(segment["error_count"])}/{int(segment["reference_units"])} = {_format_error_percent(segment["rate_contribution"])}</td>'
         f'<td class="asrpp-error-muted">{_format_error_percent(segment["error_share"])}</td>'
         "</tr>"
@@ -662,7 +664,16 @@ def _sequence_error_summary(
     errors = sum(1 for operation in operations if operation["tag"] != "equal")
     reference_units = len(reference)
     error_rate_value = error_rate(reference, hypothesis)
-    segments = _error_segments(operations, reference, errors, reference_units, unit_label, joiner, context_window)
+    segments = _error_segments(
+        operations,
+        reference,
+        hypothesis,
+        errors,
+        reference_units,
+        unit_label,
+        joiner,
+        context_window,
+    )
     return {
         "metric": metric,
         "unit_label": unit_label,
@@ -739,6 +750,7 @@ def _levenshtein_alignment(reference: Sequence[str], hypothesis: Sequence[str]) 
 def _error_segments(
     operations: List[Dict[str, Any]],
     reference: Sequence[str],
+    hypothesis: Sequence[str],
     total_errors: int,
     reference_units: int,
     unit_label: str,
@@ -750,34 +762,63 @@ def _error_segments(
     for operation in operations:
         if operation["tag"] == "equal":
             if current is not None:
-                segments.append(_finalize_error_segment(current, reference, total_errors, reference_units, unit_label, joiner, context_window))
+                segments.append(
+                    _finalize_error_segment(
+                        current,
+                        reference,
+                        hypothesis,
+                        total_errors,
+                        reference_units,
+                        unit_label,
+                        joiner,
+                        context_window,
+                    )
+                )
                 current = None
             continue
         if current is None:
             current = {
                 "start_ref": int(operation["ref_pos"]),
                 "end_ref": int(operation["ref_pos"]),
+                "start_hyp": int(operation["hyp_pos"]),
+                "end_hyp": int(operation["hyp_pos"]),
                 "reference": [],
                 "hypothesis": [],
                 "counts": {"replace": 0, "delete": 0, "insert": 0},
             }
         current["start_ref"] = min(int(current["start_ref"]), int(operation["ref_pos"]))
+        current["start_hyp"] = min(int(current["start_hyp"]), int(operation["hyp_pos"]))
         consumed_ref = operation["ref"] is not None
+        consumed_hyp = operation["hyp"] is not None
         end_ref = int(operation["ref_pos"]) + (1 if consumed_ref else 0)
+        end_hyp = int(operation["hyp_pos"]) + (1 if consumed_hyp else 0)
         current["end_ref"] = max(int(current["end_ref"]), end_ref)
+        current["end_hyp"] = max(int(current["end_hyp"]), end_hyp)
         if operation["ref"] is not None:
             current["reference"].append(str(operation["ref"]))
         if operation["hyp"] is not None:
             current["hypothesis"].append(str(operation["hyp"]))
         current["counts"][operation["tag"]] += 1
     if current is not None:
-        segments.append(_finalize_error_segment(current, reference, total_errors, reference_units, unit_label, joiner, context_window))
+        segments.append(
+            _finalize_error_segment(
+                current,
+                reference,
+                hypothesis,
+                total_errors,
+                reference_units,
+                unit_label,
+                joiner,
+                context_window,
+            )
+        )
     return segments
 
 
 def _finalize_error_segment(
     segment: Dict[str, Any],
     reference: Sequence[str],
+    hypothesis: Sequence[str],
     total_errors: int,
     reference_units: int,
     unit_label: str,
@@ -789,22 +830,54 @@ def _finalize_error_segment(
     operation_types = [key for key, value in counts.items() if value]
     start_ref = int(segment["start_ref"])
     end_ref = int(segment["end_ref"])
-    context_start = max(0, start_ref - context_window)
-    context_end = min(len(reference), max(end_ref, start_ref) + context_window)
-    before = _join_error_units(reference[context_start:start_ref], joiner)
-    after = _join_error_units(reference[end_ref:context_end], joiner)
-    position_end = max(start_ref + 1, end_ref)
+    start_hyp = int(segment["start_hyp"])
+    end_hyp = int(segment["end_hyp"])
+    position_label = _error_position_label(start_ref, end_ref, start_hyp, end_hyp, unit_label)
     return {
-        "position_label": f"{start_ref + 1}-{position_end} {unit_label}",
+        "position_label": position_label,
         "operation": operation_types[0] if len(operation_types) == 1 else "mixed",
         "reference_text": _join_error_units(segment["reference"], joiner) or "(empty)",
         "hypothesis_text": _join_error_units(segment["hypothesis"], joiner) or "(empty)",
-        "context": f"{before} -> {after}".strip(),
+        "reference_context": _marked_error_context(reference, start_ref, end_ref, joiner, context_window),
+        "hypothesis_context": _marked_error_context(hypothesis, start_hyp, end_hyp, joiner, context_window),
         "error_count": error_count,
         "reference_units": reference_units,
         "rate_contribution": _safe_ratio(error_count, reference_units),
         "error_share": _safe_ratio(error_count, total_errors),
     }
+
+
+def _error_position_label(start_ref: int, end_ref: int, start_hyp: int, end_hyp: int, unit_label: str) -> str:
+    ref_label = _unit_range_label("ref", start_ref, end_ref, unit_label)
+    hyp_label = _unit_range_label("hyp", start_hyp, end_hyp, unit_label)
+    return f"{ref_label}; {hyp_label}"
+
+
+def _unit_range_label(prefix: str, start: int, end: int, unit_label: str) -> str:
+    if end <= start:
+        return f"{prefix} after {start} {unit_label}"
+    return f"{prefix} {start + 1}-{end} {unit_label}"
+
+
+def _marked_error_context(
+    values: Sequence[str],
+    start: int,
+    end: int,
+    joiner: str,
+    context_window: int,
+) -> str:
+    context_start = max(0, start - context_window)
+    context_end = min(len(values), max(end, start) + context_window)
+    before = _join_error_units(values[context_start:start], joiner)
+    selected = _join_error_units(values[start:end], joiner) if end > start else "(empty)"
+    after = _join_error_units(values[end:context_end], joiner)
+    parts = []
+    if before:
+        parts.append(before)
+    parts.append(f"[{selected}]")
+    if after:
+        parts.append(after)
+    return joiner.join(parts) if joiner else "".join(parts)
 
 
 def _join_error_units(values: Sequence[str], joiner: str) -> str:

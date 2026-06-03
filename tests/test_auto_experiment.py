@@ -53,7 +53,15 @@ class AutoExperimentTest(unittest.TestCase):
         )
 
         self.assertGreater(len(conditions), 40)
-        self.assertTrue(any("__kw0p25" in condition.condition_id for condition in conditions))
+        self.assertEqual(
+            {condition.keyword_bias_weight for condition in conditions if condition.enable_keyword_bias},
+            {0.5, 1.0},
+        )
+        self.assertEqual(
+            {condition.noise_reduction_strength for condition in conditions if condition.enable_noise_reduction},
+            {0.5, 1.0},
+        )
+        self.assertTrue(any("__kw1" in condition.condition_id for condition in conditions))
         full_condition = next(
             condition
             for condition in conditions
@@ -195,6 +203,13 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertEqual(config.preprocess_gpus, ["0", "1", "2", "3"])
         self.assertEqual(config.auto_experiment_noise_models, AUTO_EXPERIMENT_NOISE_MODELS)
         self.assertEqual(config.auto_experiment_rag_embedding_models, AUTO_EXPERIMENT_RAG_EMBEDDING_MODELS)
+        self.assertEqual(config.auto_experiment_keyword_weights, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_noise_strengths, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_volume_strengths, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_postprocess_strengths, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_rag_strengths, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_search_strengths, [0.5, 1.0])
+        self.assertEqual(config.auto_experiment_rag_top_ks, [4, 8, 12])
         self.assertTrue(config.asr_cache_enabled)
 
     def test_analysis_marks_equal_scores_as_ties_not_improvements(self):

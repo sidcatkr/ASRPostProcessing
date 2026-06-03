@@ -96,35 +96,27 @@ auto_experiment_rag_embedding_models:
   - intfloat/multilingual-e5-base
   - BAAI/bge-m3
 auto_experiment_keyword_weights:
-  - 0.25
   - 0.5
-  - 0.75
   - 1.0
 auto_experiment_noise_strengths:
-  - 0.25
   - 0.5
-  - 0.75
+  - 1.0
 auto_experiment_volume_strengths:
-  - 0.25
   - 0.5
-  - 0.75
+  - 1.0
 auto_experiment_postprocess_strengths:
-  - 0.25
   - 0.5
-  - 0.75
+  - 1.0
 auto_experiment_rag_strengths:
-  - 0.25
   - 0.5
-  - 0.75
+  - 1.0
 auto_experiment_rag_top_ks:
-  - 3
-  - 5
+  - 4
   - 8
   - 12
 auto_experiment_search_strengths:
-  - 0.25
   - 0.5
-  - 0.75
+  - 1.0
 asr_cache_enabled: true
 preprocess_cache_enabled: true
 cache_dir: outputs/cache
@@ -137,22 +129,22 @@ preprocess_gpu: "0"
 enable_noise_reduction: true
 noise_reduction_model: deepfilternet2
 noise_reduction_command: ""
-noise_reduction_strength: 0.5
+noise_reduction_strength: 1.0
 enable_volume_normalization: true
 volume_normalization_strength: 1.0
 volume_target_dbfs: -20.0
 enable_keyword_bias: true
-keyword_bias_weight: 0.5
+keyword_bias_weight: 1.0
 keywords: []
 enable_llm_postprocess: true
-postprocess_strength: 0.5
+postprocess_strength: 1.0
 enable_rag: true
-rag_strength: 0.5
-rag_top_k: 5
+rag_strength: 1.0
+rag_top_k: 8
 rag_embedding_backend: faiss
 rag_embedding_model: intfloat/multilingual-e5-base
 enable_search: true
-search_strength: 0.5
+search_strength: 1.0
 search_provider: duckduckgo
 search_cache_dir: outputs/search_cache
 search_endpoint: ""

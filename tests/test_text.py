@@ -63,10 +63,14 @@ class InlineDiffHtmlTest(unittest.TestCase):
         html = make_diff_html("Alpha Term 실행", "Alpha 실행", "Reference", "Corrected", show_error_monitor=True)
 
         self.assertIn("CER/WER error monitor", html)
+        self.assertIn("Metric location", html)
         self.assertIn("Rate part", html)
         self.assertIn("Error share", html)
+        self.assertIn("Reference context", html)
+        self.assertIn("Hypothesis context", html)
         self.assertIn("without spacing, line breaks, punctuation, or symbols", html)
         self.assertIn("Term", html)
+        self.assertIn("[term]", html.lower())
 
     def test_make_character_diff_html_marks_small_character_changes(self):
         html = make_character_diff_html("앞 문장 불련 코드 뒤 문장", "앞 문장 Boolean 코드 뒤 문장")

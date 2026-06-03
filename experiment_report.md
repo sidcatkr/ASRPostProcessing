@@ -120,6 +120,7 @@ RAG와 Keyword Bias 준비:
 - 주제별 reference transcript: `experiment_assets/audio_references/references/*.txt`
 - 주제별 RAG 파일: `experiment_assets/audio_references/rag/*.md`
 - 주제별 Keyword Bias 목록: `experiment_assets/audio_references/keywords/*.txt` comma-separated
+- 10분 이상 CER/WER 검증용 reference: `experiment_assets/audio_references/references/ten_minute_mixed.txt`
 - RAG 파일: `experiment_assets/general_rag_context.md`
 - Keyword Bias 목록: `experiment_assets/general_keyword_bias_terms.txt` comma-separated
 - 사용 방법: 한 오디오를 실험할 때는 manifest에서 같은 row의 audio, reference, RAG, keyword 파일을 함께 사용한다. Keyword Bias 입력에는 comma-separated terms를 그대로 붙여 넣는다. 여러 주제를 섞어 긴 실험을 할 때만 통합 RAG와 통합 keyword 목록을 사용한다. RAG가 켜진 조건과 꺼진 조건은 같은 reference 기준으로 함께 비교한다.
@@ -129,6 +130,7 @@ RAG와 Keyword Bias 준비:
 - Diff 출력이 비어 있지 않은지 확인한다.
 - Reference transcript가 있을 때 CER/WER 값이 계산되는지 확인한다.
 - CER/WER은 띄어쓰기, 줄바꿈, 문장부호, 기호만 다른 경우 오류로 세지 않는다. 내용이 같은데 공백이나 쉼표, 마침표, 물음표 같은 표기만 다른 결과가 우수 조건에서 밀려나면 안 된다.
+- Auto Experiment의 기본 강도 sweep은 토글 off baseline과 켜진 기능의 `0.5`, `1.0` 가중치 조합을 비교한다. 낮은 강도만 반복해 같은 결과가 대량으로 tie 처리되는 상황을 줄이고, 과보정 여부도 함께 확인한다.
 - 영어 모델명, 숫자, 포트 번호, GPU 번호가 유지되는지 확인한다.
 - 전처리와 후처리 조합을 바꿔도 같은 reference 기준으로 비교한다.
 
