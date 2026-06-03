@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .cache import stable_json_hash
 from .config import ExperimentConfig
 from .experiment_defaults import (
+    DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     DEFAULT_ACTIVE_KEYWORD_WEIGHT,
     DEFAULT_ACTIVE_NOISE_STRENGTH,
     DEFAULT_ACTIVE_POSTPROCESS_STRENGTH,
@@ -45,7 +46,7 @@ def run_auto_experiment(
     base_config: ExperimentConfig,
     reference_text: Optional[str] = None,
     rag_inline_text: str = "",
-    mode: str = "full_valid",
+    mode: str = DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     status_callback: Optional[StatusCallback] = None,
 ) -> Dict[str, Any]:
     preview = preview_auto_experiment(base_config, mode=mode)
@@ -444,7 +445,7 @@ def _group_indexed_cases_by_asr_cache_key(cases: List[ExperimentCase]) -> Dict[s
     return grouped
 
 
-def preview_auto_experiment(base_config: ExperimentConfig, mode: str = "full_valid") -> Dict[str, Any]:
+def preview_auto_experiment(base_config: ExperimentConfig, mode: str = DEFAULT_AUTO_EXPERIMENT_COVERAGE) -> Dict[str, Any]:
     noise_model_grid = (
         auto_experiment_noise_models(base_config.auto_experiment_noise_models, base_config.noise_reduction_model)
         if base_config.auto_experiment_include_models

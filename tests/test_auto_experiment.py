@@ -19,6 +19,27 @@ from asrpostprocessing.schemas import SearchResult
 
 
 class AutoExperimentTest(unittest.TestCase):
+    def test_default_matrix_uses_full_strength_sweep(self):
+        conditions = generate_auto_conditions(
+            include_keyword_bias=True,
+            include_noise_reduction=False,
+            include_volume_normalization=False,
+            include_llm_postprocess=True,
+            include_rag=False,
+            include_search=False,
+        )
+
+        self.assertEqual(len(conditions), 9)
+        self.assertEqual(
+            {condition.keyword_bias_weight for condition in conditions if condition.enable_keyword_bias},
+            {0.5, 1.0},
+        )
+        self.assertEqual(
+            {condition.postprocess_strength for condition in conditions if condition.enable_llm_postprocess},
+            {0.5, 1.0},
+        )
+        self.assertTrue(any("__kw0p5" in condition.condition_id for condition in conditions))
+
     def test_full_valid_matrix_generates_40_conditions(self):
         conditions = generate_auto_conditions(
             include_keyword_bias=True,
@@ -210,6 +231,7 @@ class AutoExperimentTest(unittest.TestCase):
         self.assertEqual(config.auto_experiment_rag_strengths, [0.5, 1.0])
         self.assertEqual(config.auto_experiment_search_strengths, [0.5, 1.0])
         self.assertEqual(config.auto_experiment_rag_top_ks, [4, 8, 12])
+        self.assertEqual(config.auto_experiment_coverage, "full_strength_sweep")
         self.assertTrue(config.asr_cache_enabled)
 
     def test_analysis_marks_equal_scores_as_ties_not_improvements(self):

@@ -204,7 +204,7 @@ chunked ASR 결과는 전체 transcript text로 합쳐지고, 각 chunk는 `Tran
 
 자동 실험:
 
-    asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_valid
+    asrpp auto-experiment --config configs/l4x4.yaml --audio sample.wav --reference reference.txt --mode full_strength_sweep
 
 서버만 직접 띄워 확인하는 경우:
 
@@ -253,14 +253,14 @@ Auto Experiment Mode가 켜져 있으면 기존 토글은 자동 실험에 포�
 - LLM Postprocess, RAG, Search: postprocess stage axis
 - RAG/Search는 LLM 없이는 실행하지 않는다.
 
-기본 `full_valid` coverage는 다음 조건을 만든다:
+`full_valid` coverage는 strength sweep 없이 다음 on/off 조건만 만든다:
 
 - pre/ASR modes: none, K, N, V, K+N, K+V, N+V, K+N+V
 - post modes: none, LLM, LLM+RAG, LLM+Search, LLM+RAG+Search
 - total: 8 x 5 = 40 conditions
 - optional model axis: ASR model list x post model list x noise model list x RAG embedding model list. Post model axis는 LLM post-processing이 켜진 condition에만, noise/RAG model axis는 해당 condition에만 적용한다.
 
-`core_ablation` coverage는 빠른 확인용 subset이다. `full_strength_sweep`은 full valid condition에 active 축별 strength/top-k grid를 추가한다. 기본 grid는 keyword bias `0.5/1.0`, noise/volume/post/RAG/Search `0.5/1.0`, RAG top-k `4/8/12`이며, config/CLI/UI에서 grid를 바꿀 수 있다. `0.0`은 별도 off/baseline condition으로 비교한다. Strength 값은 condition id, summary CSV, ASR cache group key에 반영되고, RAG top-k는 post/RAG 단계 condition id와 summary CSV에 반영된다.
+기본 coverage인 `full_strength_sweep`은 full valid condition에 active 축별 strength/top-k grid를 추가한다. 기본 grid는 keyword bias `0.5/1.0`, noise/volume/post/RAG/Search `0.5/1.0`, RAG top-k `4/8/12`이며, config/CLI/UI에서 grid를 바꿀 수 있다. `0.0`은 별도 off/baseline condition으로 비교한다. `core_ablation` coverage는 빠른 확인용 subset이다. Strength 값은 condition id, summary CSV, ASR cache group key에 반영되고, RAG top-k는 post/RAG 단계 condition id와 summary CSV에 반영된다.
 
 실행 전에 `asrpp auto-experiment --mode full_strength_sweep --preview ...`로 condition count, model-expanded case count, ASR cache group count를 JSON으로 확인할 수 있다.
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .experiment_defaults import (
+    DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     DEFAULT_EXPERIMENT_KEYWORD_WEIGHTS,
     DEFAULT_EXPERIMENT_RAG_TOP_KS,
     DEFAULT_EXPERIMENT_STRENGTHS,
@@ -60,6 +61,7 @@ class ExperimentConfig:
     sweep_saturate_lanes: bool = True
     auto_experiment_parallelism: int = 1
     auto_experiment_saturate_lanes: bool = True
+    auto_experiment_coverage: str = DEFAULT_AUTO_EXPERIMENT_COVERAGE
     auto_experiment_include_models: bool = False
     auto_experiment_asr_models: List[str] = field(default_factory=list)
     auto_experiment_post_models: List[str] = field(default_factory=list)
@@ -162,6 +164,7 @@ class ExperimentConfig:
         config.postprocess_parallelism = max(1, min(64, int(config.postprocess_parallelism)))
         config.sweep_parallelism = max(1, min(64, int(config.sweep_parallelism)))
         config.auto_experiment_parallelism = max(1, min(64, int(config.auto_experiment_parallelism)))
+        config.auto_experiment_coverage = normalize_auto_experiment_coverage(config.auto_experiment_coverage)
         config.pipeline_lanes = normalize_pipeline_lanes(config.pipeline_lanes)
         config.asr_base_urls = normalize_url_list(config.asr_base_urls)
         config.post_base_urls = normalize_url_list(config.post_base_urls)
@@ -258,6 +261,27 @@ def normalize_asr_chunking_strategy(value: Any) -> str:
         "false": "none",
     }
     return aliases.get(normalized, "silence")
+
+
+def normalize_auto_experiment_coverage(value: Any) -> str:
+    normalized = str(value or DEFAULT_AUTO_EXPERIMENT_COVERAGE).strip().lower().replace("-", "_")
+    aliases = {
+        "core": "core_ablation",
+        "core_ablation": "core_ablation",
+        "ablation": "core_ablation",
+        "full": "full_valid",
+        "full_valid": "full_valid",
+        "full_valid_combination": "full_valid",
+        "valid": "full_valid",
+        "strength": "full_strength_sweep",
+        "strength_sweep": "full_strength_sweep",
+        "full_strength": "full_strength_sweep",
+        "full_strength_sweep": "full_strength_sweep",
+        "full_range": "full_strength_sweep",
+        "all": "full_strength_sweep",
+        "all_combinations": "full_strength_sweep",
+    }
+    return aliases.get(normalized, DEFAULT_AUTO_EXPERIMENT_COVERAGE)
 
 
 def normalize_url_list(value: Any) -> List[str]:

@@ -55,7 +55,6 @@ def main(argv: Optional[list] = None) -> int:
     auto_parser.add_argument(
         "--mode",
         choices=["core_ablation", "full_valid", "full_strength_sweep"],
-        default="full_valid",
     )
     auto_parser.add_argument("--preview", action="store_true", help="Print the generated condition matrix without running it")
     _add_backend_overrides(auto_parser)
@@ -118,8 +117,9 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     if args.command == "auto-experiment":
         config = load_config(args.config, overrides=_backend_overrides(args))
+        mode = args.mode or config.auto_experiment_coverage
         if args.preview:
-            preview = preview_auto_experiment(config, mode=args.mode)
+            preview = preview_auto_experiment(config, mode=mode)
             print(
                 json.dumps(
                     {
@@ -144,7 +144,7 @@ def main(argv: Optional[list] = None) -> int:
                 audio_path=args.audio,
                 base_config=config,
                 reference_text=reference,
-                mode=args.mode,
+                mode=mode,
             )
         output_path = Path(report["output_dir"]) / "auto_experiment_result.json"
         output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

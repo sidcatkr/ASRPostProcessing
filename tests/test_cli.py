@@ -131,6 +131,27 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["asr_cache_group_count"], 3)
         self.assertIn("keyword__kw0p4", [condition["condition_id"] for condition in payload["conditions"]])
 
+    def test_auto_experiment_preview_defaults_to_full_strength_sweep(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(
+                [
+                    "auto-experiment",
+                    "--asr-backend",
+                    "mock",
+                    "--post-backend",
+                    "mock",
+                    "--enable-keyword-bias",
+                    "--preview",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["mode"], "full_strength_sweep")
+        self.assertEqual(payload["condition_count"], 9)
+        self.assertIn("keyword__kw1", [condition["condition_id"] for condition in payload["conditions"]])
+
     def test_auto_experiment_preview_accepts_rag_top_k_grid(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):

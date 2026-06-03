@@ -218,9 +218,9 @@ Auto Experiment는 여러 조합을 자동으로 실행할 때 사용한다.
 2. 단일 기능 몇 개를 수동 Run으로 확인한다.
 3. Auto Experiment Mode를 켠다.
 4. 실험에 포함할 축의 토글을 켠다.
-5. 빠른 확인은 `core_ablation`으로 실행한다.
-6. 본 실험은 `full_valid`로 실행한다.
-7. 좋은 후보가 좁혀지면 `full_strength_sweep`으로 강도별 성능을 비교한다.
+5. 빠른 확인만 필요하면 `core_ablation`으로 실행한다.
+6. 본 실험 기본값은 `full_strength_sweep`으로 실행한다.
+7. 이 모드는 모든 유효 on/off 조합에 0.5 단위 strength/weight 조합을 함께 적용한다.
 
 Auto Experiment 결과에서는 다음을 확인한다.
 

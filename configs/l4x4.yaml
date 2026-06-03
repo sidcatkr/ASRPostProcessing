@@ -80,6 +80,7 @@ sweep_parallelism: 2
 sweep_saturate_lanes: true
 auto_experiment_parallelism: 16
 auto_experiment_saturate_lanes: true
+auto_experiment_coverage: full_strength_sweep
 auto_experiment_include_models: false
 auto_experiment_asr_models:
   - Qwen/Qwen3-ASR-1.7B

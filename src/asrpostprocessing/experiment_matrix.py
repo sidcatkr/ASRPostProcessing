@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from .experiment_defaults import (
+    DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     DEFAULT_EXPERIMENT_KEYWORD_WEIGHTS,
     DEFAULT_EXPERIMENT_RAG_TOP_KS,
     DEFAULT_EXPERIMENT_STRENGTHS,
@@ -61,7 +62,7 @@ def generate_auto_conditions(
     include_llm_postprocess: bool = True,
     include_rag: bool = True,
     include_search: bool = True,
-    mode: str = "full_valid",
+    mode: str = DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     keyword_strengths: Optional[List[float]] = None,
     noise_models: Optional[List[str]] = None,
     noise_strengths: Optional[List[float]] = None,
@@ -72,7 +73,7 @@ def generate_auto_conditions(
     rag_top_ks: Optional[List[int]] = None,
     search_strengths: Optional[List[float]] = None,
 ) -> List[ConditionSpec]:
-    mode = (mode or "full_valid").strip().lower().replace("-", "_")
+    mode = (mode or DEFAULT_AUTO_EXPERIMENT_COVERAGE).strip().lower().replace("-", "_")
     if mode in {"core", "core_ablation", "ablation"}:
         conditions = _core_ablation_conditions(
             include_keyword_bias,

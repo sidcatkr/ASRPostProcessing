@@ -15,6 +15,7 @@ from urllib.parse import quote
 from .auto_experiment import run_auto_experiment
 from .cache import cache_file_by_sha256
 from .config import ExperimentConfig
+from .experiment_defaults import DEFAULT_AUTO_EXPERIMENT_COVERAGE
 from .gpu_status import query_gpu_status
 from .model_options import (
     AUTO_EXPERIMENT_NOISE_MODELS,
@@ -61,16 +62,37 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
         with gr.Accordion("Pipeline controls", open=True):
             with gr.Accordion("ASR Keyword Bias", open=True):
                 with gr.Row():
-                    enable_keyword_bias = gr.Checkbox(label="Keyword Bias", value=initial_config.enable_keyword_bias)
-                    keyword_bias_weight = gr.Slider(0, 1, value=initial_config.keyword_bias_weight, step=0.25, label="Keyword Bias weight")
-                    keywords = gr.Textbox(label="Keywords", value=", ".join(initial_config.keywords), placeholder="term A, product name, acronym")
+                    enable_keyword_bias = gr.Checkbox(
+                        label="Keyword Bias",
+                        value=initial_config.enable_keyword_bias,
+                        info="Bias ASR/correction toward comma-separated names, codes, and domain terms.",
+                    )
+                    keyword_bias_weight = gr.Slider(
+                        0,
+                        1,
+                        value=initial_config.keyword_bias_weight,
+                        step=0.25,
+                        label="Keyword Bias weight",
+                        info="Higher values preserve listed terms more aggressively.",
+                    )
+                    keywords = gr.Textbox(
+                        label="Keywords",
+                        value=", ".join(initial_config.keywords),
+                        placeholder="term A, product name, acronym",
+                        info="Comma-separated terms to protect or prefer.",
+                    )
             with gr.Accordion("Pre Process", open=True):
                 with gr.Row():
-                    enable_noise_reduction = gr.Checkbox(label="Noise reduction", value=initial_config.enable_noise_reduction)
+                    enable_noise_reduction = gr.Checkbox(
+                        label="Noise reduction",
+                        value=initial_config.enable_noise_reduction,
+                        info="Denoise the audio before ASR to reduce background noise.",
+                    )
                     noise_reduction_model = gr.Dropdown(
                         NOISE_REDUCTION_MODEL_CHOICES,
                         value=_canonical_noise_reduction_model(initial_config.noise_reduction_model),
                         label="Noise reduction model",
+                        info="Audio denoiser to use when noise reduction is enabled.",
                     )
                     noise_reduction_strength = gr.Slider(
                         0,
@@ -78,34 +100,92 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                         value=initial_config.noise_reduction_strength,
                         step=0.05,
                         label="Noise reduction strength",
+                        info="Higher values apply stronger denoising.",
                     )
                 with gr.Row():
-                    enable_volume_normalization = gr.Checkbox(label="Volume normalization", value=initial_config.enable_volume_normalization)
+                    enable_volume_normalization = gr.Checkbox(
+                        label="Volume normalization",
+                        value=initial_config.enable_volume_normalization,
+                        info="Normalize loudness before ASR for more stable recognition.",
+                    )
                     volume_normalization_strength = gr.Slider(
                         0,
                         1,
                         value=initial_config.volume_normalization_strength,
                         step=0.05,
                         label="Volume normalization strength",
+                        info="Higher values move the audio closer to the target loudness.",
                     )
-                    volume_target_dbfs = gr.Slider(-40, -6, value=initial_config.volume_target_dbfs, step=1, label="Volume target dBFS")
+                    volume_target_dbfs = gr.Slider(
+                        -40,
+                        -6,
+                        value=initial_config.volume_target_dbfs,
+                        step=1,
+                        label="Volume target dBFS",
+                        info="Target loudness for normalization.",
+                    )
                 preview_preprocess_button = gr.Button("Preview preprocessed audio")
             with gr.Row():
-                enable_llm = gr.Checkbox(label="LLM post-process", value=initial_config.enable_llm_postprocess)
-                postprocess_strength = gr.Slider(0, 1, value=initial_config.postprocess_strength, step=0.05, label="Post-process strength")
+                enable_llm = gr.Checkbox(
+                    label="LLM post-process",
+                    value=initial_config.enable_llm_postprocess,
+                    info="Use the text model to correct ASR wording, names, and formatting.",
+                )
+                postprocess_strength = gr.Slider(
+                    0,
+                    1,
+                    value=initial_config.postprocess_strength,
+                    step=0.05,
+                    label="Post-process strength",
+                    info="Higher values allow stronger correction from the LLM.",
+                )
             with gr.Row():
-                enable_rag = gr.Checkbox(label="RAG", value=initial_config.enable_rag)
-                rag_strength = gr.Slider(0, 1, value=initial_config.rag_strength, step=0.05, label="RAG strength")
-                rag_top_k = gr.Slider(1, 10, value=initial_config.rag_top_k, step=1, label="RAG top-k")
-            rag_text = gr.Textbox(label="RAG text", value=initial_config.rag_inline_text, lines=6)
+                enable_rag = gr.Checkbox(
+                    label="RAG",
+                    value=initial_config.enable_rag,
+                    info="Retrieve reference context and feed it to post-processing.",
+                )
+                rag_strength = gr.Slider(
+                    0,
+                    1,
+                    value=initial_config.rag_strength,
+                    step=0.05,
+                    label="RAG strength",
+                    info="Higher values make retrieved context more influential.",
+                )
+                rag_top_k = gr.Slider(
+                    1,
+                    10,
+                    value=initial_config.rag_top_k,
+                    step=1,
+                    label="RAG top-k",
+                    info="Number of retrieved context chunks used by RAG.",
+                )
+            rag_text = gr.Textbox(
+                label="RAG text",
+                value=initial_config.rag_inline_text,
+                lines=6,
+                info="Inline reference material used when RAG is enabled.",
+            )
             rag_files = gr.File(
                 label="RAG files (.txt, .md, .csv, .json, .pdf)",
                 file_count="multiple",
                 file_types=[".txt", ".md", ".markdown", ".csv", ".json", ".pdf"],
             )
             with gr.Row():
-                enable_search = gr.Checkbox(label="Search", value=initial_config.enable_search)
-                search_strength = gr.Slider(0, 1, value=initial_config.search_strength, step=0.05, label="Search strength")
+                enable_search = gr.Checkbox(
+                    label="Search",
+                    value=initial_config.enable_search,
+                    info="Add web/API search snippets as extra correction context.",
+                )
+                search_strength = gr.Slider(
+                    0,
+                    1,
+                    value=initial_config.search_strength,
+                    step=0.05,
+                    label="Search strength",
+                    info="Higher values make search context more influential.",
+                )
                 search_provider = gr.Dropdown(
                     ["duckduckgo", "endpoint", "none"],
                     value=initial_config.search_provider,
@@ -175,15 +255,20 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     )
             with gr.Accordion("Auto Experiment", open=False):
                 with gr.Row():
-                    auto_experiment_mode = gr.Checkbox(label="Auto Experiment Mode", value=False)
+                    auto_experiment_mode = gr.Checkbox(
+                        label="Auto Experiment Mode",
+                        value=False,
+                        info="Automatically run selected feature combinations and compare CER/WER.",
+                    )
                     auto_experiment_coverage = gr.Dropdown(
                         [
                             ("Core ablation", "core_ablation"),
-                            ("Full valid combination", "full_valid"),
-                            ("Full + strength sweep", "full_strength_sweep"),
+                            ("Full valid combination (on/off only)", "full_valid"),
+                            ("Full + strength sweep (0.5-step)", "full_strength_sweep"),
                         ],
-                        value="full_valid",
+                        value=initial_config.auto_experiment_coverage,
                         label="Coverage",
+                        info="Default runs all valid on/off combinations plus 0.5-step strength ranges.",
                     )
                 with gr.Row():
                     auto_experiment_parallelism = gr.Slider(
@@ -204,11 +289,13 @@ def launch_ui(config_path: Optional[str] = None, host: str = "127.0.0.1", port: 
                     auto_experiment_saturate_lanes = gr.Checkbox(
                         label="Saturate available lanes",
                         value=initial_config.auto_experiment_saturate_lanes,
+                        info="Use available stage lanes/workers to reduce experiment time.",
                     )
                 with gr.Row():
                     auto_experiment_include_models = gr.Checkbox(
                         label="Include model combinations",
                         value=initial_config.auto_experiment_include_models,
+                        info="Also sweep configured ASR, post, denoise, and RAG embedding model candidates.",
                     )
                 with gr.Row():
                     auto_experiment_asr_models = gr.Textbox(
@@ -667,7 +754,7 @@ def run_from_ui(
     asr_context_chars: int = 240,
     asr_chunk_parallelism: int = 1,
     auto_experiment_mode: bool = False,
-    auto_experiment_coverage: str = "full_valid",
+    auto_experiment_coverage: str = DEFAULT_AUTO_EXPERIMENT_COVERAGE,
     auto_experiment_parallelism: int = 1,
     postprocess_parallelism: int = 1,
     enable_cache: bool = True,
@@ -728,6 +815,7 @@ def run_from_ui(
             "postprocess_parallelism": int(postprocess_parallelism or 1),
             "auto_experiment_parallelism": int(auto_experiment_parallelism or 1),
             "auto_experiment_saturate_lanes": bool(auto_experiment_saturate_lanes),
+            "auto_experiment_coverage": auto_experiment_coverage or DEFAULT_AUTO_EXPERIMENT_COVERAGE,
             "auto_experiment_include_models": include_model_axis,
             "auto_experiment_asr_models": _auto_experiment_model_grid(
                 auto_experiment_asr_models,
@@ -808,7 +896,7 @@ def run_from_ui(
                 base_config=config,
                 reference_text=reference,
                 rag_inline_text=rag_text or "",
-                mode=auto_experiment_coverage or "full_valid",
+                mode=config.auto_experiment_coverage,
                 status_callback=status_callback,
             )
         except Exception as exc:
