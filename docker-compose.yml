@@ -1,0 +1,36 @@
+services:
+  asrpostprocessing:
+    build: .
+    image: asrpostprocessing:latest
+    ports:
+      - "7860:7860"
+      - "6006:6006"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./runs:/app/runs
+      - ./configs:/app/configs:ro
+      - ./experiment_assets:/app/experiment_assets:ro
+    environment:
+      ASRPP_CONFIG: configs/mock.yaml
+    command: ["asrpp", "ui", "--host", "0.0.0.0", "--port", "7860", "--config", "configs/mock.yaml"]
+
+  asrpostprocessing-gpu:
+    profiles: ["gpu"]
+    build: .
+    image: asrpostprocessing:latest
+    ports:
+      - "7860:7860"
+      - "6006:6006"
+      - "18000-18003:18000-18003"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./runs:/app/runs
+      - ./configs:/app/configs:ro
+      - ./experiment_assets:/app/experiment_assets:ro
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    gpus: all
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      ASRPP_CONFIG: configs/cuda.yaml
+    command: ["asrpp", "ui", "--host", "0.0.0.0", "--port", "7860", "--config", "configs/cuda.yaml"]
