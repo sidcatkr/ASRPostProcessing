@@ -67,6 +67,36 @@ Gradio GUI에 포함될 기능은 다음과 같다:
 - Transcription Viewer: 진행 상황 및 RAW, Processed Transcript를 볼 수 있는 창을 마련해야 한다.
 - CER/WER 측정: reference와 ASR 결과는 NFKC 정규화 후 비교한다. Primary CER인 `cer_normalized_no_space`는 모든 공백, 줄바꿈, 문장부호, 기호를 제거해 한 줄 내용 문자열로 만든 뒤 계산한다. `wer_eojeol`도 한국어 띄어쓰기 오류나 문장부호 생성 차이로 점수가 왜곡되지 않도록 같은 정규화 후 script-aware token error rate로 계산한다. 따라서 줄바꿈, 여러 칸 띄어쓰기, 한국어 어절 분리, 쉼표/마침표/물음표 같은 문장부호 차이는 점수에 반영하지 않고, 실제 글자/숫자/영문 내용 차이만 오류로 반영한다. `cer_strict`는 공백과 문장부호까지 포함한 참고용 진단 지표로만 사용한다.
 
+
+## Selective correction architecture
+
+Recent experiments should treat web search, RAG, keyword correction, and LLM rewriting as candidate generators rather than direct transcript mutators. The default post-processing path now keeps the raw ASR chunk unless an edit proposal passes the verifier in `src/asrpostprocessing/selective_correction.py`. This reduces the common failure mode where a tool fixes one domain term but introduces unrelated wording, spacing, or semantic changes.
+
+Key defaults:
+
+- `enable_search: false` for baseline experiments; use search only later for proper-noun/entity spelling verification.
+- Post-processing LLM decoding is deterministic (`temperature=0.0`, `top_p=1.0`) so `postprocess_strength` controls acceptance thresholds rather than sampling randomness.
+- `enable_selective_correction: true` requires exact raw-span matches, minimum confidence, non-overlapping edits, and bounded edit volume before any replacement is applied.
+- Qwen3-ASR remains the baseline model, but other ASR cores such as NVIDIA NeMo/Parakeet or Whisper-family models should be compared through the same verifier-gated downstream pipeline.
+
+See `docs/selective_correction.md` for the recommended experiment design.
+
+## Docker quick start
+
+Build and run the mock UI locally:
+
+```bash
+docker compose up --build asrpostprocessing
+```
+
+Run the GPU profile on hosts with the NVIDIA Container Toolkit installed:
+
+```bash
+docker compose --profile gpu up --build asrpostprocessing-gpu
+```
+
+The containers expose Gradio on port `7860`, TensorBoard on `6006`, and persist `outputs/` plus `runs/` to the host.
+
 ## L4 x4 서버 운영
 
 기본 L4 x4 실행 설정은 `configs/l4x4.yaml`과 `scripts/serve_l4x4.sh`를 사용한다. 기본 실행 모드는 `stage_replicas`이며, ASR stage에서는 4개 GPU가 모두 ASR replica로, post-processing stage에서는 4개 GPU가 모두 post LLM replica로 재사용된다.

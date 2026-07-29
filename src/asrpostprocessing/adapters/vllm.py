@@ -22,6 +22,7 @@ from asrpostprocessing.keyword_correction import (
 )
 from asrpostprocessing.preprocess import ffmpeg_executable
 from asrpostprocessing.schemas import CorrectionResult, RAGContext, SearchResult, TranscriptResult, TranscriptSegment
+from asrpostprocessing.selective_correction import verify_and_apply_correction
 
 ASR_CHUNK_OUTPUT_DIR = Path("outputs/asr_chunks")
 ASR_CHUNK_THRESHOLD_RATIO = 1.1
@@ -277,7 +278,8 @@ class VLLMOpenAIPostProcessAdapter:
                 {"role": "system", "content": "You correct Korean ASR transcripts. Return JSON only."},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": _temperature_for_strength(config.postprocess_strength),
+            "temperature": 0.0,
+            "top_p": 1.0,
             "max_tokens": 512,
         }
         if (config.post_backend or "").lower() in {"vllm", "vllm_openai"}:
@@ -285,6 +287,7 @@ class VLLMOpenAIPostProcessAdapter:
         data = _post_chat(config.post_base_url, payload, config.request_timeout_s, "post-processing LLM")
         response_text = _extract_message_text(data)
         result = parse_correction_response(response_text, chunk_text)
+        result = verify_and_apply_correction(chunk_text, result, config)
         result = _apply_keyword_near_miss_corrections(result, config)
         result.metadata.setdefault("backend", "vllm_openai")
         result.metadata.setdefault("raw", data)
@@ -402,8 +405,10 @@ Rules:
 - If uncertain, keep the original phrase.
 - Do not translate or expand foreign-language fragments, ASR tags, or model artifacts into plausible Korean.
 - Do not add facts that are not supported by the audio transcript or context.
+- Prefer proposing minimal edits over rewriting the whole chunk.
 - Return compact JSON with keys: corrected_text, edits, risk, used_context_ids.
-- Each edit item must include before, after, reason, confidence.
+- corrected_text may mirror the edit-applied text, but downstream code will verify edits against the raw chunk before applying them.
+- Each edit item must include before, after, reason, confidence, and should include start_char/end_char when possible.
 """.strip()
 
 
@@ -417,11 +422,6 @@ def _keyword_correction_guidance(keywords: List[str]) -> str:
         "do not rely on domain-specific examples or fixed replacement pairs. "
         "If the match is not close or the context does not support it, keep the raw phrase."
     )
-
-
-def _temperature_for_strength(strength: float) -> float:
-    strength = max(0.0, min(1.0, float(strength)))
-    return 0.1 + 0.2 * strength
 
 
 def _postprocess_strength_policy(strength: float) -> str:

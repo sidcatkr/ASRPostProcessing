@@ -103,6 +103,10 @@ class ExperimentConfig:
 
     enable_llm_postprocess: bool = True
     postprocess_strength: float = 0.5
+    enable_selective_correction: bool = True
+    selective_min_confidence: Optional[float] = None
+    selective_max_edit_ratio: float = 0.20
+    selective_max_edits_per_100_chars: int = 2
 
     enable_rag: bool = False
     rag_strength: float = 0.0
@@ -140,6 +144,11 @@ class ExperimentConfig:
         config.volume_normalization_strength = clamp01(config.volume_normalization_strength)
         config.keyword_bias_weight = clamp01(config.keyword_bias_weight)
         config.postprocess_strength = clamp01(config.postprocess_strength)
+        config.enable_selective_correction = bool(config.enable_selective_correction)
+        if config.selective_min_confidence is not None:
+            config.selective_min_confidence = clamp01(config.selective_min_confidence)
+        config.selective_max_edit_ratio = clamp01(config.selective_max_edit_ratio)
+        config.selective_max_edits_per_100_chars = max(1, min(20, int(config.selective_max_edits_per_100_chars)))
         config.rag_strength = clamp01(config.rag_strength)
         config.search_strength = clamp01(config.search_strength)
         config.model_residency = normalize_model_residency(config.model_residency)

@@ -37,6 +37,10 @@ keyword_bias_weight: 0.5
 keywords: []
 enable_llm_postprocess: true
 postprocess_strength: 0.5
+enable_selective_correction: true
+selective_min_confidence: null
+selective_max_edit_ratio: 0.20
+selective_max_edits_per_100_chars: 2
 enable_rag: false
 rag_strength: 0.0
 rag_top_k: 5

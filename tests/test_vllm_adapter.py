@@ -80,7 +80,8 @@ class VLLMAdapterTest(unittest.TestCase):
         self.assertIn("Keyword correction guidance", prompt)
         self.assertIn("do not rely on domain-specific examples", prompt)
         self.assertNotIn("고정된 예시 보정", prompt)
-        self.assertEqual(result.corrected_text, "교정된 문장")
+        self.assertEqual(result.corrected_text, "원문 문장")
+        self.assertEqual(result.metadata["selective_correction"]["candidate_text_ignored"], True)
 
     def test_postprocess_applies_high_strength_keyword_near_miss(self):
         response = Mock()
